@@ -4,12 +4,11 @@ use crate::{
     python_env,
     utils::path,
     utils::process,
-    utils::yaml_parser::{Config as AppConfig, Profile as AppProfile},
+    app::{Config as AppConfig, OK_YAML_NAME},
 };
-use chrono::{DateTime, Utc};
+use chrono::{Utc};
 use futures::future::join_all;
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -23,74 +22,17 @@ use tracing::{debug, error, info, warn};
 
 use crate::utils::error::Error;
 use crate::utils::file;
-use crate::utils::path::{get_app_base_path, get_apps_dir};
-use crate::utils::yaml_parser::load_config_from_yaml;
+use crate::utils::path::{get_app_base_path, get_app_working_dir_path, get_apps_dir};
+use crate::app::{default_profile_fn, load_config_from_yaml, App};
 use anyhow::{anyhow, bail, Context, Result};
 use runas;
 
-fn default_profile_fn() -> String {
-    "default".to_string()
-}
 
-fn default_last_start_fn() -> DateTime<Utc> {
-    Utc::now()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct App {
-    pub name: String,
-    pub url: String,
-    pub current_version: Option<String>,
-    pub available_versions: Vec<String>,
-    #[serde(default)]
-    pub running: bool,
-    #[serde(default = "default_last_start_fn")]
-    pub last_start: DateTime<Utc>,
-    #[serde(default = "default_profile_fn")]
-    pub current_profile: String,
-    #[serde(default)]
-    pub installed: bool, // Added installed state, defaults to false
-    #[serde(default)] // Config will be AppConfig::default() after deserialization
-    pub config: AppConfig,
-}
-
-impl App {
-    pub fn get_repo_path(&self) -> PathBuf {
-        path::get_app_repo_path(&self.name)
-    }
-
-    pub fn get_current_profile_settings(&self) -> &AppProfile {
-        self.config.get_profile(&self.current_profile)
-            .or_else(|| {
-                warn!(
-                    "Current profile '{}' not found for app '{}'. Falling back to 'default' profile.",
-                    self.current_profile, self.name
-                );
-                self.config.get_profile("default")
-            })
-            .expect("Critical: Default profile missing in AppConfig.")
-    }
-
-    fn read_and_set_config_from_working_dir(&mut self) {
-        let working_dir = get_app_working_dir_path(&self.name);
-        let ok_yaml_path = working_dir.join(OK_YAML_NAME);
-        let ok_yaml_path_str = ok_yaml_path.to_string_lossy().into_owned();
-
-        self.config = load_config_from_yaml(&ok_yaml_path_str);
-        debug!(
-            "Refreshed app.config for '{}' from {}",
-            self.name,
-            ok_yaml_path.display()
-        );
-    }
-}
 
 pub static APPS: Lazy<Mutex<HashMap<String, App>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 pub static APP_DIR_LOCKS: Lazy<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-const WORKING_DIR_NAME: &str = "working";
-const OK_YAML_NAME: &str = "ok.yml";
 
 fn is_app_running(sys: &System, app_working_dir: &Path) -> bool {
     !process::get_pids_related_to_app_dir(sys, &PathBuf::from(app_working_dir)).is_empty()
@@ -315,12 +257,11 @@ pub(crate) async fn load_app_details(app_name: String) -> Result<App> {
     }
 
     info!(
-        "Loaded/synced app: {} (Installed: {}, Profile: {} ({}), Config Python: {}, Last Start: {})",
+        "Loaded/synced app: {} (Installed: {}, Profile: {} ({}), Last Start: {})",
         app_to_store.name,
         app_to_store.installed, // Log installed state
         app_to_store.current_profile,
         app_to_store.config.profiles.len(),
-        app_to_store.config.requires_python, // Now this refers to the config from ok.yaml
         app_to_store.last_start.to_rfc3339(),
     );
 
@@ -345,9 +286,6 @@ pub(crate) async fn get_app_lock(app_name: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-fn get_app_working_dir_path(app_name: &str) -> PathBuf {
-    get_app_base_path(app_name).join(WORKING_DIR_NAME)
-}
 
 #[tauri::command]
 pub async fn load_apps() -> Result<(), Error> {
@@ -639,7 +577,7 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
     let ok_yaml_path_str = ok_yaml_path.to_string_lossy().into_owned();
 
     let temp_app_config = load_config_from_yaml(&ok_yaml_path_str);
-    let python_version_spec = &temp_app_config.requires_python;
+
 
     let final_profile_name_to_set: String;
     let profile_settings_for_setup = match temp_app_config.get_profile(profile_name) {
@@ -666,6 +604,7 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
         }
     };
     let requirements_relative_path = &profile_settings_for_setup.requirements;
+    let python_version_spec = &profile_settings_for_setup.requires_python;
 
     let venv_python_exe = task::spawn_blocking({
         let wd_path = working_dir_path.clone();

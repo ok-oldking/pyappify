@@ -2702,43 +2702,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ok-store"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "flate2",
- "futures",
- "git2",
- "hex",
- "lazy_static",
- "once_cell",
- "rand 0.9.1",
- "regex",
- "reqwest",
- "runas",
- "scraper",
- "semver",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "sysinfo",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "thiserror 2.0.12",
- "time",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "walkdir",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3188,6 +3151,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02b3e5e68a3a1a02aad3ec490a98007cbc13c37cbe84a3cd7b8e406d76e7f778"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "pyappify"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "flate2",
+ "futures",
+ "git2",
+ "hex",
+ "lazy_static",
+ "once_cell",
+ "rand 0.9.1",
+ "regex",
+ "reqwest",
+ "runas",
+ "scraper",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "sysinfo",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "thiserror 2.0.12",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "walkdir",
 ]
 
 [[package]]

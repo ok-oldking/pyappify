@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 const BASE_DIR: &str = "data";
 const APPS_DIR: &str = "apps";
 pub const PYTHON_ROOT_DIR: &str = "env/python";
+const WORKING_DIR_NAME: &str = "working";
 
 lazy_static! {
     static ref CWD: PathBuf = env::current_dir().expect("Failed to get current directory");
@@ -29,6 +30,9 @@ pub fn get_app_base_path(app_name: &str) -> PathBuf {
     get_apps_dir().join(app_name)
 }
 
+pub fn get_app_working_dir_path(app_name: &str) -> PathBuf {
+    get_app_base_path(app_name).join(WORKING_DIR_NAME)
+}
 pub fn get_pip_cache_dir() -> PathBuf {
     get_base_dir().join("cache").join("pip")
 }

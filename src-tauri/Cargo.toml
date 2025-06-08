@@ -1,5 +1,5 @@
 [package]
-name = "ok-store"
+name = "pyappify"
 version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]

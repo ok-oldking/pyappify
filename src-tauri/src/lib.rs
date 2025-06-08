@@ -7,13 +7,14 @@ mod install;
 mod python_env;
 mod submodule;
 mod utils;
+mod app;
 
 use crate::app_service::{emit_apps, load_app_details, load_apps, setup_app, start_app, stop_app};
 use crate::config_manager::init_config_manager;
 use crate::emitter::emit_custom_event;
 use crate::utils::logger::LoggerBuilder;
 use std::env;
-use tauri::{Emitter, Manager};
+use tauri::{Manager};
 use tracing::{debug, info};
 
 #[tauri::command]
@@ -64,12 +65,6 @@ async fn clone_app(url: String) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let _ = LoggerBuilder::new()
-        .log_dir("logs")
-        .file_prefix("app")
-        .default_level("debug")
-        .init();
-    info!("Log initialized");
     #[cfg(debug_assertions)]
     {
         // Only in debug (dev) mode, attempt to change the working directory
@@ -119,6 +114,12 @@ pub fn run() {
             );
         }
     }
+    let _ = LoggerBuilder::new()
+        .log_dir("logs")
+        .file_prefix("app")
+        .default_level("debug")
+        .init();
+    info!("Log initialized");
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             info!("tauri_plugin_single_instance args:{:?} cwd:{}", args, cwd);

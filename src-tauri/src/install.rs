@@ -1,4 +1,4 @@
-use crate::app_service::App;
+use crate::app::App;
 use crate::python_env::get_supported_python_versions;
 use crate::{git, utils::error::Error, utils::path};
 use anyhow::{anyhow, Context, Result};

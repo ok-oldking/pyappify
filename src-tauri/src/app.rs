@@ -1,50 +1,112 @@
-// src/utils/yaml_parser.rs
 use serde::{Deserialize, Serialize};
-// use std::collections::HashMap; // No longer needed for profiles
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::vec::Vec;
-// Explicitly using Vec
+use chrono::{DateTime, Utc};
+use tracing::{debug, warn};
+use crate::utils::path;
+use crate::utils::path::get_app_working_dir_path;
 
-// Define the structs to match the YAML structure
+pub const OK_YAML_NAME: &str = "ok.yml";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct App {
+    pub name: String,
+    pub url: String,
+    pub current_version: Option<String>,
+    pub available_versions: Vec<String>,
+    #[serde(default)]
+    pub running: bool,
+    #[serde(default = "default_last_start_fn")]
+    pub last_start: DateTime<Utc>,
+    #[serde(default = "default_profile_fn")]
+    pub current_profile: String,
+    #[serde(default)]
+    pub installed: bool, // Added installed state, defaults to false
+    #[serde(default)] // Config will be AppConfig::default() after deserialization
+    pub config: Config,
+}
+
+pub fn default_profile_fn() -> String {
+    "default".to_string()
+}
+
+fn default_last_start_fn() -> DateTime<Utc> {
+    Utc::now()
+}
+
+impl App {
+    pub fn get_repo_path(&self) -> PathBuf {
+        path::get_app_repo_path(&self.name)
+    }
+
+    pub fn get_current_profile_settings(&self) -> &Profile {
+        self.config.get_profile(&self.current_profile)
+            .or_else(|| {
+                warn!(
+                    "Current profile '{}' not found for app '{}'. Falling back to 'default' profile.",
+                    self.current_profile, self.name
+                );
+                self.config.get_profile("default")
+            })
+            .expect("Critical: Default profile missing in AppConfig.")
+    }
+
+    pub fn read_and_set_config_from_working_dir(&mut self) {
+        let working_dir = get_app_working_dir_path(&self.name);
+        let ok_yaml_path = working_dir.join(OK_YAML_NAME);
+        let ok_yaml_path_str = ok_yaml_path.to_string_lossy().into_owned();
+
+        self.config = load_config_from_yaml(&ok_yaml_path_str);
+        debug!(
+            "Refreshed app.config for '{}' from {}",
+            self.name,
+            ok_yaml_path.display()
+        );
+    }
+}
+
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Config {
-    pub requires_python: String,
-    pub profiles: Vec<Profile>, // Changed from HashMap<String, Profile> to Vec<Profile>
+    pub profiles: Vec<Profile>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Profile {
-    pub name: String, // Added name field
+    pub name: String,
     #[serde(default)]
     pub main_script: String,
-    #[serde(default)] // Defaults to false if missing in YAML for this profile
+    #[serde(default)]
     pub admin: bool,
-    #[serde(default)] // Defaults to "" (empty string) if missing in YAML for this profile
+    #[serde(default)]
     pub requirements: String,
     #[serde(default, rename = "PYTHONPATH")]
     pub python_path: String,
+    #[serde(default)]
+    pub git_url: String,
+    #[serde(default)]
+    pub requires_python: String,
 }
 
-// Implement Default for the Config struct
 impl Default for Config {
     fn default() -> Self {
         let default_profile = Profile {
-            name: "default".to_string(), // Set name for default profile
+            name: "default".to_string(),
             main_script: "main.py".to_string(),
             admin: false,
             requirements: "requirements.txt".to_string(),
             python_path: "".to_string(),
+            git_url: "".to_string(),
+            requires_python: "3.12".to_string(),
         };
         Config {
-            requires_python: "3.12".to_string(), // A sensible default for python version
-            profiles: vec![default_profile],     // Store profiles in a Vec
+            profiles: vec![default_profile],
         }
     }
 }
 
 impl Config {
-    // Implement get_profile(profile_name) for the Config struct
     pub fn get_profile(&self, profile_name: &str) -> Option<&Profile> {
         self.profiles.iter().find(|p| p.name == profile_name)
     }
@@ -77,53 +139,41 @@ pub fn load_config_from_yaml(file_path_str: &str) -> Config {
         }
     };
 
-    // Ensure there is at least one profile.
-    // If profiles list is empty after parsing a valid YAML (e.g. `profiles: []`),
-    // then Config::default() might be more appropriate if a "first profile" is always expected.
-    // However, the `get_profile("default")` check below implicitly handles this by returning Config::default().
     if parsed_config.profiles.is_empty() {
-        // This case will typically be caught by the get_profile("default").is_none() check if
-        // that specific profile is mandatory. If any first profile is acceptable,
-        // and an empty profiles list is valid YAML, then no defaults can be applied.
-        // For now, let's assume the existing "default" profile check handles this.
         println!("Parsed YAML has no profiles, using default configuration.");
-        return Config::default(); // Or return parsed_config if an empty profile list is acceptable.
+        return Config::default();
     }
 
-    // The user's original code checked for a profile named "default".
-    // If it's not present, it returns Config::default().
-    // Config::default() *does* have a profile, and it's the first one.
-    // So, `parsed_config.profiles` will not be empty if we proceed past this check.
     if parsed_config.get_profile("default").is_none() {
         println!("Profile 'default' not found in config, using default configuration.");
         return Config::default();
     }
 
-    // At this point, parsed_config.profiles is guaranteed to have at least one element.
-    // Clone the values from the first profile to use as defaults.
-    // The first profile itself would have already had its `#[serde(default)]` applied.
     let first_profile_defaults = parsed_config.profiles[0].clone();
 
     for profile in parsed_config.profiles.iter_mut() {
-        // If main_script is empty (its default value), use the first profile's main_script.
         if profile.main_script.is_empty() {
             profile.main_script = first_profile_defaults.main_script.clone();
         }
 
-        // If requirements is empty (its default value), use the first profile's requirements.
         if profile.requirements.is_empty() {
             profile.requirements = first_profile_defaults.requirements.clone();
         }
 
-        // If python_path is empty (its default value), use the first profile's python_path.
         if profile.python_path.is_empty() {
             profile.python_path = first_profile_defaults.python_path.clone();
         }
 
-        // If admin is false (its default value), use the first profile's admin value.
-        // bool::default() is false.
         if profile.admin == bool::default() {
             profile.admin = first_profile_defaults.admin;
+        }
+
+        if profile.git_url.is_empty() {
+            profile.git_url = first_profile_defaults.git_url.clone();
+        }
+
+        if profile.requires_python.is_empty() {
+            profile.requires_python = first_profile_defaults.requires_python.clone();
         }
     }
 
