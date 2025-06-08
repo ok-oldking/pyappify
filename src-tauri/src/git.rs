@@ -1,3 +1,4 @@
+//git.rs
 use crate::{emit_info, emit_update_info};
 use anyhow::{Context, Result};
 use git2::{
@@ -7,11 +8,13 @@ use git2::{
 };
 use semver::Version;
 use std::collections::HashSet;
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tokio::task;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
+use crate::app::App;
 use crate::submodule;
 
 fn configure_credentials(callbacks: &mut RemoteCallbacks<'static>, url: Option<&str>) {
@@ -177,9 +180,6 @@ pub async fn get_tag_versions(app_name: &str, repo_path: PathBuf) -> Result<Vec<
         let mut semver_tags: Vec<(Version, String)> = Vec::new();
         for tag_name_opt in tag_array.iter() {
             if let Some(tag_name) = tag_name_opt {
-                // The following line correctly handles tags with or without a 'v' prefix.
-                // e.g., "v1.2.3" becomes "1.2.3", and "1.2.3" (without a 'v') remains "1.2.3".
-                // Both are suitable for Version::parse, which expects the version string without a 'v'.
                 let clean_tag = tag_name.trim_start_matches('v');
                 if let Ok(version) = Version::parse(clean_tag) {
                     semver_tags.push((version, tag_name.to_string()));
@@ -190,8 +190,8 @@ pub async fn get_tag_versions(app_name: &str, repo_path: PathBuf) -> Result<Vec<
 
         Ok(semver_tags.into_iter().map(|(_, name)| name).collect())
     })
-    .await
-    .context("Task for get_tag_versions panicked or was cancelled")??;
+        .await
+        .context("Task for get_tag_versions panicked or was cancelled")??;
 
     Ok(tags)
 }
@@ -205,9 +205,6 @@ pub fn determine_current_checked_out_tag(repo: &Repository) -> Result<Option<Str
 
     for tag_name_opt in tags.iter() {
         if let Some(tag_name) = tag_name_opt {
-            // The following line correctly handles tags with or without a 'v' prefix.
-            // e.g., "v1.2.3" becomes "1.2.3", and "1.2.3" (without a 'v') remains "1.2.3".
-            // Both are suitable for Version::parse, which expects the version string without a 'v'.
             let clean_tag = tag_name.trim_start_matches('v');
             if let Ok(version) = Version::parse(clean_tag) {
                 semver_tags.push((version, tag_name.to_string()));
@@ -247,7 +244,111 @@ fn format_bytes(bytes: usize) -> String {
     }
 }
 
-pub async fn clone_repository(app_name: &str, url: &str, repo_path: &Path) -> Result<()> {
+pub async fn ensure_repository(app: &App) -> Result<()> {
+    let repo_path = app.get_repo_path();
+    let profile = app.get_current_profile_settings();
+    let url = profile.git_url.clone();
+    let app_name = app.name.clone();
+    info!("ensure_repository {} {}", app_name, &url);
+
+    if repo_path.exists() {
+        emit_info!(app.name, "Repository already exists {}", repo_path.display());
+        match open_repository(&repo_path) {
+            Ok(repo) => {
+                let current_url = get_repository_origin_url(&repo)?;
+                if current_url.as_deref() != Some(url.as_str()) {
+                    emit_info!(
+                        app_name,
+                        "Updating remote origin URL for '{}' to '{}'.",
+                        app_name,
+                        url
+                    );
+                    repo.remote_set_url("origin", &url).with_context(|| {
+                        format!("Failed to set remote url for {}", repo_path.display())
+                    })?;
+                }
+
+                emit_info!(app_name, "Fetching updates for existing repository...");
+                let repo_path_for_task = repo_path.clone();
+                let url_for_task = url.clone();
+                let app_name_for_task = app_name.clone();
+
+                task::spawn_blocking(move || -> Result<()> {
+                    let repo = open_repository(&repo_path_for_task)?;
+                    let mut remote = repo.find_remote("origin")?;
+                    let mut callbacks = RemoteCallbacks::new();
+                    configure_credentials(&mut callbacks, Some(&url_for_task));
+
+                    let app_name_for_progress = app_name_for_task.clone();
+                    callbacks.transfer_progress({
+                        let mut last_percent = -1.0;
+                        move |progress: Progress| {
+                            let received_objects = progress.received_objects();
+                            let total_objects = progress.total_objects();
+                            if total_objects > 0 {
+                                let current_percent =
+                                    (received_objects as f64 * 100.0) / total_objects as f64;
+                                let rounded_percent = (current_percent * 10.0).round() / 10.0;
+                                if (rounded_percent - last_percent).abs() >= 0.1
+                                    || received_objects == total_objects
+                                {
+                                    emit_update_info!(
+                                        app_name_for_progress,
+                                        "\rFetching objects: {:.1}% ({} / {}) ",
+                                        rounded_percent,
+                                        received_objects,
+                                        total_objects
+                                    );
+                                    last_percent = rounded_percent;
+                                }
+                            } else {
+                                emit_update_info!(
+                                    app_name_for_progress,
+                                    "\rFetching objects: {} received... ",
+                                    received_objects
+                                );
+                            }
+                            io::stdout().flush().unwrap_or_default();
+                            true
+                        }
+                    });
+
+                    let mut fetch_options = create_fetch_options(callbacks, None);
+                    let fetch_result = remote
+                        .fetch(&["+refs/tags/*:refs/tags/*"], Some(&mut fetch_options), None)
+                        .with_context(|| {
+                            format!(
+                                "Failed to fetch updates for {}",
+                                repo_path_for_task.display()
+                            )
+                        });
+
+                    emit_update_info!(app_name_for_task, "");
+                    println!();
+                    fetch_result?;
+                    emit_info!(app_name_for_task, "Fetch complete.");
+                    Ok(())
+                })
+                    .await
+                    .context("Task for fetching updates panicked")??;
+                return Ok(());
+            }
+            Err(e) => {
+                warn!(
+                    "Directory at {} exists but is not a valid git repository ({}). Removing and re-cloning.",
+                    repo_path.display(),
+                    e
+                );
+                fs::remove_dir_all(&repo_path).with_context(|| {
+                    format!(
+                        "Failed to remove invalid repository directory at {}",
+                        repo_path.display()
+                    )
+                })?;
+            }
+        }
+    }
+
     let repo_path_for_clone_task = repo_path.to_path_buf();
     let url_for_clone_task = url.to_string();
     let app_name_for_messages = app_name.to_string();
@@ -321,9 +422,6 @@ pub async fn clone_repository(app_name: &str, url: &str, repo_path: &Path) -> Re
         let mut semver_tags: Vec<(Version, String)> = Vec::new();
         for tag_name_opt in tag_names.iter() {
             if let Some(tag_name) = tag_name_opt {
-                // The following line correctly handles tags with or without a 'v' prefix.
-                // e.g., "v1.2.3" becomes "1.2.3", and "1.2.3" (without a 'v') remains "1.2.3".
-                // Both are suitable for Version::parse, which expects the version string without a 'v'.
                 let clean_tag = tag_name.trim_start_matches('v');
                 if let Ok(version) = Version::parse(clean_tag) {
                     semver_tags.push((version, tag_name.to_string()));
@@ -394,8 +492,8 @@ pub async fn clone_repository(app_name: &str, url: &str, repo_path: &Path) -> Re
         )?;
         Ok(())
     })
-    .await
-    .context("Task for clone_repository panicked or was cancelled")??;
+        .await
+        .context("Task for ensure_repository panicked or was cancelled")??;
     Ok(())
 }
 
@@ -518,8 +616,8 @@ pub async fn checkout_version_tag(
 
         Ok(commit_oid)
     })
-    .await
-    .context("Task for checkout_version_tag panicked or was cancelled")??;
+        .await
+        .context("Task for checkout_version_tag panicked or was cancelled")??;
     Ok(oid)
 }
 
@@ -633,7 +731,7 @@ pub async fn get_commit_messages_for_version_diff(
             Ok(messages)
         }
     })
-    .await
-    .context("Task for get_commit_messages panicked or was cancelled")??;
+        .await
+        .context("Task for get_commit_messages panicked or was cancelled")??;
     Ok(messages)
 }

@@ -15,7 +15,6 @@ import {
     CircularProgress,
     Container,
     FormControl,
-    Grid,
     IconButton,
     InputLabel,
     List,
@@ -25,14 +24,12 @@ import {
     SelectChangeEvent,
     Snackbar,
     Stack,
-    TextField,
     Typography
 } from "@mui/material";
 import {
     ArrowDownward,
     Build,
     Cached,
-    CloudUpload,
     Delete,
     OpenInNew,
     PlayArrow,
@@ -45,7 +42,6 @@ import {createTheme, ThemeProvider} from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import useMediaQuery from '@mui/material/useMediaQuery';
 
-// Added for Rust config items (App specific config)
 interface Profile {
     name: string;
     main_script: string;
@@ -66,17 +62,17 @@ interface App {
     current_version: string | null;
     available_versions: string[];
     running: boolean;
-    installed: boolean; // Added
-    config: Config; // Added
-    current_profile: string; // Added
+    installed: boolean;
+    config: Config;
+    current_profile: string;
 }
 
 interface ConfigItemFromRust {
     name: string;
     description: string;
-    value: string | number; // Corresponds to ConfigValue in Rust (string or integer)
+    value: string | number;
     default_value: string | number;
-    options?: (string | number)[]; // Array of strings or numbers
+    options?: (string | number)[];
 }
 
 const compareVersions = (v1: string, v2: string): number => {
@@ -99,17 +95,15 @@ type Page =
     | 'runningAppConsole'
     | 'settings'
     | 'profileChooser'
-    | 'changeProfile' // Added
-    | 'profileChangeConsole'; // Added
+    | 'changeProfile'
+    | 'profileChangeConsole';
 
 type ThemeModeSetting = 'light' | 'dark' | 'system';
 
-// Config Keys from Rust
 const PIP_CACHE_DIR_CONFIG_KEY = "Pip Cache Directory";
 const DEFAULT_PYTHON_VERSION_CONFIG_KEY = "Default Python Version";
 const PIP_INDEX_URL_CONFIG_KEY = "Pip Index URL";
 
-// For Pip Index URL display
 const PIP_INDEX_URL_DISPLAY_OPTIONS_MAP: Record<string, string> = {
     "": "None (Use System Config File)",
     "https://pypi.org/simple/": "Pypi",
@@ -145,7 +139,6 @@ function App() {
     const [apps, setApps] = useState<App[] | null>(null);
     const [status, setStatus] = useState<StatusState>({loading: true, error: null, info: null, messageLoading: false});
 
-    const [repoUrl, setRepoUrl] = useState("");
     const [appActionLoading, setAppActionLoading] = useState<Record<string, boolean>>({});
 
     const [selectedTargetVersions, setSelectedTargetVersions] = useState<Record<string, string>>({});
@@ -168,7 +161,7 @@ function App() {
 
     const [isInstallProcessRunning, setIsInstallProcessRunning] = useState<boolean>(false);
     const [isStartAppProcessRunning, setIsStartAppProcessRunning] = useState<boolean>(false);
-    const [startingAppName, setStartingAppName] = useState<string | null>(null); // Used for console titles and context
+    const [startingAppName, setStartingAppName] = useState<string | null>(null);
     const [consoleInitialMessage, setConsoleInitialMessage] = useState<string | undefined>(undefined);
 
     const [versionChangeConsoleData, setVersionChangeConsoleData] = useState<{
@@ -187,19 +180,17 @@ function App() {
         return 'system';
     });
 
-    // State for Rust configurations
     const [allConfigs, setAllConfigs] = useState<ConfigItemFromRust[] | null>(null);
     const [isLoadingConfigs, setIsLoadingConfigs] = useState<boolean>(true);
 
-    // State for profile chooser (initial install)
     const [profileChoiceApp, setProfileChoiceApp] = useState<App | null>(null);
     const [selectedProfileForInstall, setSelectedProfileForInstall] = useState<string>("");
 
-    // State for changing profile (for installed apps)
     const [appForProfileChange, setAppForProfileChange] = useState<App | null>(null);
     const [selectedNewProfileName, setSelectedNewProfileName] = useState<string>("");
     const [isProfileChangeProcessRunning, setIsProfileChangeProcessRunning] = useState<boolean>(false);
     const [profileChangeData, setProfileChangeData] = useState<{ appName: string; newProfile: string } | null>(null);
+    const initialAutoStartDoneRef = useRef(false);
 
 
     useEffect(() => {
@@ -232,6 +223,61 @@ function App() {
     }, [updateStatus]);
 
 
+    const handleStartApp = async (appName: string) => {
+        clearMessages();
+        setAppActionLoading(prev => ({...prev, [appName]: true}));
+        setStartingAppName(appName);
+        setConsoleInitialMessage(`Attempting to start app: ${appName}...`);
+        setIsStartAppProcessRunning(true);
+        setCurrentPage('startConsole');
+
+        await invokeTauriCommandWrapper<void>(
+            "start_app",
+            {appName},
+            () => {
+            },
+            (errorMessage, rawError) => {
+                console.error(`Failed to start app ${appName}:`, rawError);
+                setConsoleInitialMessage(prev => `${prev}\nERROR (client-side): Failed to dispatch start operation: ${errorMessage}`);
+            }
+        );
+    };
+
+    const handleInstallWithProfile = async (appName: string, profileName: string) => {
+        clearMessages();
+        setAppActionLoading(prev => ({...prev, [appName]: true}));
+        setStartingAppName(appName);
+        setConsoleInitialMessage(`Initiating install for '${appName}' with profile '${profileName}'...`);
+        setIsInstallProcessRunning(true);
+        setCurrentPage('installConsole');
+
+        await invokeTauriCommandWrapper<void>(
+            "setup_app",
+            {appName, profileName},
+            () => {
+            },
+            (errorMessage, rawError) => {
+                console.error(`Failed to invoke setup_app for ${appName} with profile ${profileName}:`, rawError);
+                setConsoleInitialMessage(prev => `${prev}\nERROR (client-side): Failed to dispatch install operation: ${errorMessage}`);
+            }
+        );
+    };
+
+    const handleInstallClick = (app: App) => {
+        if (app.config?.profiles && app.config.profiles.length > 1) {
+            setProfileChoiceApp(app);
+            let initialProfile = app.current_profile;
+            if (!app.config.profiles.find(p => p.name === initialProfile)) {
+                initialProfile = app.config.profiles[0]?.name || "default";
+            }
+            setSelectedProfileForInstall(initialProfile);
+            setCurrentPage('profileChooser');
+        } else {
+            const profileName = app.current_profile || app.config?.profiles?.[0]?.name || "default";
+            handleInstallWithProfile(app.name, profileName);
+        }
+    };
+
     useEffect(() => {
         const unlistenPromises: Promise<UnlistenFn>[] = [];
 
@@ -240,10 +286,25 @@ function App() {
             const newApps = event.payload;
             setApps(newApps);
 
+            if (!initialAutoStartDoneRef.current && newApps && newApps.length > 0) {
+                initialAutoStartDoneRef.current = true;
+                const appToAutoStart = newApps.find(app => {
+                    if (!app.installed || app.running || !app.current_version) {
+                        return false;
+                    }
+                    const hasUpdate = app.available_versions.some(v => compareVersions(v, app.current_version!) > 0);
+                    return !hasUpdate;
+                });
+
+                if (appToAutoStart) {
+                    handleStartApp(appToAutoStart.name);
+                }
+            }
+
             const newSelectedTargets: Record<string, string> = {};
             newApps.forEach(app => {
-                if (!app.installed || app.running) { // Do not auto-select versions for uninstalled or running apps
-                    if (selectedTargetVersionsRef.current[app.name]) { // Clear previous selections for these cases
+                if (!app.installed || app.running) {
+                    if (selectedTargetVersionsRef.current[app.name]) {
                         newSelectedTargets[app.name] = '';
                     }
                     return;
@@ -257,7 +318,7 @@ function App() {
 
                 if (isExistingSelectionValidAndByUser) {
                     newSelectedTargets[app.name] = currentExistingSelection;
-                } else { // Auto-select logic for installed and not running apps
+                } else {
                     const availableForSelection = app.available_versions.filter(v => v !== app.current_version);
                     if (availableForSelection.length > 0) {
                         const sortedAvailable = [...availableForSelection].sort((a, b) => compareVersions(b, a));
@@ -268,7 +329,7 @@ function App() {
                             if (newestUpgrade) {
                                 versionToAutoSelect = newestUpgrade;
                             }
-                        } else { // If no current version (should ideally not happen if installed is true, but defensive)
+                        } else {
                             if (sortedAvailable.length > 0) {
                                 versionToAutoSelect = sortedAvailable[0];
                             }
@@ -301,7 +362,6 @@ function App() {
                 "load_apps",
                 undefined,
                 () => {
-                    // Success is primarily handled by the "apps" event listener updating state
                 },
                 (errorMessage, rawError) => {
                     console.error("Failed to initially load apps:", rawError);
@@ -337,69 +397,6 @@ function App() {
         };
     }, [updateStatus]);
 
-
-    const handleCloneApp = async (e: React.FormEvent) => {
-        e.preventDefault();
-        const trimmedUrl = repoUrl.trim();
-        if (trimmedUrl === "") {
-            updateStatus({
-                error: "Please enter a Git repository URL.",
-                info: null
-            });
-            return;
-        }
-
-        clearMessages();
-        setAppActionLoading(prev => ({...prev, cloning_app: true}));
-
-        let tempAppName = "new_app_cloning";
-        try {
-            const urlParts = trimmedUrl.split('/');
-            const lastPart = urlParts.pop() || "";
-            tempAppName = lastPart.replace(/\.git$/, "") || "new_app_cloning";
-        } catch (error) {
-            // ignore, use default
-        }
-        setStartingAppName(tempAppName);
-
-        setConsoleInitialMessage(`Initiating clone for app from '${trimmedUrl}'...`);
-        setIsInstallProcessRunning(true);
-        setCurrentPage('installConsole');
-
-        await invokeTauriCommandWrapper<void>(
-            "clone_app",
-            {url: trimmedUrl},
-            () => {
-                setRepoUrl("");
-            },
-            (errorMessage, rawError) => {
-                console.error("Failed to invoke clone_app:", rawError);
-                setConsoleInitialMessage(prev => `${prev}\nERROR (client-side): Failed to dispatch clone operation: ${errorMessage}`);
-            }
-        );
-    };
-
-    const handleInstallWithProfile = async (appName: string, profileName: string) => {
-        clearMessages();
-        setAppActionLoading(prev => ({...prev, [appName]: true}));
-        setStartingAppName(appName);
-        setConsoleInitialMessage(`Initiating install for '${appName}' with profile '${profileName}'...`);
-        setIsInstallProcessRunning(true);
-        setCurrentPage('installConsole');
-
-        await invokeTauriCommandWrapper<void>(
-            "setup_app",
-            {appName, profileName},
-            () => { /* Backend events will follow */
-            },
-            (errorMessage, rawError) => {
-                console.error(`Failed to invoke setup_app for ${appName} with profile ${profileName}:`, rawError);
-                setConsoleInitialMessage(prev => `${prev}\nERROR (client-side): Failed to dispatch install operation: ${errorMessage}`);
-            }
-        );
-    };
-
-
     const handleDeleteApp = async (appName: string) => {
         clearMessages();
         updateStatus({messageLoading: true});
@@ -408,7 +405,7 @@ function App() {
         await invokeTauriCommandWrapper<void>(
             "delete_app",
             {appName},
-            () => { /* Backend events or state updates handle success feedback */
+            () => {
             },
             (errorMessage, rawError) => {
                 console.error(`Failed to delete app ${appName}:`, rawError);
@@ -420,26 +417,6 @@ function App() {
         setAppActionLoading(prev => ({...prev, [appName]: false}));
     };
 
-    const handleStartApp = async (appName: string) => {
-        clearMessages();
-        setAppActionLoading(prev => ({...prev, [appName]: true}));
-        setStartingAppName(appName);
-        setConsoleInitialMessage(`Attempting to start app: ${appName}...`);
-        setIsStartAppProcessRunning(true);
-        setCurrentPage('startConsole');
-
-        await invokeTauriCommandWrapper<void>(
-            "start_app",
-            {appName},
-            () => { /* Backend events will update app state */
-            },
-            (errorMessage, rawError) => {
-                console.error(`Failed to start app ${appName}:`, rawError);
-                setConsoleInitialMessage(prev => `${prev}\nERROR (client-side): Failed to dispatch start operation: ${errorMessage}`);
-            }
-        );
-    };
-
     const handleStopApp = async (appName: string) => {
         clearMessages();
         updateStatus({messageLoading: true});
@@ -448,7 +425,7 @@ function App() {
         await invokeTauriCommandWrapper<void>(
             "stop_app",
             {appName},
-            () => { /* Backend events will update app state */
+            () => {
             },
             (errorMessage, rawError) => {
                 console.error(`Failed to stop app ${appName}:`, rawError);
@@ -506,7 +483,7 @@ function App() {
         await invokeTauriCommandWrapper<void>(
             "update_to_version",
             {appName, version, requirements: requirementsFile},
-            () => { /* Backend events will follow */
+            () => {
             },
             (errorMessage, rawError) => {
                 console.error(`Failed to invoke ${actionType.toLowerCase()} for ${appName} to version ${version}:`, rawError);
@@ -554,7 +531,6 @@ function App() {
         updateStatus({messageLoading: false});
         setAppActionLoading(prev => ({
             ...prev,
-            cloning_app: false,
             ...(startingAppName && {[startingAppName]: false})
         }));
         setStartingAppName(null);
@@ -629,7 +605,6 @@ function App() {
         );
     };
 
-    // Profile Change specific handlers
     const handleNavigateToChangeProfilePage = (appToChange: App) => {
         clearMessages();
         setAppForProfileChange(appToChange);
@@ -653,7 +628,7 @@ function App() {
         await invokeTauriCommandWrapper<void>(
             "setup_app",
             {appName, profileName: newProfileName},
-            () => { /* Backend events will follow */
+            () => {
             },
             (errorMessage, rawError) => {
                 console.error(`Failed to invoke setup_app for profile change on ${appName} to ${newProfileName}:`, rawError);
@@ -724,14 +699,6 @@ function App() {
     }, [status.info, status.error, status.messageLoading, updateStatus, currentPage]);
 
 
-    const isCloneButtonDisabled =
-        status.loading ||
-        repoUrl.trim() === "" ||
-        status.messageLoading ||
-        appActionLoading['cloning_app'] ||
-        currentPage !== 'list';
-
-    // Handlers for config changes
     const handleSettingChange = async (name: string, value: string | number) => {
         clearMessages();
         updateStatus({messageLoading: true});
@@ -739,23 +706,16 @@ function App() {
         await invokeTauriCommandWrapper<void>(
             'update_config_item',
             {name, value},
-            async () => { // This is onSuccess for 'update_config_item'
-                // Now, perform the second invoke for 'get_config_payload'
-                // Its error will be caught by the outer invokeTauriCommandWrapper's catch block
+            async () => {
                 const updatedConfigs = await invoke<ConfigItemFromRust[]>('get_config_payload');
                 setAllConfigs(updatedConfigs);
                 updateStatus({info: `${name} updated successfully.`, messageLoading: false});
             },
-            (errorMessage, rawError) => { // This onError handles failures from 'update_config_item' OR 'get_config_payload'
+            (errorMessage, rawError) => {
                 console.error(`Failed to update setting ${name}:`, rawError);
                 updateStatus({error: `Failed to update ${name}: ${errorMessage}`, messageLoading: false});
             }
         );
-        // The finally part (messageLoading false) is now handled inside success/error of updateStatus
-        // or implicitly by the success path finishing.
-        // If update_config_item fails, messageLoading is set to false in its error handler.
-        // If update_config_item succeeds but get_config_payload fails, messageLoading is also set to false.
-        // If both succeed, messageLoading is set to false.
     };
 
     const handleChangePipCacheDir = (newValue: string) => {
@@ -774,9 +734,7 @@ function App() {
     let pageContent;
 
     if (currentPage === 'installConsole' && startingAppName) {
-        const consoleTitle = appActionLoading['cloning_app'] && startingAppName.endsWith("_cloning")
-            ? `Cloning Progress: ${startingAppName.replace("_cloning", "")}`
-            : `Installing App: ${startingAppName}`;
+        const consoleTitle = `Installing App: ${startingAppName}`;
         pageContent = (
             <ConsolePage
                 title={consoleTitle}
@@ -826,7 +784,7 @@ function App() {
                 appName={startingAppName}
                 initialMessage={consoleInitialMessage}
                 onBack={handleBackFromRunningAppConsole}
-                isProcessing={isRunningAppConsoleOpen} // This controls the spinner visibility based on console state
+                isProcessing={isRunningAppConsoleOpen}
                 onProcessComplete={() => setIsRunningAppConsoleOpen(false)}
             />
         );
@@ -984,7 +942,7 @@ function App() {
             const currentPipCacheDir = (pipCacheConfig?.value as string) ?? "App Install Directory";
             const pipCacheDirOptions = (pipCacheConfig?.options as string[] | undefined) ?? ["System Default", "App Install Directory"];
 
-            const currentPythonVersion = (pythonVersionConfig?.value as string) ?? "3.12"; // Use actual default from Rust if possible
+            const currentPythonVersion = (pythonVersionConfig?.value as string) ?? "3.12";
             const pythonVersionOptions = (pythonVersionConfig?.options as string[] | undefined) ?? (pythonVersionConfig ? [pythonVersionConfig.default_value as string] : ["3.12"]);
 
             const currentPipIndexUrl = pipIndexUrlConfig ? (pipIndexUrlConfig.value as string) : "";
@@ -1012,51 +970,13 @@ function App() {
                 />
             );
         }
-    } else { // Default to 'list' page
+    } else {
         pageContent = (
             <Container maxWidth="lg" sx={{py: 3}}>
-                <Box sx={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2}}>
-                    <Typography variant="h4" component="h1" sx={{flexGrow: 1}}>
-                        Apps
-                    </Typography>
+                <Box sx={{display: 'flex', justifyContent: 'flex-end', alignItems: 'center', mb: 2}}>
                     <IconButton onClick={navigateToSettings} color="inherit" aria-label="settings" title="Settings">
                         <SettingsIcon/>
                     </IconButton>
-                </Box>
-
-                <Box component="form" onSubmit={handleCloneApp} sx={{mb: 3}}>
-                    <Grid container spacing={2} alignItems="center">
-                        <Grid item xs={12} sm>
-                            <TextField
-                                id="repo-url-input"
-                                label="Python Git Repository URL"
-                                value={repoUrl}
-                                onChange={(e) => {
-                                    setRepoUrl(e.currentTarget.value);
-                                    if (!status.messageLoading) clearMessages();
-                                }}
-                                placeholder="Enter a Python Git Repository Url"
-                                disabled={status.loading || status.messageLoading || appActionLoading['cloning_app'] || currentPage !== 'list'}
-                                fullWidth
-                                variant="outlined"
-                            />
-                        </Grid>
-                        <Grid item xs={12} sm="auto">
-                            <Button
-                                type="submit"
-                                variant="contained"
-                                color="primary"
-                                disabled={isCloneButtonDisabled}
-                                startIcon={appActionLoading['cloning_app'] ?
-                                    <CircularProgress size={20} color="inherit"/> :
-                                    <CloudUpload/>}
-                                fullWidth
-                                sx={{height: '56px'}}
-                            >
-                                {appActionLoading['cloning_app'] ? "Initiating..." : "Add App"}
-                            </Button>
-                        </Grid>
-                    </Grid>
                 </Box>
 
                 {status.messageLoading && currentPage === 'list' && (
@@ -1100,7 +1020,7 @@ function App() {
                             const isEffectivelyInstalling = isRunning && !isInstalled;
 
                             const isThisAppLoadingAction = appActionLoading[app.name] || false;
-                            const disableGlobalActions = appActionLoading['cloning_app'] || currentPage !== 'list' || status.messageLoading;
+                            const disableGlobalActions = currentPage !== 'list' || status.messageLoading;
                             const disableRowActions = disableGlobalActions || isThisAppLoadingAction;
 
 
@@ -1165,9 +1085,8 @@ function App() {
                                             <Stack direction={{xs: 'column', sm: 'row'}} spacing={1}
                                                    sx={{mb: 1, flexWrap: 'wrap'}} alignItems="center">
 
-                                                {/* App Lifecycle Buttons */}
                                                 {isInstalled ? (
-                                                    isRunning ? ( // Installed and Running
+                                                    isRunning ? (
                                                         <>
                                                             <Button
                                                                 variant="outlined"
@@ -1192,7 +1111,7 @@ function App() {
                                                                 Console
                                                             </Button>
                                                         </>
-                                                    ) : ( // Installed and Not Running
+                                                    ) : (
                                                         <Button
                                                             variant="outlined"
                                                             color="success"
@@ -1206,71 +1125,48 @@ function App() {
                                                             {(isThisAppLoadingAction && startingAppName === app.name && currentPage === 'startConsole') ? "Starting..." : "Start App"}
                                                         </Button>
                                                     )
-                                                ) : isEffectivelyInstalling ? ( // Not installed, but running (installing)
+                                                ) : isEffectivelyInstalling ? (
                                                     <>
                                                         <Button
                                                             variant="outlined"
                                                             color="info"
                                                             size="small"
                                                             startIcon={<OpenInNew/>}
-                                                            onClick={() => handleOpenRunningAppConsole(app.name)} // Will show installation log
+                                                            onClick={() => handleOpenRunningAppConsole(app.name)}
                                                             disabled={disableRowActions}
                                                         >
                                                             Console
                                                         </Button>
                                                     </>
-                                                ) : ( // Not installed and Not running
-                                                    <>
-                                                        {app.config && app.config.profiles && app.config.profiles.length > 1 ? (
-                                                            <Button
-                                                                variant="contained"
-                                                                color="primary"
-                                                                size="small"
-                                                                startIcon={<Build/>}
-                                                                onClick={() => {
-                                                                    setProfileChoiceApp(app);
-                                                                    let initialProfile = app.current_profile;
-                                                                    if (!app.config.profiles.find(p => p.name === initialProfile)) {
-                                                                        initialProfile = app.config.profiles[0]?.name || "default";
-                                                                    }
-                                                                    setSelectedProfileForInstall(initialProfile);
-                                                                    setCurrentPage('profileChooser');
-                                                                }}
-                                                                disabled={disableGlobalActions}
-                                                            >
-                                                                Choose Profile & Install
-                                                            </Button>
-                                                        ) : (
-                                                            <Button
-                                                                variant="contained"
-                                                                color="primary"
-                                                                size="small"
-                                                                startIcon={(isThisAppLoadingAction && startingAppName === app.name && (currentPage === 'installConsole' || isInstallProcessRunning)) ?
-                                                                    <CircularProgress size={16} color="inherit"/> :
-                                                                    <Build/>}
-                                                                onClick={() => handleInstallWithProfile(app.name, app.current_profile || app.config?.profiles?.[0]?.name || "default")}
-                                                                disabled={disableRowActions || (isThisAppLoadingAction && startingAppName === app.name && (currentPage === 'installConsole' || isInstallProcessRunning))}
-                                                            >
-                                                                {(isThisAppLoadingAction && startingAppName === app.name && (currentPage === 'installConsole' || isInstallProcessRunning)) ? "Installing..." : "Install"}
-                                                            </Button>
-                                                        )}
-                                                    </>
+                                                ) : (
+                                                    <Button
+                                                        variant="contained"
+                                                        color="primary"
+                                                        size="small"
+                                                        startIcon={(isThisAppLoadingAction && startingAppName === app.name && (currentPage === 'installConsole' || isInstallProcessRunning)) ?
+                                                            <CircularProgress size={16} color="inherit"/> :
+                                                            <Build/>}
+                                                        onClick={() => handleInstallClick(app)}
+                                                        disabled={disableRowActions || (isThisAppLoadingAction && startingAppName === app.name && (currentPage === 'installConsole' || isInstallProcessRunning))}
+                                                    >
+                                                        {(isThisAppLoadingAction && startingAppName === app.name && (currentPage === 'installConsole' || isInstallProcessRunning)) ? "Installing..." : "Install"}
+                                                    </Button>
                                                 )}
 
-                                                {/* Delete Button - common to most states */}
-                                                <Button
-                                                    variant="outlined"
-                                                    color="error"
-                                                    size="small"
-                                                    startIcon={isThisAppLoadingAction && (currentPage === 'installConsole' || currentPage === 'profileChangeConsole' || currentPage === 'versionChangeConsole' || (isRunning && startingAppName === app.name)) ?
-                                                        <CircularProgress size={16} color="inherit"/> : <Delete/>}
-                                                    onClick={() => handleDeleteApp(app.name)}
-                                                    disabled={disableGlobalActions || (isThisAppLoadingAction && startingAppName === app.name && (isRunning || currentPage === 'installConsole' || currentPage === 'profileChangeConsole' || currentPage === 'versionChangeConsole'))}
-                                                >
-                                                    {isThisAppLoadingAction && startingAppName === app.name && (isRunning || currentPage === 'installConsole' || currentPage === 'profileChangeConsole' || currentPage === 'versionChangeConsole') ? "Deleting..." : "Delete"}
-                                                </Button>
+                                                {isInstalled && (
+                                                    <Button
+                                                        variant="outlined"
+                                                        color="error"
+                                                        size="small"
+                                                        startIcon={isThisAppLoadingAction && (currentPage === 'installConsole' || currentPage === 'profileChangeConsole' || currentPage === 'versionChangeConsole' || (isRunning && startingAppName === app.name)) ?
+                                                            <CircularProgress size={16} color="inherit"/> : <Delete/>}
+                                                        onClick={() => handleDeleteApp(app.name)}
+                                                        disabled={disableGlobalActions || (isThisAppLoadingAction && startingAppName === app.name && (isRunning || currentPage === 'installConsole' || currentPage === 'profileChangeConsole' || currentPage === 'versionChangeConsole'))}
+                                                    >
+                                                        {isThisAppLoadingAction && startingAppName === app.name && (isRunning || currentPage === 'installConsole' || currentPage === 'profileChangeConsole' || currentPage === 'versionChangeConsole') ? "Deleting..." : "Delete"}
+                                                    </Button>
+                                                )}
 
-                                                {/* Change Profile Button - if installed, not running, and has profiles */}
                                                 {isInstalled && !isRunning && app.config?.profiles && app.config.profiles.length > 1 && (
                                                     <Button
                                                         variant="outlined"
@@ -1286,7 +1182,6 @@ function App() {
                                                 )}
                                             </Stack>
 
-                                            {/* Version Management UI - if installed, not running, has current version, and available versions */}
                                             {isInstalled && !isRunning && app.current_version && availableVersionsForSelect.length > 0 && (
                                                 <Stack direction={{xs: 'column', sm: 'row'}} spacing={1}
                                                        alignItems="center"
@@ -1342,7 +1237,6 @@ function App() {
                                                     re-installing or setting a version if available.
                                                 </Typography>
                                             )}
-                                            {/* Informational text if no versions or profiles are available for modification */}
                                             {isInstalled && !isRunning && app.current_version && availableVersionsForSelect.length === 0 &&
                                                 (!app.config?.profiles || app.config.profiles.length <= 1) && (
                                                     <Typography variant="caption" display="block"
@@ -1351,7 +1245,7 @@ function App() {
                                                     </Typography>
                                                 )}
                                             {isInstalled && !isRunning && app.current_version && availableVersionsForSelect.length === 0 &&
-                                                (app.config?.profiles && app.config.profiles.length > 1) && ( // No versions, but profiles available
+                                                (app.config?.profiles && app.config.profiles.length > 1) && (
                                                     <Typography variant="caption" display="block"
                                                                 sx={{mt: 1, fontStyle: 'italic'}}>
                                                         No other versions available. You can change the profile.

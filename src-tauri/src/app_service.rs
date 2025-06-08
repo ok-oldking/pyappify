@@ -1,5 +1,5 @@
 use crate::{
-    app::{read_embedded_app, Config as AppConfig, YML_FILE_NAME},
+    app::{read_embedded_app, YML_FILE_NAME},
     emit_error_finish, emit_info, emit_success_finish, emitter, err, execute_python, git,
     python_env,
     utils::path,
@@ -21,7 +21,8 @@ use tokio::task;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
-use crate::app::{default_profile_fn, load_config_from_yml, App};
+use crate::app::{update_app_from_yml, App};
+use crate::git::ensure_repository;
 use crate::utils::error::Error;
 use crate::utils::file;
 use crate::utils::path::{get_app_base_path, get_app_working_dir_path};
@@ -107,28 +108,6 @@ pub(crate) async fn load_app_details(app_name: String) -> Result<App> {
         .await
         .with_context(|| format!("Error loading app.json for {}", app_name))?;
 
-    let git_origin_url = if repo_path.exists() && repo_path.join(".git").exists() {
-        match git::open_repository(&repo_path) {
-            Ok(repo) => match git::get_repository_origin_url(&repo) {
-                Ok(url_opt) => url_opt,
-                Err(e) => {
-                    warn!(
-                        "Failed to get origin URL for repo {}: {}",
-                        repo_path.display(),
-                        e
-                    );
-                    None
-                }
-            },
-            Err(e) => {
-                warn!("Failed to open repo {}: {}", repo_path.display(), e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     let available_versions_from_git =
         match git::get_tag_versions(&app_name, repo_path.clone()).await {
             Ok(versions) => versions,
@@ -171,13 +150,13 @@ pub(crate) async fn load_app_details(app_name: String) -> Result<App> {
         None
     };
 
-    let mut app_to_store: App;
+    let mut app_to_store: App = get_app_by_name(app_name.as_str()).await?;
 
     if let Some(mut loaded_app) = app_from_json {
         debug!(
             "Found app.json for {}, updating with git info and yml.",
             app_name
-        );        
+        );
         info!(
             "{} current_version_from_git {:?}, available_versions {}",
             app_name,
@@ -187,24 +166,6 @@ pub(crate) async fn load_app_details(app_name: String) -> Result<App> {
         loaded_app.available_versions = available_versions_from_git;
         loaded_app.current_version = current_version_from_git;
         app_to_store = loaded_app;
-    } else {
-        debug!("No app.json for {}, creating new App entry.", app_name);
-        let url_for_new_app = git_origin_url.ok_or_else(|| {
-            anyhow!(
-                "Cannot create new app '{}': no app.json and no .git/origin URL.",
-                app_name
-            )
-        })?;
-        app_to_store = App {
-            name: app_name.clone(),
-            current_version: current_version_from_git,
-            available_versions: available_versions_from_git,
-            running: false,
-            last_start: Utc::now(),
-            current_profile: default_profile_fn(),
-            installed: false,
-            config: AppConfig::default(),
-        };
     }
 
     app_to_store.read_and_set_config_from_working_dir();
@@ -224,7 +185,7 @@ pub(crate) async fn load_app_details(app_name: String) -> Result<App> {
         app_to_store.name,
         app_to_store.installed,
         app_to_store.current_profile,
-        app_to_store.config.profiles.len(),
+        app_to_store.profiles.len(),
         app_to_store.last_start.to_rfc3339(),
     );
 
@@ -261,9 +222,9 @@ pub async fn load_apps() -> Result<(), Error> {
         }
     }
 
-    info!("Loading the single, embedded application.");
-    let app_template = read_embedded_app();
+    let mut app_template = read_embedded_app();
     let app_name = app_template.name.clone();
+    info!("Loading the single, embedded application. profiles {:?}", app_template.profiles);
 
     let config_path = get_app_config_json_path(&app_name);
     if !config_path.exists() {
@@ -278,8 +239,10 @@ pub async fn load_apps() -> Result<(), Error> {
     match load_app_config_from_json(&app_name).await {
         Ok(Some(mut app)) => {
             app.running = false;
+            app_template.current_profile = app.current_profile;
+            app_template.current_version = app.current_version;
             let mut apps_map = APPS.lock().await;
-            apps_map.insert(app.name.clone(), app);
+            apps_map.insert(app.name.clone(), app_template);
         }
         Ok(None) => {
             err!("app.json for '{}' disappeared after creation.", app_name);
@@ -385,13 +348,18 @@ pub(crate) async fn emit_apps() {
 pub async fn get_update_notes(app_name: String, version: String) -> Result<Vec<String>, Error> {
     let app_lock = get_app_lock(&*app_name).await;
     let _guard = app_lock.lock().await;
+    let app = get_app_by_name(&app_name).await?;
+    Ok(git::get_commit_messages_for_version_diff(&app.get_repo_path(), &version).await?)
+}
+
+async fn get_app_by_name(app_name: &str) -> Result<App, Error> {
     let app = APPS
         .lock()
         .await
-        .get(&app_name)
+        .get(app_name)
         .cloned()
         .ok_or_else(|| anyhow!("App '{}' not found.", app_name))?;
-    Ok(git::get_commit_messages_for_version_diff(&app.get_repo_path(), &version).await?)
+    Ok(app)
 }
 
 pub async fn update_working_from_repo(app_name: &str) -> Result<()> {
@@ -434,6 +402,10 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
     let _guard = app_dir_lock.lock().await;
 
     let repo_path = path::get_app_repo_path(app_name);
+    let app = get_app_by_name(app_name).await?;
+
+    ensure_repository(&app).await?;
+
     let working_dir_path = get_app_working_dir_path(app_name);
 
     if !repo_path.exists() {
@@ -458,7 +430,10 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
     let yml_path = working_dir_path.join(YML_FILE_NAME);
     let yml_path_str = yml_path.to_string_lossy().into_owned();
 
-    let temp_app_config = load_config_from_yml(&yml_path_str);
+    let mut temp_app_for_config = read_embedded_app();
+    temp_app_for_config.name = app_name.to_string();
+    update_app_from_yml(&mut temp_app_for_config, &yml_path_str);
+    let temp_app_config = &temp_app_for_config;
 
     let final_profile_name_to_set: String;
     let profile_settings_for_setup = match temp_app_config.get_profile(profile_name) {
@@ -602,7 +577,11 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
 
     let yml_path_new = working_dir_path.join(YML_FILE_NAME);
     let yml_path_str_new = yml_path_new.to_string_lossy().into_owned();
-    let new_app_config_from_yml = load_config_from_yml(&yml_path_str_new);
+
+    let mut temp_app_for_config = read_embedded_app();
+    temp_app_for_config.name = app_name.to_string();
+    update_app_from_yml(&mut temp_app_for_config, &yml_path_str_new);
+    let new_app_config_from_yml = &temp_app_for_config;
 
     let new_default_profile = new_app_config_from_yml
         .get_profile("default")
@@ -717,58 +696,43 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
     let app_dir_lock = get_app_lock(&app_name).await;
     let _guard = app_dir_lock.lock().await;
 
-    let (app_config_for_start, profile_name_to_use, current_profile_admin): (
-        AppConfig,
-        String,
-        bool,
-    ) = {
+    let (profile_to_run_with, working_dir) = {
         let mut apps_map = APPS.lock().await;
         if let Some(app) = apps_map.get_mut(&app_name) {
             app.last_start = Utc::now();
-            let profile_settings = app.get_current_profile_settings();
-            let config_clone = app.config.clone();
-            let profile_name_clone = app.current_profile.clone();
-            let admin_status = profile_settings.admin;
+
+            let profile_settings = app.get_current_profile_settings().clone();
 
             let app_to_save = app.clone();
-            drop(apps_map);
+            drop(apps_map); // Drop lock before async I/O
+
             if let Err(e) = save_app_config_to_json(&app_to_save).await {
                 error!(
                     "Failed to save app config for {} after updating last_start: {:?}.",
                     app_name, e
                 );
             }
-            (config_clone, profile_name_clone, admin_status)
+            (
+                profile_settings,
+                get_app_working_dir_path(&app_name),
+            )
         } else {
-            drop(apps_map);
-            warn!("App '{}' not in APPS map. Aborting start.", app_name);
             return Err(anyhow!("App '{}' not found.", app_name).into());
         }
     };
 
-    let profile_to_run_with = app_config_for_start
-        .get_profile(&profile_name_to_use)
-        .or_else(|| app_config_for_start.get_profile("default"))
-        .ok_or_else(|| {
-            anyhow!(
-                "Profile '{}' (or default) not in config for '{}'.",
-                profile_name_to_use,
-                app_name
-            )
-        })?;
 
     let main_script_relative = &profile_to_run_with.main_script;
     if main_script_relative.is_empty() {
         return Err(anyhow!(
             "Main script empty for profile '{}' in app '{}'.",
-            profile_name_to_use,
+            profile_to_run_with.name,
             app_name
         )
             .into());
     }
 
-    let working_dir = get_app_working_dir_path(&app_name);
-    let script_path = find_main_script(&app_name, &*working_dir, main_script_relative)?;
+    let script_path = find_main_script(&app_name, &working_dir, main_script_relative)?;
 
     let venv_path = working_dir.join(".venv");
     let python_exe_in_venv = venv_path.join(if cfg!(windows) {
@@ -788,15 +752,18 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
 
     info!(
         "Starting app '{}' (profile '{}', admin: {}, script: '{}')",
-        app_name, profile_name_to_use, current_profile_admin, main_script_relative
+        app_name,
+        profile_to_run_with.name,
+        profile_to_run_with.is_admin(),
+        main_script_relative
     );
 
     execute_python::run_python_script(
         app_name.as_str(),
-        venv_path.as_ref(),
-        &*script_path,
-        working_dir.clone().as_ref(),
-        profile_to_run_with.admin,
+        &venv_path,
+        &script_path,
+        &working_dir,
+        profile_to_run_with.is_admin(),
         profile_to_run_with.python_path.clone(),
     )
         .await?;

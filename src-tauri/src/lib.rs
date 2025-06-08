@@ -3,7 +3,6 @@ mod config_manager;
 mod emitter;
 mod execute_python;
 mod git;
-mod install;
 mod python_env;
 mod submodule;
 mod utils;
@@ -16,52 +15,6 @@ use crate::utils::logger::LoggerBuilder;
 use std::env;
 use tauri::{Manager};
 use tracing::{debug, info};
-
-#[tauri::command]
-async fn clone_app(url: String) {
-    debug!("calling clone_app {}", url);
-
-    let app = match install::clone_app(url.clone()).await {
-        Ok(a) => a,
-        Err(e) => {
-            let error_str = e.to_string();
-            let app_name_from_url = url
-                .split('/')
-                .last()
-                .filter(|s| !s.is_empty())
-                .unwrap_or("unknown_app")
-                .trim_end_matches(".git")
-                .to_string();
-            emit_error!(app_name_from_url.as_str(), error_str);
-            emit_error_finish!(app_name_from_url.as_str());
-            return;
-        }
-    };
-
-    if app.config.profiles.len() > 1 {
-        emit_custom_event("choose_profile", app);
-        return;
-    }
-
-    if let Err(e_setup) = app_service::setup_app(app.name.as_str(), "default").await {
-        if let Err(e_delete) = app_service::delete_app(app.name.as_str()).await {
-            let error_str = e_delete.to_string();
-            emit_error!(app.name.as_str(), error_str);
-            emit_error_finish!(app.name.as_str());
-            return;
-        }
-
-        let error_str = e_setup.to_string();
-        emit_error!(app.name.as_str(), error_str);
-        emit_error_finish!(app.name.as_str());
-        return;
-    }
-
-    load_app_details(app.name.clone()).await.unwrap();
-
-    emit_apps().await;
-    emit_success_finish!(app.name.as_str());
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -137,7 +90,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            clone_app,
             start_app,
             stop_app,
             load_apps,
