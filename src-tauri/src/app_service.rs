@@ -1,0 +1,1232 @@
+// src/app_service.rs
+use crate::{
+    emit_error_finish, emit_info, emit_success_finish, emitter, err, execute_python, git,
+    python_env,
+    utils::path,
+    utils::process,
+    utils::yaml_parser::{Config as AppConfig, Profile as AppProfile},
+};
+use chrono::{DateTime, Utc};
+use futures::future::join_all;
+use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use sysinfo::{Pid, ProcessesToUpdate, System};
+use tokio::sync::Mutex;
+use tokio::task;
+use tokio::time::{interval, Duration};
+use tracing::{debug, error, info, warn};
+
+use crate::utils::error::Error;
+use crate::utils::file;
+use crate::utils::path::{get_app_base_path, get_apps_dir};
+use crate::utils::yaml_parser::load_config_from_yaml;
+use anyhow::{anyhow, bail, Context, Result};
+use runas;
+
+fn default_profile_fn() -> String {
+    "default".to_string()
+}
+
+fn default_last_start_fn() -> DateTime<Utc> {
+    Utc::now()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct App {
+    pub name: String,
+    pub url: String,
+    pub current_version: Option<String>,
+    pub available_versions: Vec<String>,
+    #[serde(default)]
+    pub running: bool,
+    #[serde(default = "default_last_start_fn")]
+    pub last_start: DateTime<Utc>,
+    #[serde(default = "default_profile_fn")]
+    pub current_profile: String,
+    #[serde(default)]
+    pub installed: bool, // Added installed state, defaults to false
+    #[serde(default)] // Config will be AppConfig::default() after deserialization
+    pub config: AppConfig,
+}
+
+impl App {
+    pub fn get_repo_path(&self) -> PathBuf {
+        path::get_app_repo_path(&self.name)
+    }
+
+    pub fn get_current_profile_settings(&self) -> &AppProfile {
+        self.config.get_profile(&self.current_profile)
+            .or_else(|| {
+                warn!(
+                    "Current profile '{}' not found for app '{}'. Falling back to 'default' profile.",
+                    self.current_profile, self.name
+                );
+                self.config.get_profile("default")
+            })
+            .expect("Critical: Default profile missing in AppConfig.")
+    }
+
+    fn read_and_set_config_from_working_dir(&mut self) {
+        let working_dir = get_app_working_dir_path(&self.name);
+        let ok_yaml_path = working_dir.join(OK_YAML_NAME);
+        let ok_yaml_path_str = ok_yaml_path.to_string_lossy().into_owned();
+
+        self.config = load_config_from_yaml(&ok_yaml_path_str);
+        debug!(
+            "Refreshed app.config for '{}' from {}",
+            self.name,
+            ok_yaml_path.display()
+        );
+    }
+}
+
+pub static APPS: Lazy<Mutex<HashMap<String, App>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+pub static APP_DIR_LOCKS: Lazy<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+const WORKING_DIR_NAME: &str = "working";
+const OK_YAML_NAME: &str = "ok.yml";
+
+fn is_app_running(sys: &System, app_working_dir: &Path) -> bool {
+    !process::get_pids_related_to_app_dir(sys, &PathBuf::from(app_working_dir)).is_empty()
+}
+
+fn get_app_config_json_path(app_name: &str) -> PathBuf {
+    get_app_base_path(app_name).join("app.json")
+}
+
+async fn save_app_config_to_json(app: &App) -> Result<()> {
+    let config_path = get_app_config_json_path(&app.name);
+    let json_data = serde_json::to_string_pretty(app)
+        .with_context(|| format!("Failed to serialize app config for {}", app.name))?;
+    if let Some(parent) = config_path.parent() {
+        tokio::fs::create_dir_all(parent).await.with_context(|| {
+            format!(
+                "Failed to create parent directory for app.json for {}",
+                app.name
+            )
+        })?;
+    }
+    tokio::fs::write(&config_path, json_data)
+        .await
+        .with_context(|| format!("Failed to write app.json for {}", app.name))?;
+    debug!(
+        "Saved app config for {} to {}",
+        app.name,
+        config_path.display()
+    );
+    Ok(())
+}
+
+async fn load_app_config_from_json(app_name: &str) -> Result<Option<App>> {
+    let config_path = get_app_config_json_path(app_name);
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    let json_data = tokio::fs::read_to_string(&config_path)
+        .await
+        .with_context(|| format!("Failed to read app.json for {}", app_name))?;
+
+    match serde_json::from_str::<App>(&json_data) {
+        Ok(mut app) => {
+            if app.name != app_name {
+                warn!("App name mismatch in app.json ('{}') and directory ('{}'). Correcting to directory name: '{}'.", app.name, app_name, app_name);
+                app.name = app_name.to_string();
+            }
+            // app.config is AppConfig::default() here due to #[serde(default)] if missing in json
+            // app.installed will be deserialized or default to false
+            Ok(Some(app))
+        }
+        Err(e) => {
+            error!(
+                "Failed to deserialize app.json for {}: {}. Content sample: {}",
+                app_name,
+                e,
+                json_data.chars().take(200).collect::<String>()
+            );
+            Err(anyhow!(
+                "Failed to deserialize app.json for {}: {}",
+                app_name,
+                e
+            ))
+        }
+    }
+}
+
+pub(crate) async fn load_app_details(app_name: String) -> Result<App> {
+    let repo_path = path::get_app_repo_path(&app_name);
+    let app_name_log_val = app_name.clone();
+    debug!(
+        "Loading/Syncing app details for '{}' from its repo path '{}'",
+        app_name_log_val,
+        repo_path.display()
+    );
+
+    // app_from_json will have AppConfig from json (or default)
+    // and `installed` will be loaded from JSON or default to false.
+    let app_from_json = load_app_config_from_json(&app_name)
+        .await
+        .with_context(|| format!("Error loading app.json for {}", app_name))?;
+
+    let git_origin_url = if repo_path.exists() && repo_path.join(".git").exists() {
+        match git::open_repository(&repo_path) {
+            Ok(repo) => match git::get_repository_origin_url(&repo) {
+                Ok(url_opt) => url_opt,
+                Err(e) => {
+                    warn!(
+                        "Failed to get origin URL for repo {}: {}",
+                        repo_path.display(),
+                        e
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                warn!("Failed to open repo {}: {}", repo_path.display(), e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let available_versions_from_git =
+        match git::get_tag_versions(&app_name, repo_path.clone()).await {
+            Ok(versions) => versions,
+            Err(e_str) => {
+                warn!(
+                    "Failed to get remote versions for {}: {}",
+                    app_name_log_val, e_str
+                );
+                Vec::new()
+            }
+        };
+
+    let current_version_from_git = if repo_path.exists() && repo_path.join(".git").exists() {
+        match git::open_repository(&repo_path) {
+            Ok(repo) => match git::determine_current_checked_out_tag(&repo) {
+                Ok(version_opt) => version_opt,
+                Err(e_str) => {
+                    warn!(
+                        "Failed to determine current tag for {}: {}",
+                        app_name_log_val, e_str
+                    );
+                    None
+                }
+            },
+            Err(e_str) => {
+                warn!(
+                    "Failed to open local repo {}: {}",
+                    repo_path.display(),
+                    e_str
+                );
+                None
+            }
+        }
+    } else {
+        if repo_path.exists() {
+            warn!("Repo path {} is not a git repo.", repo_path.display());
+        } else {
+            warn!("Repo path {} does not exist.", repo_path.display());
+        }
+        None
+    };
+
+    let mut app_to_store: App;
+
+    if let Some(mut loaded_app) = app_from_json {
+        // loaded_app.config is from app.json or AppConfig::default() at this point
+        // loaded_app.installed is from JSON or false
+        debug!(
+            "Found app.json for {}, updating with git info and ok.yaml.",
+            app_name
+        );
+        if let Some(ref origin_url_git) = git_origin_url {
+            if loaded_app.url.is_empty() && !origin_url_git.is_empty() {
+                loaded_app.url = origin_url_git.clone();
+            } else if !loaded_app.url.is_empty()
+                && !origin_url_git.is_empty()
+                && loaded_app.url != *origin_url_git
+            {
+                warn!(
+                    "URL mismatch for app {}: app.json '{}', git remote '{}'. Using app.json URL.",
+                    app_name, loaded_app.url, origin_url_git
+                );
+            }
+        } else if loaded_app.url.is_empty() {
+            error!(
+                "URL for app {} empty in app.json and not found in git.",
+                app_name
+            );
+        }
+        info!(
+            "{} current_version_from_git {:?}, available_versions {}",
+            app_name,
+            current_version_from_git,
+            available_versions_from_git.len()
+        );
+        loaded_app.available_versions = available_versions_from_git;
+        loaded_app.current_version = current_version_from_git;
+        app_to_store = loaded_app;
+    } else {
+        debug!("No app.json for {}, creating new App entry.", app_name);
+        let url_for_new_app = git_origin_url.ok_or_else(|| {
+            anyhow!(
+                "Cannot create new app '{}': no app.json and no .git/origin URL.",
+                app_name
+            )
+        })?;
+        app_to_store = App {
+            name: app_name.clone(),
+            url: url_for_new_app,
+            current_version: current_version_from_git,
+            available_versions: available_versions_from_git,
+            running: false,
+            last_start: Utc::now(),
+            current_profile: default_profile_fn(),
+            installed: false,             // New apps are not installed by default
+            config: AppConfig::default(), // Initial config is default
+        };
+    }
+
+    // This is where config is loaded from ok.yaml, OVERWRITING any config from app.json or default
+    app_to_store.read_and_set_config_from_working_dir();
+
+    // Save app to json (config field WILL be serialized from app_to_store.config, installed field will be saved)
+    save_app_config_to_json(&app_to_store).await?;
+
+    let mut app_for_map = app_to_store.clone();
+    // Set running to false; periodic update will correct this.
+    // This ensures consistency, as running status is volatile.
+    app_for_map.running = false;
+    // Ensure app_for_map.config is also from ok.yaml (already done as it's a clone of app_to_store which had read_and_set_config_from_working_dir called)
+    // The line app_for_map.read_and_set_config_from_working_dir(); is redundant if app_to_store was just processed, but harmless.
+    // For safety, if app_to_store might not have had its config freshly loaded (e.g., future refactor), this is a safeguard.
+    // Given current flow, it's fine.
+
+    {
+        let mut apps_map = APPS.lock().await;
+        apps_map.insert(app_for_map.name.clone(), app_for_map.clone());
+    }
+
+    info!(
+        "Loaded/synced app: {} (Installed: {}, Profile: {} ({}), Config Python: {}, Last Start: {})",
+        app_to_store.name,
+        app_to_store.installed, // Log installed state
+        app_to_store.current_profile,
+        app_to_store.config.profiles.len(),
+        app_to_store.config.requires_python, // Now this refers to the config from ok.yaml
+        app_to_store.last_start.to_rfc3339(),
+    );
+
+    Ok(app_to_store)
+}
+
+pub async fn get_apps_as_vec() -> Vec<App> {
+    let mut apps_vec: Vec<App> = APPS.lock().await.values().cloned().collect();
+    apps_vec.sort_unstable_by(|a, b| {
+        b.running
+            .cmp(&a.running)
+            .then_with(|| b.last_start.cmp(&a.last_start))
+    });
+    apps_vec
+}
+
+pub(crate) async fn get_app_lock(app_name: &str) -> Arc<Mutex<()>> {
+    let mut locks = APP_DIR_LOCKS.lock().await;
+    locks
+        .entry(app_name.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+fn get_app_working_dir_path(app_name: &str) -> PathBuf {
+    get_app_base_path(app_name).join(WORKING_DIR_NAME)
+}
+
+#[tauri::command]
+pub async fn load_apps() -> Result<(), Error> {
+    {
+        let apps_map = APPS.lock().await;
+        if !apps_map.is_empty() {
+            info!("Apps already loaded ({}). Emitting.", apps_map.len());
+            drop(apps_map);
+            update_apps_from_disk().await?;
+            return Ok(());
+        }
+    }
+
+    let apps_path = get_apps_dir();
+    info!("Loading apps from: {:?}", apps_path);
+    if !apps_path.exists() {
+        info!("Apps dir '{:?}' not found. Creating.", apps_path);
+        tokio::fs::create_dir_all(&apps_path)
+            .await
+            .with_context(|| format!("Failed to create apps dir: {:?}", apps_path))?;
+        emit_apps().await; // Emit empty list
+        return Ok(());
+    }
+
+    let mut entries = tokio::fs::read_dir(apps_path)
+        .await
+        .with_context(|| "Failed to read apps dir")?;
+
+    let mut app_names_to_process: Vec<String> = Vec::new();
+    let mut dirs_to_delete: Vec<PathBuf> = Vec::new();
+
+    while let Some(entry_res) = entries
+        .next_entry()
+        .await
+        .with_context(|| "Failed to get next entry in apps dir")?
+    {
+        let path = entry_res.path();
+        if path.is_dir() {
+            if let Some(app_name_osstr) = path.file_name() {
+                let app_name_str = match app_name_osstr.to_str() {
+                    Some(s) => s.to_string(),
+                    None => {
+                        warn!("Skipping non-UTF8 dir: {:?}", app_name_osstr);
+                        continue;
+                    }
+                };
+
+                let app_config_json_file_path = get_app_config_json_path(&app_name_str);
+                if app_config_json_file_path.exists() {
+                    app_names_to_process.push(app_name_str);
+                } else {
+                    warn!(
+                        "Dir {} (name '{}') missing app.json. Scheduling for deletion.",
+                        path.display(),
+                        app_name_str
+                    );
+                    // Store full path for deletion, not app_name_str
+                    dirs_to_delete.push(path.clone());
+                }
+            }
+        }
+    }
+
+    // Delete marked directories
+    for dir_to_delete in dirs_to_delete {
+        info!(
+            "Deleting app dir (missing app.json): {}",
+            dir_to_delete.display()
+        );
+        if let Err(del_err) = tokio::fs::remove_dir_all(&dir_to_delete).await {
+            error!(
+                "Failed to delete dir {}: {}",
+                dir_to_delete.display(),
+                del_err
+            );
+        }
+    }
+
+    info!(
+        "Phase 1: Loading basic app info from app.json files for {} potential apps...",
+        app_names_to_process.len()
+    );
+    let mut first_pass_load_errors: Vec<anyhow::Error> = Vec::new();
+
+    for app_name in &app_names_to_process {
+        match load_app_config_from_json(app_name).await {
+            Ok(Some(mut app)) => {
+                // app.config is from app.json or AppConfig::default() here.
+                // app.installed is loaded from JSON or defaults to false.
+                // Set running status to false; periodic update will correct it.
+                app.running = false;
+                let mut apps_map = APPS.lock().await;
+                apps_map.insert(app.name.clone(), app);
+            }
+            Ok(None) => {
+                warn!("app.json for '{}' was not found or empty during load attempt, though initially detected. Skipping.", app_name);
+            }
+            Err(e) => {
+                error!(
+                    "Failed to load basic info for app '{}' from app.json: {:?}",
+                    app_name, e
+                );
+                first_pass_load_errors
+                    .push(e.context(format!("Phase 1 load for app '{}'", app_name)));
+            }
+        }
+    }
+
+    if !first_pass_load_errors.is_empty() {
+        let error_messages: Vec<String> = first_pass_load_errors
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect();
+        warn!(
+            "{} apps had errors during initial app.json load (Phase 1):\n - {}",
+            error_messages.len(),
+            error_messages.join("\n - ")
+        );
+    }
+
+    info!(
+        "Phase 1 finished. Emitting apps with basic info ({} apps loaded).",
+        APPS.lock().await.len()
+    );
+    emit_apps().await; // First emit
+
+    update_apps_from_disk().await?;
+    Ok(())
+}
+
+async fn update_apps_from_disk() -> Result<(), Error> {
+    let app_names_for_details: Vec<String> = APPS.lock().await.keys().cloned().collect();
+    info!(
+        "Phase 2: Loading full app details (git info, ok.yaml) for {} apps...",
+        app_names_for_details.len()
+    );
+
+    let mut load_detail_tasks = Vec::new();
+    for app_name_for_detail_load in app_names_for_details {
+        let task_app_name = app_name_for_detail_load.clone();
+        load_detail_tasks.push(tokio::spawn(async move {
+            let app_dir_lock = get_app_lock(&task_app_name).await;
+            let _guard = app_dir_lock.lock().await;
+            load_app_details(task_app_name).await
+        }));
+    }
+
+    let results = join_all(load_detail_tasks).await;
+    let mut second_pass_load_errors: Vec<anyhow::Error> = Vec::new();
+    for result in results {
+        match result {
+            Ok(Ok(_app_details)) => {
+                // APPS map is already updated by load_app_details.
+            }
+            Ok(Err(e)) => {
+                error!("App detail load task resulted in an error: {:?}", e);
+                second_pass_load_errors.push(e);
+            }
+            Err(join_error) => {
+                error!("App detail load task panicked: {:?}", join_error);
+                second_pass_load_errors.push(anyhow::Error::from(join_error));
+            }
+        }
+    }
+
+    info!(
+        "Phase 2 (full detail loading) finished. {} apps in memory.",
+        APPS.lock().await.len()
+    );
+    if !second_pass_load_errors.is_empty() {
+        let error_messages: Vec<String> = second_pass_load_errors
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect();
+        error!(
+            "{} apps had errors during full detail loading (Phase 2):\n - {}",
+            error_messages.len(),
+            error_messages.join("\n - ")
+        );
+    }
+
+    emit_apps().await; // Second emit with full details
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_app(app_name: &str) -> Result<(), Error> {
+    info!("Attempting to delete app: {}", app_name);
+    let app_dir_lock = get_app_lock(app_name).await;
+    let _guard = app_dir_lock.lock().await;
+
+    if APPS.lock().await.remove(app_name).is_none() {
+        warn!("App '{}' not in memory. Checking disk.", app_name);
+    }
+
+    let app_base_path = get_app_base_path(app_name);
+    if app_base_path.exists() {
+        info!("Deleting dir: {}", app_base_path.display());
+        tokio::fs::remove_dir_all(&app_base_path)
+            .await
+            .with_context(|| format!("Failed to delete dir {}", app_base_path.display()))?;
+        info!("Deleted dir: {}", app_base_path.display());
+    } else {
+        info!("App dir {} not on disk.", app_base_path.display());
+    }
+    emit_apps().await;
+    Ok(())
+}
+
+pub(crate) async fn emit_apps() {
+    emitter::emit("apps", get_apps_as_vec().await);
+}
+
+#[tauri::command]
+pub async fn get_update_notes(app_name: String, version: String) -> Result<Vec<String>, Error> {
+    let app_lock = get_app_lock(&*app_name).await;
+    let _guard = app_lock.lock().await;
+    let app = APPS
+        .lock()
+        .await
+        .get(&app_name)
+        .cloned()
+        .ok_or_else(|| anyhow!("App '{}' not found.", app_name))?;
+    Ok(git::get_commit_messages_for_version_diff(&app.get_repo_path(), &version).await?)
+}
+
+pub async fn update_working_from_repo(app_name: &str) -> Result<()> {
+    let repo_path = path::get_app_repo_path(app_name);
+    let working_dir_path = get_app_working_dir_path(app_name);
+    info!(
+        "update_working_from_repo {}: repo_path = {}, working_dir_path = {}",
+        app_name,
+        repo_path.display(),
+        working_dir_path.display()
+    );
+
+    if !repo_path.exists() {
+        bail!("Repo for {} not at {}", app_name, repo_path.display());
+    }
+    if !working_dir_path.exists() {
+        tokio::fs::create_dir_all(&working_dir_path)
+            .await
+            .with_context(|| format!("Failed to create dir {}", working_dir_path.display()))?;
+    }
+
+    let task_repo_path = repo_path.clone();
+    let task_working_dir_path = working_dir_path.clone();
+    task::spawn_blocking(move || -> Result<()> {
+        file::copy_dir_recursive_excluding_sync(
+            &task_repo_path,
+            &task_working_dir_path,
+            &[".git"],
+        )?;
+        file::sync_delete_extra_files(&task_working_dir_path, &task_repo_path)?;
+        Ok(())
+    })
+    .await??;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Error> {
+    let app_dir_lock = get_app_lock(app_name).await;
+    let _guard = app_dir_lock.lock().await;
+
+    let repo_path = path::get_app_repo_path(app_name);
+    let working_dir_path = get_app_working_dir_path(app_name);
+
+    if !repo_path.exists() {
+        err!("Repo for {} not at {}", app_name, repo_path.display());
+    }
+
+    if working_dir_path.exists() {
+        info!(
+            "Removing existing working dir: {}",
+            working_dir_path.display()
+        );
+        tokio::fs::remove_dir_all(&working_dir_path)
+            .await
+            .with_context(|| format!("Failed to remove dir {}", working_dir_path.display()))?;
+    }
+    tokio::fs::create_dir_all(&working_dir_path)
+        .await
+        .with_context(|| format!("Failed to create dir {}", working_dir_path.display()))?;
+
+    update_working_from_repo(app_name).await?;
+
+    let ok_yaml_path = working_dir_path.join(OK_YAML_NAME);
+    let ok_yaml_path_str = ok_yaml_path.to_string_lossy().into_owned();
+
+    let temp_app_config = load_config_from_yaml(&ok_yaml_path_str);
+    let python_version_spec = &temp_app_config.requires_python;
+
+    let final_profile_name_to_set: String;
+    let profile_settings_for_setup = match temp_app_config.get_profile(profile_name) {
+        Some(profile) => {
+            final_profile_name_to_set = profile_name.to_string();
+            profile
+        }
+        None => {
+            if profile_name != "default" {
+                warn!(
+                    "Profile '{}' not found for setup in app '{}'. Falling back to 'default' profile.",
+                    profile_name, app_name
+                );
+            }
+            final_profile_name_to_set = "default".to_string();
+            temp_app_config.get_profile("default").ok_or_else(|| {
+                anyhow!(
+                    "Profile '{}' (and fallback 'default') not found in {} for app {}",
+                    profile_name,
+                    OK_YAML_NAME,
+                    app_name
+                )
+            })?
+        }
+    };
+    let requirements_relative_path = &profile_settings_for_setup.requirements;
+
+    let venv_python_exe = task::spawn_blocking({
+        let wd_path = working_dir_path.clone();
+        let py_spec = python_version_spec.to_string();
+        move || python_env::setup_python_venv(&wd_path, &py_spec).map_err(|e| anyhow!(e))
+    })
+    .await??;
+
+    if !requirements_relative_path.is_empty() {
+        let full_req_path = working_dir_path.join(requirements_relative_path);
+        if full_req_path.exists() {
+            info!(
+                "Requirements '{}' for profile '{}' found. Syncing.",
+                requirements_relative_path, final_profile_name_to_set
+            );
+            python_env::install_requirements(
+                app_name,
+                &venv_python_exe,
+                &full_req_path,
+                &working_dir_path,
+            )
+            .await?;
+        } else {
+            emit_error_finish!(app_name);
+            err!(
+                "Reqs '{}' (profile '{}') in {} not at {}. Skipping.",
+                requirements_relative_path,
+                final_profile_name_to_set,
+                OK_YAML_NAME,
+                full_req_path.display()
+            );
+        }
+    } else {
+        info!(
+            "No reqs in profile '{}' of {}. Skipping sync.",
+            final_profile_name_to_set, OK_YAML_NAME
+        );
+    }
+
+    {
+        let mut apps_map = APPS.lock().await;
+        if let Some(app) = apps_map.get_mut(app_name) {
+            app.installed = true;
+            app.current_profile = final_profile_name_to_set.clone(); // Update current_profile
+
+            let app_to_save = app.clone();
+            drop(apps_map); // Release lock before await operations
+
+            // Save app config to JSON after updating installed status and current_profile
+            if let Err(e) = save_app_config_to_json(&app_to_save).await {
+                error!(
+                    "Failed to save app config for {} after setup (installed=true, profile='{}'): {:?}",
+                    app_name, final_profile_name_to_set, e
+                );
+                // Optionally, propagate this error: return Err(e.into());
+            }
+
+            // Reload app details to ensure the APPS map and app.config (from ok.yaml) are current
+            load_app_details(app_name.into()).await?;
+            emit_apps().await;
+        } else {
+            warn!(
+                "App {} not found in APPS map after setup, cannot mark as installed or set profile.",
+                app_name
+            );
+            // This could be an error condition: return Err(anyhow!("App {} disappeared during setup", app_name).into());
+        }
+    }
+    emit_success_finish!(app_name);
+    Ok(venv_python_exe)
+}
+
+#[tauri::command]
+pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Error> {
+    info!("Updating {} to version {}", app_name, version);
+    let app_dir_lock = get_app_lock(app_name).await;
+    let _lock_guard = app_dir_lock.lock().await;
+
+    let repo_path = path::get_app_repo_path(app_name);
+    let working_dir_path = get_app_working_dir_path(app_name);
+
+    let old_req_info: Option<(PathBuf, String)> = {
+        let apps_guard = APPS.lock().await;
+        if let Some(app) = apps_guard.get(app_name) {
+            // app.config here is the one loaded from ok.yaml by load_app_details
+            let profile_settings = app.get_current_profile_settings();
+            if !profile_settings.requirements.is_empty() {
+                let old_req_path = working_dir_path.join(&profile_settings.requirements);
+                if old_req_path.exists() {
+                    tokio::fs::read_to_string(&old_req_path)
+                        .await
+                        .ok()
+                        .map(|content| (old_req_path, content))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    let old_req_path = old_req_info.as_ref().map(|(p, _)| p.clone());
+    let old_req_content = old_req_info.map(|(_, c)| c);
+
+    let commit_oid = git::checkout_version_tag(app_name, &repo_path, version)
+        .await
+        .map_err(|e| anyhow!(e))?;
+    emit_info!(
+        app_name,
+        "Checked out commit {} for version {}",
+        commit_oid,
+        version
+    );
+
+    update_working_from_repo(app_name).await?; // This might change ok.yaml
+    debug!("Updated working dir for app {}", app_name);
+
+    let ok_yaml_path_new = working_dir_path.join(OK_YAML_NAME);
+    let ok_yaml_path_str_new = ok_yaml_path_new.to_string_lossy().into_owned();
+    let new_app_config_from_yaml = load_config_from_yaml(&ok_yaml_path_str_new);
+
+    let new_default_profile = new_app_config_from_yaml
+        .get_profile("default") // Assuming default profile for requirements check during update.
+        // If current_profile should be used, need to fetch App from APPS map again here.
+        .ok_or_else(|| {
+            anyhow!(
+                "Default profile missing in new {} for {}",
+                OK_YAML_NAME,
+                app_name
+            )
+        })?;
+    let new_requirements_relative_path = &new_default_profile.requirements;
+
+    let new_req_path_for_sync = if !new_requirements_relative_path.is_empty() {
+        Some(working_dir_path.join(new_requirements_relative_path))
+    } else {
+        None
+    };
+    let new_req_content = if let Some(ref p) = new_req_path_for_sync {
+        if p.exists() {
+            tokio::fs::read_to_string(p).await.ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let mut needs_pip_sync = false;
+    if new_req_path_for_sync.is_some() && new_req_content.is_some() {
+        if old_req_path.as_ref() != new_req_path_for_sync.as_ref()
+            || old_req_content != new_req_content
+        {
+            emit_info!(
+                app_name,
+                "Reqs file/path changed (now '{}'). Syncing.",
+                new_requirements_relative_path
+            );
+            needs_pip_sync = true;
+        } else {
+            emit_info!(
+                app_name,
+                "Reqs file ('{}') unchanged. Skipping sync.",
+                new_requirements_relative_path
+            );
+        }
+    } else if old_req_path.is_some() && old_req_content.is_some() {
+        emit_info!(
+            app_name,
+            "Reqs file removed/empty for {}. Not re-syncing.",
+            app_name
+        );
+    } else if new_req_path_for_sync.is_some()
+        && new_req_content.is_none()
+        && !new_requirements_relative_path.is_empty()
+    {
+        warn!(
+            "New reqs file '{}' specified but empty/not found. Skipping sync.",
+            new_requirements_relative_path
+        );
+    } else {
+        emit_info!(app_name, "No significant reqs file changes. Skipping sync.");
+    }
+
+    if needs_pip_sync {
+        if let Some(ref sync_path) = new_req_path_for_sync {
+            if sync_path.exists() {
+                let venv_python_exe = working_dir_path.join(".venv").join(if cfg!(windows) {
+                    "Scripts\\python.exe"
+                } else {
+                    "bin/python"
+                });
+                if !venv_python_exe.exists() {
+                    return Err(anyhow!(
+                        "Python exe not at {} for {}. Venv corrupted.",
+                        venv_python_exe.display(),
+                        app_name
+                    )
+                    .into());
+                }
+                python_env::install_requirements(
+                    app_name,
+                    &venv_python_exe,
+                    &sync_path,
+                    &working_dir_path,
+                )
+                .await?;
+            } else {
+                warn!(
+                    "Reqs file {} expected for sync but not found. Skipping.",
+                    sync_path.display()
+                );
+            }
+        }
+    }
+
+    if let Err(e) = load_app_details(app_name.to_string()).await {
+        error!(
+            "Failed to reload app details for {} after update: {:?}.",
+            app_name, e
+        );
+    }
+
+    emit_info!(app_name, "Updated {} to version {}", app_name, version);
+    emit_success_finish!(app_name);
+    emit_apps().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn start_app(app_name: String) -> Result<(), Error> {
+    info!("Attempting to start app: {}", app_name);
+    let app_dir_lock = get_app_lock(&app_name).await;
+    let _guard = app_dir_lock.lock().await;
+
+    let (app_config_for_start, profile_name_to_use, current_profile_admin): (
+        AppConfig,
+        String,
+        bool,
+    ) = {
+        let mut apps_map = APPS.lock().await;
+        if let Some(app) = apps_map.get_mut(&app_name) {
+            app.last_start = Utc::now();
+            let profile_settings = app.get_current_profile_settings();
+            let config_clone = app.config.clone();
+            let profile_name_clone = app.current_profile.clone();
+            let admin_status = profile_settings.admin;
+
+            let app_to_save = app.clone();
+            drop(apps_map);
+            if let Err(e) = save_app_config_to_json(&app_to_save).await {
+                error!(
+                    "Failed to save app config for {} after updating last_start: {:?}.",
+                    app_name, e
+                );
+            }
+            (config_clone, profile_name_clone, admin_status)
+        } else {
+            drop(apps_map);
+            warn!("App '{}' not in APPS map. Aborting start.", app_name);
+            return Err(anyhow!("App '{}' not found.", app_name).into());
+        }
+    };
+
+    let profile_to_run_with = app_config_for_start
+        .get_profile(&profile_name_to_use)
+        .or_else(|| app_config_for_start.get_profile("default"))
+        .ok_or_else(|| {
+            anyhow!(
+                "Profile '{}' (or default) not in config for '{}'.",
+                profile_name_to_use,
+                app_name
+            )
+        })?;
+
+    let main_script_relative = &profile_to_run_with.main_script;
+    if main_script_relative.is_empty() {
+        return Err(anyhow!(
+            "Main script empty for profile '{}' in app '{}'.",
+            profile_name_to_use,
+            app_name
+        )
+        .into());
+    }
+
+    let working_dir = get_app_working_dir_path(&app_name);
+    let script_path = find_main_script(&app_name, &*working_dir, main_script_relative)?;
+
+    let venv_path = working_dir.join(".venv");
+    let python_exe_in_venv = venv_path.join(if cfg!(windows) {
+        "Scripts\\python.exe"
+    } else {
+        "bin/python"
+    });
+    if !venv_path.exists() || !python_exe_in_venv.exists() {
+        emit_error_finish!(app_name);
+        return Err(anyhow!(
+            "Python .venv not at '{}' for '{}'. Try setup.",
+            venv_path.display(),
+            app_name
+        )
+        .into());
+    }
+
+    info!(
+        "Starting app '{}' (profile '{}', admin: {}, script: '{}')",
+        app_name, profile_name_to_use, current_profile_admin, main_script_relative
+    );
+
+    execute_python::run_python_script(
+        app_name.as_str(),
+        venv_path.as_ref(),
+        &*script_path,
+        working_dir.clone().as_ref(),
+        profile_to_run_with.admin,
+        profile_to_run_with.python_path.clone(),
+    )
+    .await?;
+
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let currently_running = is_app_running(&sys, &working_dir);
+    let mut status_changed = false;
+
+    {
+        let mut apps_map = APPS.lock().await;
+        if let Some(app) = apps_map.get_mut(&app_name) {
+            if app.running != currently_running {
+                debug!(
+                    "Updating running status for '{}' after start: {} -> {}",
+                    app_name, app.running, currently_running
+                );
+                app.running = currently_running;
+                status_changed = true;
+            }
+        } else {
+            warn!("App '{}' not in APPS map after start_app.", app_name);
+        }
+    }
+
+    if status_changed {
+        emit_apps().await;
+    } else {
+        let apps_map_check = APPS.lock().await;
+        if apps_map_check.contains_key(&app_name) {
+            drop(apps_map_check);
+            emit_apps().await;
+        }
+    }
+    Ok(())
+}
+
+fn try_kill_with_elevation(pid: Pid, app_name: &str) -> Result<()> {
+    let pid_str = pid.to_string();
+    info!(
+        "Elevated kill for PID {} (app '{}'). Prompt may appear.",
+        pid_str, app_name
+    );
+
+    #[cfg(windows)]
+    let cmd = runas::Command::new("taskkill")
+        .args(&["/F", "/PID", &pid_str])
+        .status();
+    #[cfg(not(windows))]
+    let cmd = runas::Command::new("kill")
+        .args(&["-9", &pid_str])
+        .force_prompt(true)
+        .status();
+
+    match cmd {
+        Ok(status) if status.success() => {
+            info!("Elevated kill for PID {} success.", pid_str);
+            Ok(())
+        }
+        Ok(status) => bail!(
+            "Elevated kill for PID {} failed (code: {}).",
+            pid_str,
+            status.code().unwrap_or(-1)
+        ),
+        Err(e) => Err(anyhow::Error::from(e)).context(format!(
+            "Failed to launch elevated kill for PID {}",
+            pid_str
+        )),
+    }
+}
+
+#[tauri::command]
+pub async fn stop_app(app_name: String) -> Result<(), Error> {
+    info!("Attempting to stop app: {}", app_name);
+    let app_dir_lock = get_app_lock(&app_name).await;
+    let _guard = app_dir_lock.lock().await;
+    let working_dir = get_app_working_dir_path(&app_name);
+
+    let app_name_clone_for_task = app_name.clone();
+    let working_dir_clone_for_task = working_dir.clone();
+
+    let any_pids_were_targeted: bool = task::spawn_blocking(move || -> Result<bool> {
+        let mut sys_task = System::new();
+        sys_task.refresh_processes(ProcessesToUpdate::All, true);
+        debug!(
+            "Scanning processes to stop for '{}' in '{}'",
+            app_name_clone_for_task,
+            working_dir_clone_for_task.display()
+        );
+        let pids_to_kill =
+            process::get_pids_related_to_app_dir(&sys_task, &working_dir_clone_for_task);
+        let targeted_any = !pids_to_kill.is_empty();
+
+        for pid_to_kill in pids_to_kill {
+            if let Some(process_to_kill) = sys_task.process(pid_to_kill) {
+                info!(
+                    "Killing {:?} (PID {}) for app '{}'",
+                    process_to_kill.name(),
+                    pid_to_kill.as_u32(),
+                    app_name_clone_for_task
+                );
+                if process_to_kill.kill() {
+                    info!("Kill signal sent to PID {}.", pid_to_kill.as_u32());
+                } else {
+                    sys_task.refresh_processes(ProcessesToUpdate::Some(&[pid_to_kill]), true);
+                    if sys_task.process(pid_to_kill).is_none() {
+                        info!(
+                            "PID {} for '{}' exited post-kill failure report.",
+                            pid_to_kill.as_u32(),
+                            app_name_clone_for_task
+                        );
+                    } else {
+                        warn!(
+                            "Standard kill failed for PID {} ('{}'). Attempting elevated.",
+                            pid_to_kill.as_u32(),
+                            app_name_clone_for_task
+                        );
+                        if let Err(e) =
+                            try_kill_with_elevation(pid_to_kill, &app_name_clone_for_task)
+                        {
+                            error!(
+                                "Elevated kill for PID {} ('{}') failed: {:?}",
+                                pid_to_kill.as_u32(),
+                                app_name_clone_for_task,
+                                e
+                            );
+                        }
+                    }
+                }
+            } else {
+                info!(
+                    "PID {} for '{}' already exited.",
+                    pid_to_kill.as_u32(),
+                    app_name_clone_for_task
+                );
+            }
+        }
+        Ok(targeted_any)
+    })
+    .await??;
+
+    if any_pids_were_targeted {
+        info!("Processes targeted for '{}'. Waiting 1s.", app_name);
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+    } else {
+        info!("No active processes for '{}'.", app_name);
+    }
+
+    let mut sys_final = System::new();
+    sys_final.refresh_processes(ProcessesToUpdate::All, true);
+    let currently_running_final = is_app_running(&sys_final, &working_dir);
+    let mut status_changed = false;
+
+    {
+        let mut apps_map = APPS.lock().await;
+        if let Some(app) = apps_map.get_mut(&app_name) {
+            if app.running != currently_running_final {
+                debug!(
+                    "Updating running status for '{}' after stop: {} -> {}",
+                    app_name, app.running, currently_running_final
+                );
+                app.running = currently_running_final;
+                status_changed = true;
+            }
+        } else {
+            warn!(
+                "App '{}' not in APPS map during stop_app final update.",
+                app_name
+            );
+        }
+    }
+
+    if status_changed {
+        emit_apps().await;
+    }
+    if currently_running_final && any_pids_were_targeted {
+        warn!("App '{}' may still be running.", app_name);
+    }
+    Ok(())
+}
+
+pub async fn periodically_update_all_apps_running_status() {
+    let mut ticker = interval(Duration::from_secs(2));
+    info!("Starting periodic app status update (2s interval).");
+    let mut sys = System::new();
+    loop {
+        ticker.tick().await;
+        sys.refresh_processes(ProcessesToUpdate::All, true);
+        let apps_to_check_data: Vec<(String, PathBuf)> = APPS
+            .lock()
+            .await
+            .keys()
+            .map(|name| (name.clone(), get_app_working_dir_path(name)))
+            .collect();
+
+        if apps_to_check_data.is_empty() {
+            continue;
+        }
+
+        let mut status_updates_list: Vec<(String, bool)> = Vec::new();
+        for (app_name, app_working_dir) in &apps_to_check_data {
+            status_updates_list.push((app_name.clone(), is_app_running(&sys, app_working_dir)));
+        }
+
+        let mut changed_any_status = false;
+        if !status_updates_list.is_empty() {
+            let mut apps_map = APPS.lock().await;
+            for (app_name, new_status) in status_updates_list {
+                if let Some(app_in_map) = apps_map.get_mut(&app_name) {
+                    if app_in_map.running != new_status {
+                        debug!(
+                            "Periodic: Running status for '{}': {} -> {}",
+                            app_in_map.name, app_in_map.running, new_status
+                        );
+                        app_in_map.running = new_status;
+                        changed_any_status = true;
+                    }
+                }
+            }
+        }
+        if changed_any_status {
+            info!("App status changed by periodic check. Emitting.");
+            emit_apps().await;
+        }
+    }
+}
+
+fn find_main_script(
+    app_name: &str,
+    working_dir: &Path,
+    main_script_relative: &str,
+) -> Result<PathBuf, Error> {
+    let priority = [main_script_relative, "webui.py", "app.py"];
+    for script_name in priority.iter() {
+        let script_path = working_dir.join(script_name);
+        if script_path.exists() {
+            return Ok(script_path);
+        }
+    }
+    emit_error_finish!(app_name);
+    Err(err!(
+        "Main script '{}' not at '{}' for '{}'",
+        main_script_relative,
+        main_script_relative,
+        app_name
+    ))
+}
