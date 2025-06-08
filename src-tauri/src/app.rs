@@ -7,13 +7,14 @@ use tracing::{debug, warn};
 use crate::utils::path;
 use crate::utils::path::get_app_working_dir_path;
 
-pub const OK_YAML_NAME: &str = "ok.yml";
+pub const YML_FILE_NAME: &str = "pyappify.yml";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct App {
     pub name: String,
-    pub url: String,
+    #[serde(default)]
     pub current_version: Option<String>,
+    #[serde(default)]
     pub available_versions: Vec<String>,
     #[serde(default)]
     pub running: bool,
@@ -22,8 +23,8 @@ pub struct App {
     #[serde(default = "default_profile_fn")]
     pub current_profile: String,
     #[serde(default)]
-    pub installed: bool, // Added installed state, defaults to false
-    #[serde(default)] // Config will be AppConfig::default() after deserialization
+    pub installed: bool,
+    #[serde(default)]
     pub config: Config,
 }
 
@@ -54,10 +55,10 @@ impl App {
 
     pub fn read_and_set_config_from_working_dir(&mut self) {
         let working_dir = get_app_working_dir_path(&self.name);
-        let ok_yaml_path = working_dir.join(OK_YAML_NAME);
+        let ok_yaml_path = working_dir.join(YML_FILE_NAME);
         let ok_yaml_path_str = ok_yaml_path.to_string_lossy().into_owned();
 
-        self.config = load_config_from_yaml(&ok_yaml_path_str);
+        self.config = load_config_from_yml(&ok_yaml_path_str);
         debug!(
             "Refreshed app.config for '{}' from {}",
             self.name,
@@ -112,7 +113,12 @@ impl Config {
     }
 }
 
-pub fn load_config_from_yaml(file_path_str: &str) -> Config {
+pub fn read_embedded_app() -> App {
+    let yaml_content = include_str!("../assets/pyappify.yml");
+    serde_yaml::from_str(yaml_content).expect("Failed to parse embedded pyappify.yml")
+}
+
+pub fn load_config_from_yml(file_path_str: &str) -> Config {
     let file_path = Path::new(file_path_str);
 
     if !file_path.exists() {

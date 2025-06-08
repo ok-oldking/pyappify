@@ -1,14 +1,15 @@
-// src/app_service.rs
 use crate::{
+    app::{read_embedded_app, Config as AppConfig, YML_FILE_NAME},
     emit_error_finish, emit_info, emit_success_finish, emitter, err, execute_python, git,
     python_env,
     utils::path,
     utils::process,
-    app::{Config as AppConfig, OK_YAML_NAME},
 };
-use chrono::{Utc};
+use anyhow::{anyhow, bail, Context, Result};
+use chrono::Utc;
 use futures::future::join_all;
 use once_cell::sync::Lazy;
+use runas;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -20,19 +21,14 @@ use tokio::task;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
+use crate::app::{default_profile_fn, load_config_from_yml, App};
 use crate::utils::error::Error;
 use crate::utils::file;
-use crate::utils::path::{get_app_base_path, get_app_working_dir_path, get_apps_dir};
-use crate::app::{default_profile_fn, load_config_from_yaml, App};
-use anyhow::{anyhow, bail, Context, Result};
-use runas;
-
-
+use crate::utils::path::{get_app_base_path, get_app_working_dir_path};
 
 pub static APPS: Lazy<Mutex<HashMap<String, App>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 pub static APP_DIR_LOCKS: Lazy<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-
 
 fn is_app_running(sys: &System, app_working_dir: &Path) -> bool {
     !process::get_pids_related_to_app_dir(sys, &PathBuf::from(app_working_dir)).is_empty()
@@ -80,8 +76,6 @@ async fn load_app_config_from_json(app_name: &str) -> Result<Option<App>> {
                 warn!("App name mismatch in app.json ('{}') and directory ('{}'). Correcting to directory name: '{}'.", app.name, app_name, app_name);
                 app.name = app_name.to_string();
             }
-            // app.config is AppConfig::default() here due to #[serde(default)] if missing in json
-            // app.installed will be deserialized or default to false
             Ok(Some(app))
         }
         Err(e) => {
@@ -109,8 +103,6 @@ pub(crate) async fn load_app_details(app_name: String) -> Result<App> {
         repo_path.display()
     );
 
-    // app_from_json will have AppConfig from json (or default)
-    // and `installed` will be loaded from JSON or default to false.
     let app_from_json = load_app_config_from_json(&app_name)
         .await
         .with_context(|| format!("Error loading app.json for {}", app_name))?;
@@ -182,30 +174,10 @@ pub(crate) async fn load_app_details(app_name: String) -> Result<App> {
     let mut app_to_store: App;
 
     if let Some(mut loaded_app) = app_from_json {
-        // loaded_app.config is from app.json or AppConfig::default() at this point
-        // loaded_app.installed is from JSON or false
         debug!(
-            "Found app.json for {}, updating with git info and ok.yaml.",
+            "Found app.json for {}, updating with git info and yml.",
             app_name
-        );
-        if let Some(ref origin_url_git) = git_origin_url {
-            if loaded_app.url.is_empty() && !origin_url_git.is_empty() {
-                loaded_app.url = origin_url_git.clone();
-            } else if !loaded_app.url.is_empty()
-                && !origin_url_git.is_empty()
-                && loaded_app.url != *origin_url_git
-            {
-                warn!(
-                    "URL mismatch for app {}: app.json '{}', git remote '{}'. Using app.json URL.",
-                    app_name, loaded_app.url, origin_url_git
-                );
-            }
-        } else if loaded_app.url.is_empty() {
-            error!(
-                "URL for app {} empty in app.json and not found in git.",
-                app_name
-            );
-        }
+        );        
         info!(
             "{} current_version_from_git {:?}, available_versions {}",
             app_name,
@@ -225,31 +197,22 @@ pub(crate) async fn load_app_details(app_name: String) -> Result<App> {
         })?;
         app_to_store = App {
             name: app_name.clone(),
-            url: url_for_new_app,
             current_version: current_version_from_git,
             available_versions: available_versions_from_git,
             running: false,
             last_start: Utc::now(),
             current_profile: default_profile_fn(),
-            installed: false,             // New apps are not installed by default
-            config: AppConfig::default(), // Initial config is default
+            installed: false,
+            config: AppConfig::default(),
         };
     }
 
-    // This is where config is loaded from ok.yaml, OVERWRITING any config from app.json or default
     app_to_store.read_and_set_config_from_working_dir();
 
-    // Save app to json (config field WILL be serialized from app_to_store.config, installed field will be saved)
     save_app_config_to_json(&app_to_store).await?;
 
     let mut app_for_map = app_to_store.clone();
-    // Set running to false; periodic update will correct this.
-    // This ensures consistency, as running status is volatile.
     app_for_map.running = false;
-    // Ensure app_for_map.config is also from ok.yaml (already done as it's a clone of app_to_store which had read_and_set_config_from_working_dir called)
-    // The line app_for_map.read_and_set_config_from_working_dir(); is redundant if app_to_store was just processed, but harmless.
-    // For safety, if app_to_store might not have had its config freshly loaded (e.g., future refactor), this is a safeguard.
-    // Given current flow, it's fine.
 
     {
         let mut apps_map = APPS.lock().await;
@@ -259,7 +222,7 @@ pub(crate) async fn load_app_details(app_name: String) -> Result<App> {
     info!(
         "Loaded/synced app: {} (Installed: {}, Profile: {} ({}), Last Start: {})",
         app_to_store.name,
-        app_to_store.installed, // Log installed state
+        app_to_store.installed,
         app_to_store.current_profile,
         app_to_store.config.profiles.len(),
         app_to_store.last_start.to_rfc3339(),
@@ -286,131 +249,52 @@ pub(crate) async fn get_app_lock(app_name: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-
 #[tauri::command]
 pub async fn load_apps() -> Result<(), Error> {
     {
         let apps_map = APPS.lock().await;
         if !apps_map.is_empty() {
-            info!("Apps already loaded ({}). Emitting.", apps_map.len());
+            info!("App already loaded. Triggering update from disk.");
             drop(apps_map);
             update_apps_from_disk().await?;
             return Ok(());
         }
     }
 
-    let apps_path = get_apps_dir();
-    info!("Loading apps from: {:?}", apps_path);
-    if !apps_path.exists() {
-        info!("Apps dir '{:?}' not found. Creating.", apps_path);
-        tokio::fs::create_dir_all(&apps_path)
-            .await
-            .with_context(|| format!("Failed to create apps dir: {:?}", apps_path))?;
-        emit_apps().await; // Emit empty list
-        return Ok(());
-    }
+    info!("Loading the single, embedded application.");
+    let app_template = read_embedded_app();
+    let app_name = app_template.name.clone();
 
-    let mut entries = tokio::fs::read_dir(apps_path)
-        .await
-        .with_context(|| "Failed to read apps dir")?;
-
-    let mut app_names_to_process: Vec<String> = Vec::new();
-    let mut dirs_to_delete: Vec<PathBuf> = Vec::new();
-
-    while let Some(entry_res) = entries
-        .next_entry()
-        .await
-        .with_context(|| "Failed to get next entry in apps dir")?
-    {
-        let path = entry_res.path();
-        if path.is_dir() {
-            if let Some(app_name_osstr) = path.file_name() {
-                let app_name_str = match app_name_osstr.to_str() {
-                    Some(s) => s.to_string(),
-                    None => {
-                        warn!("Skipping non-UTF8 dir: {:?}", app_name_osstr);
-                        continue;
-                    }
-                };
-
-                let app_config_json_file_path = get_app_config_json_path(&app_name_str);
-                if app_config_json_file_path.exists() {
-                    app_names_to_process.push(app_name_str);
-                } else {
-                    warn!(
-                        "Dir {} (name '{}') missing app.json. Scheduling for deletion.",
-                        path.display(),
-                        app_name_str
-                    );
-                    // Store full path for deletion, not app_name_str
-                    dirs_to_delete.push(path.clone());
-                }
-            }
-        }
-    }
-
-    // Delete marked directories
-    for dir_to_delete in dirs_to_delete {
+    let config_path = get_app_config_json_path(&app_name);
+    if !config_path.exists() {
         info!(
-            "Deleting app dir (missing app.json): {}",
-            dir_to_delete.display()
+            "app.json for '{}' not found. Creating from embedded template.",
+            app_name
         );
-        if let Err(del_err) = tokio::fs::remove_dir_all(&dir_to_delete).await {
+        save_app_config_to_json(&app_template).await?;
+    }
+
+    info!("Phase 1: Loading basic app info from app.json...");
+    match load_app_config_from_json(&app_name).await {
+        Ok(Some(mut app)) => {
+            app.running = false;
+            let mut apps_map = APPS.lock().await;
+            apps_map.insert(app.name.clone(), app);
+        }
+        Ok(None) => {
+            err!("app.json for '{}' disappeared after creation.", app_name);
+        }
+        Err(e) => {
             error!(
-                "Failed to delete dir {}: {}",
-                dir_to_delete.display(),
-                del_err
+                "Failed to load basic info for app '{}' from app.json: {:?}",
+                app_name, e
             );
+            return Err(e.into());
         }
     }
 
-    info!(
-        "Phase 1: Loading basic app info from app.json files for {} potential apps...",
-        app_names_to_process.len()
-    );
-    let mut first_pass_load_errors: Vec<anyhow::Error> = Vec::new();
-
-    for app_name in &app_names_to_process {
-        match load_app_config_from_json(app_name).await {
-            Ok(Some(mut app)) => {
-                // app.config is from app.json or AppConfig::default() here.
-                // app.installed is loaded from JSON or defaults to false.
-                // Set running status to false; periodic update will correct it.
-                app.running = false;
-                let mut apps_map = APPS.lock().await;
-                apps_map.insert(app.name.clone(), app);
-            }
-            Ok(None) => {
-                warn!("app.json for '{}' was not found or empty during load attempt, though initially detected. Skipping.", app_name);
-            }
-            Err(e) => {
-                error!(
-                    "Failed to load basic info for app '{}' from app.json: {:?}",
-                    app_name, e
-                );
-                first_pass_load_errors
-                    .push(e.context(format!("Phase 1 load for app '{}'", app_name)));
-            }
-        }
-    }
-
-    if !first_pass_load_errors.is_empty() {
-        let error_messages: Vec<String> = first_pass_load_errors
-            .iter()
-            .map(|e| format!("{:?}", e))
-            .collect();
-        warn!(
-            "{} apps had errors during initial app.json load (Phase 1):\n - {}",
-            error_messages.len(),
-            error_messages.join("\n - ")
-        );
-    }
-
-    info!(
-        "Phase 1 finished. Emitting apps with basic info ({} apps loaded).",
-        APPS.lock().await.len()
-    );
-    emit_apps().await; // First emit
+    info!("Phase 1 finished. Emitting app with basic info.");
+    emit_apps().await;
 
     update_apps_from_disk().await?;
     Ok(())
@@ -419,7 +303,7 @@ pub async fn load_apps() -> Result<(), Error> {
 async fn update_apps_from_disk() -> Result<(), Error> {
     let app_names_for_details: Vec<String> = APPS.lock().await.keys().cloned().collect();
     info!(
-        "Phase 2: Loading full app details (git info, ok.yaml) for {} apps...",
+        "Phase 2: Loading full app details (git info, yml) for {} apps...",
         app_names_for_details.len()
     );
 
@@ -437,9 +321,7 @@ async fn update_apps_from_disk() -> Result<(), Error> {
     let mut second_pass_load_errors: Vec<anyhow::Error> = Vec::new();
     for result in results {
         match result {
-            Ok(Ok(_app_details)) => {
-                // APPS map is already updated by load_app_details.
-            }
+            Ok(Ok(_app_details)) => {}
             Ok(Err(e)) => {
                 error!("App detail load task resulted in an error: {:?}", e);
                 second_pass_load_errors.push(e);
@@ -467,7 +349,7 @@ async fn update_apps_from_disk() -> Result<(), Error> {
         );
     }
 
-    emit_apps().await; // Second emit with full details
+    emit_apps().await;
     Ok(())
 }
 
@@ -542,7 +424,7 @@ pub async fn update_working_from_repo(app_name: &str) -> Result<()> {
         file::sync_delete_extra_files(&task_working_dir_path, &task_repo_path)?;
         Ok(())
     })
-    .await??;
+        .await??;
     Ok(())
 }
 
@@ -573,11 +455,10 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
 
     update_working_from_repo(app_name).await?;
 
-    let ok_yaml_path = working_dir_path.join(OK_YAML_NAME);
-    let ok_yaml_path_str = ok_yaml_path.to_string_lossy().into_owned();
+    let yml_path = working_dir_path.join(YML_FILE_NAME);
+    let yml_path_str = yml_path.to_string_lossy().into_owned();
 
-    let temp_app_config = load_config_from_yaml(&ok_yaml_path_str);
-
+    let temp_app_config = load_config_from_yml(&yml_path_str);
 
     let final_profile_name_to_set: String;
     let profile_settings_for_setup = match temp_app_config.get_profile(profile_name) {
@@ -597,7 +478,7 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
                 anyhow!(
                     "Profile '{}' (and fallback 'default') not found in {} for app {}",
                     profile_name,
-                    OK_YAML_NAME,
+                    YML_FILE_NAME,
                     app_name
                 )
             })?
@@ -611,7 +492,7 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
         let py_spec = python_version_spec.to_string();
         move || python_env::setup_python_venv(&wd_path, &py_spec).map_err(|e| anyhow!(e))
     })
-    .await??;
+        .await??;
 
     if !requirements_relative_path.is_empty() {
         let full_req_path = working_dir_path.join(requirements_relative_path);
@@ -626,21 +507,21 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
                 &full_req_path,
                 &working_dir_path,
             )
-            .await?;
+                .await?;
         } else {
             emit_error_finish!(app_name);
             err!(
                 "Reqs '{}' (profile '{}') in {} not at {}. Skipping.",
                 requirements_relative_path,
                 final_profile_name_to_set,
-                OK_YAML_NAME,
+                YML_FILE_NAME,
                 full_req_path.display()
             );
         }
     } else {
         info!(
             "No reqs in profile '{}' of {}. Skipping sync.",
-            final_profile_name_to_set, OK_YAML_NAME
+            final_profile_name_to_set, YML_FILE_NAME
         );
     }
 
@@ -648,21 +529,18 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
         let mut apps_map = APPS.lock().await;
         if let Some(app) = apps_map.get_mut(app_name) {
             app.installed = true;
-            app.current_profile = final_profile_name_to_set.clone(); // Update current_profile
+            app.current_profile = final_profile_name_to_set.clone();
 
             let app_to_save = app.clone();
-            drop(apps_map); // Release lock before await operations
+            drop(apps_map);
 
-            // Save app config to JSON after updating installed status and current_profile
             if let Err(e) = save_app_config_to_json(&app_to_save).await {
                 error!(
                     "Failed to save app config for {} after setup (installed=true, profile='{}'): {:?}",
                     app_name, final_profile_name_to_set, e
                 );
-                // Optionally, propagate this error: return Err(e.into());
             }
 
-            // Reload app details to ensure the APPS map and app.config (from ok.yaml) are current
             load_app_details(app_name.into()).await?;
             emit_apps().await;
         } else {
@@ -670,7 +548,6 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
                 "App {} not found in APPS map after setup, cannot mark as installed or set profile.",
                 app_name
             );
-            // This could be an error condition: return Err(anyhow!("App {} disappeared during setup", app_name).into());
         }
     }
     emit_success_finish!(app_name);
@@ -689,7 +566,6 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
     let old_req_info: Option<(PathBuf, String)> = {
         let apps_guard = APPS.lock().await;
         if let Some(app) = apps_guard.get(app_name) {
-            // app.config here is the one loaded from ok.yaml by load_app_details
             let profile_settings = app.get_current_profile_settings();
             if !profile_settings.requirements.is_empty() {
                 let old_req_path = working_dir_path.join(&profile_settings.requirements);
@@ -721,20 +597,19 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
         version
     );
 
-    update_working_from_repo(app_name).await?; // This might change ok.yaml
+    update_working_from_repo(app_name).await?;
     debug!("Updated working dir for app {}", app_name);
 
-    let ok_yaml_path_new = working_dir_path.join(OK_YAML_NAME);
-    let ok_yaml_path_str_new = ok_yaml_path_new.to_string_lossy().into_owned();
-    let new_app_config_from_yaml = load_config_from_yaml(&ok_yaml_path_str_new);
+    let yml_path_new = working_dir_path.join(YML_FILE_NAME);
+    let yml_path_str_new = yml_path_new.to_string_lossy().into_owned();
+    let new_app_config_from_yml = load_config_from_yml(&yml_path_str_new);
 
-    let new_default_profile = new_app_config_from_yaml
-        .get_profile("default") // Assuming default profile for requirements check during update.
-        // If current_profile should be used, need to fetch App from APPS map again here.
+    let new_default_profile = new_app_config_from_yml
+        .get_profile("default")
         .ok_or_else(|| {
             anyhow!(
                 "Default profile missing in new {} for {}",
-                OK_YAML_NAME,
+                YML_FILE_NAME,
                 app_name
             )
         })?;
@@ -805,7 +680,7 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
                         venv_python_exe.display(),
                         app_name
                     )
-                    .into());
+                        .into());
                 }
                 python_env::install_requirements(
                     app_name,
@@ -813,7 +688,7 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
                     &sync_path,
                     &working_dir_path,
                 )
-                .await?;
+                    .await?;
             } else {
                 warn!(
                     "Reqs file {} expected for sync but not found. Skipping.",
@@ -889,7 +764,7 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
             profile_name_to_use,
             app_name
         )
-        .into());
+            .into());
     }
 
     let working_dir = get_app_working_dir_path(&app_name);
@@ -908,7 +783,7 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
             venv_path.display(),
             app_name
         )
-        .into());
+            .into());
     }
 
     info!(
@@ -924,7 +799,7 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
         profile_to_run_with.admin,
         profile_to_run_with.python_path.clone(),
     )
-    .await?;
+        .await?;
 
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
@@ -1061,7 +936,7 @@ pub async fn stop_app(app_name: String) -> Result<(), Error> {
         }
         Ok(targeted_any)
     })
-    .await??;
+        .await??;
 
     if any_pids_were_targeted {
         info!("Processes targeted for '{}'. Waiting 1s.", app_name);
