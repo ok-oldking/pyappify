@@ -14,6 +14,7 @@ use reqwest::blocking::Client;
 use reqwest::Url;
 use std::fs;
 use std::io::Cursor;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use tar::Archive;
 use tokio::process::Command;
@@ -468,7 +469,7 @@ fn download_file(url: &str, dest_path: &Path) -> Result<()> {
 /// Sets up a Python virtual environment (.venv) in the specified directory,
 /// using the specified Python version.
 #[cfg(target_os = "windows")]
-pub fn setup_python_venv(venv_creation_dir: &Path, python_version_spec: &str) -> Result<PathBuf> {
+pub fn setup_python_venv(app_name:String, venv_creation_dir: &Path, python_version_spec: &str) -> Result<PathBuf> {
     info!(
         "Setting up Python venv in {} using Python version spec '{}'",
         venv_creation_dir.display(),
@@ -664,6 +665,7 @@ fn get_python_version_from_exe(python_exe_path: &Path) -> Result<String> {
     }
     let version_cmd_output = std::process::Command::new(python_exe_path)
         .arg("--version")
+        .creation_flags(0x08000000)
         .output()
         .with_context(|| format!("Failed to execute {} --version", python_exe_path.display()))?;
 

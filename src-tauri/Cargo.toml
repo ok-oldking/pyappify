@@ -22,8 +22,6 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 git2 = { version = "0.20.1" } # Or another client like -curl
-sha2 = "0.10.9"
-hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "registry", "env-filter", "time", "local-time"] }
 tracing-appender = "0.2"
@@ -31,7 +29,6 @@ semver = "1.0.26"
 anyhow = "1.0.98"
 regex = "1.11.1"
 reqwest = { version = "0.12.15", features = ["blocking", "json", "socks"] }
-scraper = "0.23.1"
 once_cell = "1.21.3"
 tokio = { version = "1.44.2", features = ["full"] }
 futures = "0.3.31"

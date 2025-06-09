@@ -50,11 +50,6 @@ interface Profile {
     python_path: string;
 }
 
-interface Config {
-    requires_python: string;
-    profiles: Profile[];
-}
-
 interface App {
     name: string;
     url: string;
@@ -63,7 +58,7 @@ interface App {
     available_versions: string[];
     running: boolean;
     installed: boolean;
-    config: Config;
+    profiles: Profile[];
     current_profile: string;
 }
 
@@ -133,7 +128,6 @@ async function invokeTauriCommandWrapper<T>(
         onError(errorMessage, err);
     }
 }
-
 
 function App() {
     const [apps, setApps] = useState<App[] | null>(null);
@@ -264,16 +258,16 @@ function App() {
     };
 
     const handleInstallClick = (app: App) => {
-        if (app.config?.profiles && app.config.profiles.length > 1) {
+        if (app.profiles && app.profiles.length > 1) {
             setProfileChoiceApp(app);
             let initialProfile = app.current_profile;
-            if (!app.config.profiles.find(p => p.name === initialProfile)) {
-                initialProfile = app.config.profiles[0]?.name || "default";
+            if (!app.profiles.find(p => p.name === initialProfile)) {
+                initialProfile = app.profiles[0]?.name || "default";
             }
             setSelectedProfileForInstall(initialProfile);
             setCurrentPage('profileChooser');
         } else {
-            const profileName = app.current_profile || app.config?.profiles?.[0]?.name || "default";
+            const profileName = app.current_profile || app.profiles?.[0]?.name || "default";
             handleInstallWithProfile(app.name, profileName);
         }
     };
@@ -350,8 +344,8 @@ function App() {
             setProfileChoiceApp(appForProfileChoice);
 
             let initialProfile = appForProfileChoice.current_profile;
-            if (!appForProfileChoice.config?.profiles?.find(p => p.name === initialProfile)) {
-                initialProfile = appForProfileChoice.config?.profiles?.[0]?.name || "default";
+            if (!appForProfileChoice.profiles?.find(p => p.name === initialProfile)) {
+                initialProfile = appForProfileChoice.profiles?.[0]?.name || "default";
             }
             setSelectedProfileForInstall(initialProfile);
             setCurrentPage('profileChooser');
@@ -478,7 +472,7 @@ function App() {
         setCurrentPage('versionChangeConsole');
 
         const app = apps?.find(a => a.name === appName);
-        const requirementsFile = app?.config?.profiles?.find(p => p.name === app.current_profile)?.requirements || "requirements.txt";
+        const requirementsFile = app?.profiles?.find(p => p.name === app.current_profile)?.requirements || "requirements.txt";
 
         await invokeTauriCommandWrapper<void>(
             "update_to_version",
@@ -609,8 +603,8 @@ function App() {
         clearMessages();
         setAppForProfileChange(appToChange);
         let initialProfile = appToChange.current_profile;
-        if (!appToChange.config?.profiles?.find(p => p.name === initialProfile)) {
-            initialProfile = appToChange.config?.profiles?.[0]?.name || "";
+        if (!appToChange.profiles?.find(p => p.name === initialProfile)) {
+            initialProfile = appToChange.profiles?.[0]?.name || "";
         }
         setSelectedNewProfileName(initialProfile);
         setCurrentPage('changeProfile');
@@ -794,7 +788,7 @@ function App() {
                 <Typography variant="h5" gutterBottom sx={{mb: 3}}>
                     Choose Profile for {profileChoiceApp.name}
                 </Typography>
-                {profileChoiceApp.config && profileChoiceApp.config.profiles && profileChoiceApp.config.profiles.length > 0 ? (
+                {profileChoiceApp.profiles && profileChoiceApp.profiles.length > 0 ? (
                     <>
                         <FormControl fullWidth sx={{my: 2}}>
                             <InputLabel id="profile-select-label">Profile</InputLabel>
@@ -804,7 +798,7 @@ function App() {
                                 label="Profile"
                                 onChange={(e: SelectChangeEvent<string>) => setSelectedProfileForInstall(e.target.value)}
                             >
-                                {profileChoiceApp.config.profiles.map(profile => (
+                                {profileChoiceApp.profiles.map(profile => (
                                     <MenuItem key={profile.name} value={profile.name}>
                                         {profile.name}
                                     </MenuItem>
@@ -858,7 +852,7 @@ function App() {
                 <Typography variant="subtitle1" gutterBottom sx={{mb: 1}}>
                     Current Profile: {appForProfileChange.current_profile}
                 </Typography>
-                {appForProfileChange.config && appForProfileChange.config.profiles && appForProfileChange.config.profiles.length > 0 ? (
+                {appForProfileChange.profiles && appForProfileChange.profiles.length > 0 ? (
                     <>
                         <FormControl fullWidth sx={{my: 2}}>
                             <InputLabel id="change-profile-select-label">New Profile</InputLabel>
@@ -868,7 +862,7 @@ function App() {
                                 label="New Profile"
                                 onChange={(e: SelectChangeEvent<string>) => setSelectedNewProfileName(e.target.value)}
                             >
-                                {appForProfileChange.config.profiles.map(profile => (
+                                {appForProfileChange.profiles.map(profile => (
                                     <MenuItem key={profile.name} value={profile.name}
                                               disabled={profile.name === appForProfileChange.current_profile}>
                                         {profile.name}
@@ -986,7 +980,7 @@ function App() {
                     </Box>
                 )}
                 <Snackbar
-                    open={snackbarOpen && (currentPage === 'list' || currentPage === 'settings' || currentPage === 'changeProfile')}
+                    open={snackbarOpen}
                     autoHideDuration={snackbarSeverity === 'error' ? 8000 : 5000}
                     onClose={() => {
                         setSnackbarOpen(false);
@@ -1048,8 +1042,8 @@ function App() {
                                 actionButtonIcon = <Build/>;
                             }
 
-                            const isVersionChangeLoading = isThisAppLoadingAction && startingAppName === app.name && currentPage === 'versionChangeConsole';
-                            const isProfileChangeLoading = isThisAppLoadingAction && startingAppName === app.name && currentPage === 'profileChangeConsole';
+                            const isVersionChangeLoading = isThisAppLoadingAction && startingAppName === app.name && isVersionChangeProcessRunning;
+                            const isProfileChangeLoading = isThisAppLoadingAction && startingAppName === app.name && isProfileChangeProcessRunning;
 
 
                             return (
@@ -1116,13 +1110,13 @@ function App() {
                                                             variant="outlined"
                                                             color="success"
                                                             size="small"
-                                                            startIcon={(isThisAppLoadingAction && startingAppName === app.name && currentPage === 'startConsole') ?
+                                                            startIcon={(isThisAppLoadingAction && startingAppName === app.name && isStartAppProcessRunning) ?
                                                                 <CircularProgress size={16} color="inherit"/> :
                                                                 <PlayArrow/>}
                                                             onClick={() => handleStartApp(app.name)}
                                                             disabled={disableRowActions || !app.current_version}
                                                         >
-                                                            {(isThisAppLoadingAction && startingAppName === app.name && currentPage === 'startConsole') ? "Starting..." : "Start App"}
+                                                            {(isThisAppLoadingAction && startingAppName === app.name && isStartAppProcessRunning) ? "Starting..." : "Start App"}
                                                         </Button>
                                                     )
                                                 ) : isEffectivelyInstalling ? (
@@ -1143,13 +1137,13 @@ function App() {
                                                         variant="contained"
                                                         color="primary"
                                                         size="small"
-                                                        startIcon={(isThisAppLoadingAction && startingAppName === app.name && (currentPage === 'installConsole' || isInstallProcessRunning)) ?
+                                                        startIcon={(isThisAppLoadingAction && startingAppName === app.name && isInstallProcessRunning) ?
                                                             <CircularProgress size={16} color="inherit"/> :
                                                             <Build/>}
                                                         onClick={() => handleInstallClick(app)}
-                                                        disabled={disableRowActions || (isThisAppLoadingAction && startingAppName === app.name && (currentPage === 'installConsole' || isInstallProcessRunning))}
+                                                        disabled={disableRowActions || (isThisAppLoadingAction && startingAppName === app.name && isInstallProcessRunning)}
                                                     >
-                                                        {(isThisAppLoadingAction && startingAppName === app.name && (currentPage === 'installConsole' || isInstallProcessRunning)) ? "Installing..." : "Install"}
+                                                        {(isThisAppLoadingAction && startingAppName === app.name && isInstallProcessRunning) ? "Installing..." : "Install"}
                                                     </Button>
                                                 )}
 
@@ -1158,16 +1152,16 @@ function App() {
                                                         variant="outlined"
                                                         color="error"
                                                         size="small"
-                                                        startIcon={isThisAppLoadingAction && (currentPage === 'installConsole' || currentPage === 'profileChangeConsole' || currentPage === 'versionChangeConsole' || (isRunning && startingAppName === app.name)) ?
+                                                        startIcon={isThisAppLoadingAction && (isInstallProcessRunning || isProfileChangeProcessRunning || isVersionChangeProcessRunning || (isRunning && startingAppName === app.name)) ?
                                                             <CircularProgress size={16} color="inherit"/> : <Delete/>}
                                                         onClick={() => handleDeleteApp(app.name)}
-                                                        disabled={disableGlobalActions || (isThisAppLoadingAction && startingAppName === app.name && (isRunning || currentPage === 'installConsole' || currentPage === 'profileChangeConsole' || currentPage === 'versionChangeConsole'))}
+                                                        disabled={disableGlobalActions || isRunning || (isThisAppLoadingAction && startingAppName === app.name && (isInstallProcessRunning || isProfileChangeProcessRunning || isVersionChangeProcessRunning))}
                                                     >
-                                                        {isThisAppLoadingAction && startingAppName === app.name && (isRunning || currentPage === 'installConsole' || currentPage === 'profileChangeConsole' || currentPage === 'versionChangeConsole') ? "Deleting..." : "Delete"}
+                                                        {isThisAppLoadingAction && startingAppName === app.name && (isRunning || isInstallProcessRunning || isProfileChangeProcessRunning || isVersionChangeProcessRunning) ? "Deleting..." : "Delete"}
                                                     </Button>
                                                 )}
 
-                                                {isInstalled && !isRunning && app.config?.profiles && app.config.profiles.length > 1 && (
+                                                {isInstalled && !isRunning && app.profiles && app.profiles.length > 1 && (
                                                     <Button
                                                         variant="outlined"
                                                         color="secondary"
@@ -1238,14 +1232,14 @@ function App() {
                                                 </Typography>
                                             )}
                                             {isInstalled && !isRunning && app.current_version && availableVersionsForSelect.length === 0 &&
-                                                (!app.config?.profiles || app.config.profiles.length <= 1) && (
+                                                (!app.profiles || app.profiles.length <= 1) && (
                                                     <Typography variant="caption" display="block"
                                                                 sx={{mt: 1, fontStyle: 'italic'}}>
                                                         No other versions or profiles available for modification.
                                                     </Typography>
                                                 )}
                                             {isInstalled && !isRunning && app.current_version && availableVersionsForSelect.length === 0 &&
-                                                (app.config?.profiles && app.config.profiles.length > 1) && (
+                                                (app.profiles && app.profiles.length > 1) && (
                                                     <Typography variant="caption" display="block"
                                                                 sx={{mt: 1, fontStyle: 'italic'}}>
                                                         No other versions available. You can change the profile.

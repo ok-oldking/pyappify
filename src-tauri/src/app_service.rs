@@ -1,5 +1,6 @@
+// src/app_manager.rs
 use crate::{
-    app::{read_embedded_app, YML_FILE_NAME},
+    app::{read_embedded_app, update_app_from_yml, YML_FILE_NAME},
     emit_error_finish, emit_info, emit_success_finish, emitter, err, execute_python, git,
     python_env,
     utils::path,
@@ -16,12 +17,14 @@ use std::{
     sync::Arc,
 };
 use sysinfo::{Pid, ProcessesToUpdate, System};
+use tauri::async_runtime::TokioJoinHandle;
 use tokio::sync::Mutex;
 use tokio::task;
+use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
-use crate::app::{update_app_from_yml, App};
+use crate::app::App;
 use crate::git::ensure_repository;
 use crate::utils::error::Error;
 use crate::utils::file;
@@ -95,101 +98,15 @@ async fn load_app_config_from_json(app_name: &str) -> Result<Option<App>> {
     }
 }
 
-pub(crate) async fn load_app_details(app_name: String) -> Result<App> {
-    let repo_path = path::get_app_repo_path(&app_name);
-    let app_name_log_val = app_name.clone();
-    debug!(
-        "Loading/Syncing app details for '{}' from its repo path '{}'",
-        app_name_log_val,
-        repo_path.display()
-    );
+pub(crate) async fn load_app_details(app: &mut App) -> Result<()> {
+    let working_dir = get_app_working_dir_path(&app.name);
+    let yml_path = working_dir.join(YML_FILE_NAME);
 
-    let app_from_json = load_app_config_from_json(&app_name)
-        .await
-        .with_context(|| format!("Error loading app.json for {}", app_name))?;
-
-    let available_versions_from_git =
-        match git::get_tag_versions(&app_name, repo_path.clone()).await {
-            Ok(versions) => versions,
-            Err(e_str) => {
-                warn!(
-                    "Failed to get remote versions for {}: {}",
-                    app_name_log_val, e_str
-                );
-                Vec::new()
-            }
-        };
-
-    let current_version_from_git = if repo_path.exists() && repo_path.join(".git").exists() {
-        match git::open_repository(&repo_path) {
-            Ok(repo) => match git::determine_current_checked_out_tag(&repo) {
-                Ok(version_opt) => version_opt,
-                Err(e_str) => {
-                    warn!(
-                        "Failed to determine current tag for {}: {}",
-                        app_name_log_val, e_str
-                    );
-                    None
-                }
-            },
-            Err(e_str) => {
-                warn!(
-                    "Failed to open local repo {}: {}",
-                    repo_path.display(),
-                    e_str
-                );
-                None
-            }
-        }
-    } else {
-        if repo_path.exists() {
-            warn!("Repo path {} is not a git repo.", repo_path.display());
-        } else {
-            warn!("Repo path {} does not exist.", repo_path.display());
-        }
-        None
-    };
-
-    let mut app_to_store: App = get_app_by_name(app_name.as_str()).await?;
-
-    if let Some(mut loaded_app) = app_from_json {
-        debug!(
-            "Found app.json for {}, updating with git info and yml.",
-            app_name
-        );
-        info!(
-            "{} current_version_from_git {:?}, available_versions {}",
-            app_name,
-            current_version_from_git,
-            available_versions_from_git.len()
-        );
-        loaded_app.available_versions = available_versions_from_git;
-        loaded_app.current_version = current_version_from_git;
-        app_to_store = loaded_app;
+    if yml_path.exists() {
+        let yml_path_str = yml_path.to_string_lossy().into_owned();
+        update_app_from_yml(app, &yml_path_str);
     }
-
-    app_to_store.read_and_set_config_from_working_dir();
-
-    save_app_config_to_json(&app_to_store).await?;
-
-    let mut app_for_map = app_to_store.clone();
-    app_for_map.running = false;
-
-    {
-        let mut apps_map = APPS.lock().await;
-        apps_map.insert(app_for_map.name.clone(), app_for_map.clone());
-    }
-
-    info!(
-        "Loaded/synced app: {} (Installed: {}, Profile: {} ({}), Last Start: {})",
-        app_to_store.name,
-        app_to_store.installed,
-        app_to_store.current_profile,
-        app_to_store.profiles.len(),
-        app_to_store.last_start.to_rfc3339(),
-    );
-
-    Ok(app_to_store)
+    Ok(())
 }
 
 pub async fn get_apps_as_vec() -> Vec<App> {
@@ -217,49 +134,70 @@ pub async fn load_apps() -> Result<(), Error> {
         if !apps_map.is_empty() {
             info!("App already loaded. Triggering update from disk.");
             drop(apps_map);
-            update_apps_from_disk().await?;
-            return Ok(());
+            return update_apps_from_disk().await;
         }
     }
 
-    let mut app_template = read_embedded_app();
+    let app_template = read_embedded_app();
     let app_name = app_template.name.clone();
-    info!("Loading the single, embedded application. profiles {:?}", app_template.profiles);
+    info!(
+        "Loading the single, embedded application. profiles {:?}",
+        app_template.profiles
+    );
 
-    let config_path = get_app_config_json_path(&app_name);
-    if !config_path.exists() {
-        info!(
-            "app.json for '{}' not found. Creating from embedded template.",
-            app_name
-        );
-        save_app_config_to_json(&app_template).await?;
-    }
-
-    info!("Phase 1: Loading basic app info from app.json...");
-    match load_app_config_from_json(&app_name).await {
-        Ok(Some(mut app)) => {
-            app.running = false;
-            app_template.current_profile = app.current_profile;
-            app_template.current_version = app.current_version;
-            let mut apps_map = APPS.lock().await;
-            apps_map.insert(app.name.clone(), app_template);
+    let mut app = match load_app_config_from_json(&app_name).await {
+        Ok(Some(mut app_from_disk)) => {
+            info!("Loaded app '{}' from app.json.", app_name);
+            app_from_disk.running = false;
+            let current_profile = app_from_disk.current_profile.clone();
+            app_from_disk.profiles = app_template.profiles;
+            app_from_disk.current_profile = current_profile;
+            app_from_disk
         }
         Ok(None) => {
-            err!("app.json for '{}' disappeared after creation.", app_name);
-        }
-        Err(e) => {
-            error!(
-                "Failed to load basic info for app '{}' from app.json: {:?}",
-                app_name, e
+            info!(
+                "app.json for '{}' not found. Creating from embedded template.",
+                app_name
             );
-            return Err(e.into());
+            save_app_config_to_json(&app_template).await?;
+            app_template
         }
-    }
+        Err(e) => return Err(e.into()),
+    };
 
-    info!("Phase 1 finished. Emitting app with basic info.");
-    emit_apps().await;
+    info!(
+        "Loading full app details (git info, yml) for {}...",
+        app.name
+    );
 
+    let repo_path = path::get_app_repo_path(&app.name);
+
+    app.available_versions = match git::get_tag_versions(&app.name, repo_path.clone()).await {
+        Ok(versions) => versions,
+        Err(e_str) => {
+            warn!(
+                "Failed to get remote versions for {}: {}",
+                app.name, e_str
+            );
+            Vec::new()
+        }
+    };
+
+    app.current_version = if repo_path.exists() && repo_path.join(".git").exists() {
+        match git::open_repository(&repo_path) {
+            Ok(repo) => git::determine_current_checked_out_tag(&repo)?,
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    load_app_details(&mut app).await?;
+    save_app_config_to_json(&app).await?;
+    APPS.lock().await.insert(app.name.clone(), app);
     update_apps_from_disk().await?;
+    info!("Finished loading app details.");
+    emit_apps().await;
     Ok(())
 }
 
@@ -270,46 +208,42 @@ async fn update_apps_from_disk() -> Result<(), Error> {
         app_names_for_details.len()
     );
 
-    let mut load_detail_tasks = Vec::new();
+    let mut load_detail_tasks: Vec<JoinHandle<Result<(), Error>>> = Vec::new();
     for app_name_for_detail_load in app_names_for_details {
         let task_app_name = app_name_for_detail_load.clone();
         load_detail_tasks.push(tokio::spawn(async move {
             let app_dir_lock = get_app_lock(&task_app_name).await;
             let _guard = app_dir_lock.lock().await;
-            load_app_details(task_app_name).await
+            let full_load_logic = async {
+                let mut app = get_app_by_name(&task_app_name).await?;
+                let repo_path = path::get_app_repo_path(&app.name);
+                app.available_versions =
+                    git::get_tag_versions(&app.name, repo_path.clone()).await?;
+                if repo_path.exists() {
+                    let repo = git::open_repository(&repo_path)?;
+                    app.current_version = git::determine_current_checked_out_tag(&repo)?;
+                }
+                load_app_details(&mut app).await?;
+                save_app_config_to_json(&app).await?;
+                let mut apps = APPS.lock().await;
+                apps.insert(task_app_name.clone(), app);
+                Ok(())
+            };
+            full_load_logic.await
         }));
     }
 
     let results = join_all(load_detail_tasks).await;
-    let mut second_pass_load_errors: Vec<anyhow::Error> = Vec::new();
     for result in results {
         match result {
-            Ok(Ok(_app_details)) => {}
+            Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 error!("App detail load task resulted in an error: {:?}", e);
-                second_pass_load_errors.push(e);
             }
             Err(join_error) => {
                 error!("App detail load task panicked: {:?}", join_error);
-                second_pass_load_errors.push(anyhow::Error::from(join_error));
             }
         }
-    }
-
-    info!(
-        "Phase 2 (full detail loading) finished. {} apps in memory.",
-        APPS.lock().await.len()
-    );
-    if !second_pass_load_errors.is_empty() {
-        let error_messages: Vec<String> = second_pass_load_errors
-            .iter()
-            .map(|e| format!("{:?}", e))
-            .collect();
-        error!(
-            "{} apps had errors during full detail loading (Phase 2):\n - {}",
-            error_messages.len(),
-            error_messages.join("\n - ")
-        );
     }
 
     emit_apps().await;
@@ -322,10 +256,6 @@ pub async fn delete_app(app_name: &str) -> Result<(), Error> {
     let app_dir_lock = get_app_lock(app_name).await;
     let _guard = app_dir_lock.lock().await;
 
-    if APPS.lock().await.remove(app_name).is_none() {
-        warn!("App '{}' not in memory. Checking disk.", app_name);
-    }
-
     let app_base_path = get_app_base_path(app_name);
     if app_base_path.exists() {
         info!("Deleting dir: {}", app_base_path.display());
@@ -336,6 +266,9 @@ pub async fn delete_app(app_name: &str) -> Result<(), Error> {
     } else {
         info!("App dir {} not on disk.", app_base_path.display());
     }
+    let mut app: App = get_app_by_name(&app_name).await?;
+    app.installed = false;
+    save_app_config_to_json(&app).await?;
     emit_apps().await;
     Ok(())
 }
@@ -461,11 +394,12 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
     };
     let requirements_relative_path = &profile_settings_for_setup.requirements;
     let python_version_spec = &profile_settings_for_setup.requires_python;
+    let app_name_clone = app_name.to_string();
 
     let venv_python_exe = task::spawn_blocking({
         let wd_path = working_dir_path.clone();
         let py_spec = python_version_spec.to_string();
-        move || python_env::setup_python_venv(&wd_path, &py_spec).map_err(|e| anyhow!(e))
+        move || python_env::setup_python_venv(app_name_clone, &wd_path, &py_spec).map_err(|e| anyhow!(e))
     })
         .await??;
 
@@ -505,7 +439,7 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
         if let Some(app) = apps_map.get_mut(app_name) {
             app.installed = true;
             app.current_profile = final_profile_name_to_set.clone();
-
+            load_app_details(app).await?;
             let app_to_save = app.clone();
             drop(apps_map);
 
@@ -515,8 +449,6 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
                     app_name, final_profile_name_to_set, e
                 );
             }
-
-            load_app_details(app_name.into()).await?;
             emit_apps().await;
         } else {
             warn!(
@@ -677,11 +609,15 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
         }
     }
 
-    if let Err(e) = load_app_details(app_name.to_string()).await {
-        error!(
-            "Failed to reload app details for {} after update: {:?}.",
-            app_name, e
-        );
+    {
+        let mut apps = APPS.lock().await;
+        if let Some(app) = apps.get_mut(app_name) {
+            load_app_details(app).await?;
+            app.current_version = Some(version.to_string());
+            let app_to_save = app.clone();
+            drop(apps);
+            save_app_config_to_json(&app_to_save).await?;
+        }
     }
 
     emit_info!(app_name, "Updated {} to version {}", app_name, version);
@@ -712,15 +648,11 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
                     app_name, e
                 );
             }
-            (
-                profile_settings,
-                get_app_working_dir_path(&app_name),
-            )
+            (profile_settings, get_app_working_dir_path(&app_name))
         } else {
             return Err(anyhow!("App '{}' not found.", app_name).into());
         }
     };
-
 
     let main_script_relative = &profile_to_run_with.main_script;
     if main_script_relative.is_empty() {
@@ -828,10 +760,8 @@ fn try_kill_with_elevation(pid: Pid, app_name: &str) -> Result<()> {
             pid_str,
             status.code().unwrap_or(-1)
         ),
-        Err(e) => Err(anyhow::Error::from(e)).context(format!(
-            "Failed to launch elevated kill for PID {}",
-            pid_str
-        )),
+        Err(e) => Err(anyhow::Error::from(e))
+            .context(format!("Failed to launch elevated kill for PID {}", pid_str)),
     }
 }
 

@@ -11,7 +11,8 @@ pub async fn run_command_and_stream_output(
     command_description: &str,
 ) -> Result<ExitStatus, Error> {
     emit_info!(app_name, "executing command: {}", command_description);
-
+    
+    command.creation_flags(0x08000000);
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
