@@ -2,6 +2,7 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {listen, UnlistenFn} from "@tauri-apps/api/event";
 import {openUrl} from '@tauri-apps/plugin-opener';
 import {Alert, Box, Button, CircularProgress, Container, Link, Paper, Typography} from "@mui/material";
+import {useTranslation} from 'react-i18next';
 
 const MAX_LOGS = 500;
 
@@ -39,11 +40,10 @@ const renderMessageWithClickableLinks = (message: string) => {
                             await openUrl(part);
                         } catch (error) {
                             console.error("Failed to open URL:", error);
-                            // Optionally show an error to the user
                         }
                     }}
-                    target="_blank" // Good practice for external links
-                    rel="noopener noreferrer" // Security for target="_blank"
+                    target="_blank"
+                    rel="noopener noreferrer"
                     sx={{color: 'primary.main', textDecoration: 'underline', cursor: 'pointer'}}
                 >
                     {part}
@@ -64,6 +64,7 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
                                                      isProcessing: initialIsProcessing,
                                                      onProcessComplete
                                                  }) => {
+    const {t} = useTranslation();
     const [logs, setLogs] = useState<MessagePayload[]>([]);
     const consoleBodyRef = useRef<null | HTMLDivElement>(null);
     const [internalIsProcessing, setInternalIsProcessing] = useState(initialIsProcessing);
@@ -71,14 +72,6 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
 
     useEffect(() => {
         setInternalIsProcessing(initialIsProcessing);
-        if (!initialIsProcessing) {
-            // If initially not processing, assume success unless a finish event says otherwise
-            // This handles cases where the component mounts in an already completed state.
-            if (processCompletedWithError === null) { // Only set if not already determined by a previous finish event
-                // setProcessCompletedWithError(false); // Or, leave it null and let the logic below handle it.
-                // The current logic for displayMessage/alertSeverity handles null as success.
-            }
-        }
     }, [initialIsProcessing]);
 
     const addLog = useCallback((logEntry: MessagePayload) => {
@@ -123,7 +116,7 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
 
                 if (eventData.finished) {
                     setInternalIsProcessing(false);
-                    setProcessCompletedWithError(!!eventData.error); // Set based on the finish event's error status
+                    setProcessCompletedWithError(!!eventData.error);
                     onProcessComplete();
                 }
             }
@@ -147,8 +140,8 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
     }, [logs]);
 
     const displayMessage = internalIsProcessing
-        ? "Process in progress..."
-        : `Process finished.${processCompletedWithError ? " There were errors." : ""} Review logs and click Done.`;
+        ? t("Process in progress...")
+        : t("Process finished.{{errorText}} Review logs and click Done.", {errorText: processCompletedWithError ? t(" There were errors.") : ""});
 
     const alertSeverity = internalIsProcessing
         ? "info"
@@ -160,7 +153,7 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
             py: 3,
             display: 'flex',
             flexDirection: 'column',
-            height: 'calc(100vh - 48px)' /* Adjust if you have a global app bar */
+            height: 'calc(100vh - 48px)'
         }}>
             <Box sx={{mb: 2}}>
                 <Typography variant="h5" component="h2" gutterBottom>
@@ -188,23 +181,23 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
                 {logs.map((logPayload, index) => (
                     <Typography
                         key={index}
-                        component="div" // Using div to allow block display for each log line
+                        component="div"
                         sx={{
                             color: logPayload.error ? 'error.main' : 'text.primary',
-                            mb: 0.5, // Small margin between log lines
-                            fontFamily: 'monospace', // Ensure monospace for pre-like formatting
+                            mb: 0.5,
+                            fontFamily: 'monospace',
                         }}
                     >
                         {renderMessageWithClickableLinks(logPayload.message)}
                     </Typography>
                 ))}
                 {logs.length === 0 && !internalIsProcessing &&
-                    <Typography>No logs received yet for {appName}.</Typography>}
+                    <Typography>{t('No logs received yet for {{appName}}.', {appName})}</Typography>}
             </Paper>
 
             <Box sx={{pt: 2, display: 'flex', justifyContent: 'flex-end'}}>
                 <Button variant="contained" onClick={onBack}>
-                    {internalIsProcessing ? "Back (Process Running)" : "Done"}
+                    {internalIsProcessing ? t("Back (Process Running)") : t("Done")}
                 </Button>
             </Box>
         </Container>

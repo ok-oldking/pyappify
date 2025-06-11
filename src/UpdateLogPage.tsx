@@ -2,6 +2,7 @@ import React, {useEffect, useState} from 'react';
 import {invoke} from "@tauri-apps/api/core";
 import {Alert, Box, Button, CircularProgress, Container, Paper, Stack, Typography} from "@mui/material";
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import {useTranslation} from 'react-i18next';
 
 interface UpdateLogPageProps {
     appName: string;
@@ -18,6 +19,7 @@ const UpdateLogPage: React.FC<UpdateLogPageProps> = ({
                                                          onBack,
                                                          onConfirm,
                                                      }) => {
+    const {t} = useTranslation();
     const [isConfirmingAction, setIsConfirmingAction] = useState(false);
     const [notes, setNotes] = useState<string | null>(null);
     const [notesLoading, setNotesLoading] = useState(true);
@@ -34,7 +36,7 @@ const UpdateLogPage: React.FC<UpdateLogPageProps> = ({
             } catch (err) {
                 console.error(`Failed to get notes for ${appName} version ${version}:`, err);
                 const errorMessage = err instanceof Error ? err.message : String(err);
-                setNotesError(`Failed to load notes: ${errorMessage}`);
+                setNotesError(t('Failed to load notes: {{error}}', {error: errorMessage}));
             } finally {
                 setNotesLoading(false);
             }
@@ -43,7 +45,7 @@ const UpdateLogPage: React.FC<UpdateLogPageProps> = ({
         if (appName && version) {
             fetchNotes();
         }
-    }, [appName, version]);
+    }, [appName, version, t]);
 
     const handleConfirm = async () => {
         setIsConfirmingAction(true);
@@ -51,8 +53,17 @@ const UpdateLogPage: React.FC<UpdateLogPageProps> = ({
     };
 
     const confirmButtonText = isConfirmingAction
-        ? `${actionType}ing...`
-        : `Confirm ${actionType}`;
+        ? t(`${actionType}ing...`)
+        : t('Confirm {{actionType}}', {
+            actionType: actionType,
+            actionTypeInChinese: t(actionType)
+        });
+
+    const pageTitle = t('{{actionType}} Notes for {{appName}} (Version: {{version}})', {
+        actionType: t(actionType),
+        appName: appName,
+        version: version
+    });
 
     return (
         <Container maxWidth="md" sx={{py: 3}}>
@@ -63,22 +74,22 @@ const UpdateLogPage: React.FC<UpdateLogPageProps> = ({
                 sx={{mb: 3, alignSelf: 'flex-start'}}
                 disabled={isConfirmingAction}
             >
-                Back to App List
+                {t('Back to App List')}
             </Button>
 
             <Typography variant="h5" component="h2" gutterBottom>
-                {actionType} Notes for {appName} (Version: {version})
+                {pageTitle}
             </Typography>
 
             {notesLoading && (
                 <Box sx={{display: 'flex', justifyContent: 'center', alignItems: 'center', my: 3}}>
                     <CircularProgress sx={{mr: 1}}/>
-                    <Typography>Loading notes...</Typography>
+                    <Typography>{t('Loading notes...')}</Typography>
                 </Box>
             )}
             {notesError && (
                 <Alert severity="error" sx={{my: 2}}>
-                    Error loading notes: {notesError}
+                    {notesError}
                 </Alert>
             )}
 
@@ -102,7 +113,7 @@ const UpdateLogPage: React.FC<UpdateLogPageProps> = ({
                         onClick={onBack}
                         disabled={isConfirmingAction}
                     >
-                        Cancel
+                        {t('Cancel')}
                     </Button>
                     <Button
                         variant="contained"

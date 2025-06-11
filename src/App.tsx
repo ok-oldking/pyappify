@@ -1,4 +1,4 @@
-// src/App.tsx
+import './i18n'; // Initialize i18next
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {listen, UnlistenFn} from "@tauri-apps/api/event";
@@ -17,6 +17,7 @@ import {
     FormControl,
     IconButton,
     InputLabel,
+    Link,
     List,
     ListItem,
     MenuItem,
@@ -31,6 +32,7 @@ import {
     Build,
     Cached,
     Delete,
+    Info as InfoIcon,
     OpenInNew,
     PlayArrow,
     Settings as SettingsIcon,
@@ -41,6 +43,7 @@ import {
 import {createTheme, ThemeProvider} from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import useMediaQuery from '@mui/material/useMediaQuery';
+import {useTranslation} from 'react-i18next';
 
 interface Profile {
     name: string;
@@ -96,18 +99,7 @@ type Page =
 type ThemeModeSetting = 'light' | 'dark' | 'system';
 
 const PIP_CACHE_DIR_CONFIG_KEY = "Pip Cache Directory";
-const DEFAULT_PYTHON_VERSION_CONFIG_KEY = "Default Python Version";
-const PIP_INDEX_URL_CONFIG_KEY = "Pip Index URL";
 
-const PIP_INDEX_URL_DISPLAY_OPTIONS_MAP: Record<string, string> = {
-    "": "None (Use System Config File)",
-    "https://pypi.org/simple/": "Pypi",
-    "https://pypi.tuna.tsinghua.edu.cn/simple": "Tsinghua",
-    "http://mirrors.aliyun.com/pypi/simple/": "AliYun",
-    "https://mirrors.ustc.edu.cn/pypi/simple/": "ustc",
-    "https://repo.huaweicloud.com/repository/pypi/simple/": "huawei",
-    "https://mirrors.cloud.tencent.com/pypi/simple/": "tencent"
-};
 
 async function invokeTauriCommandWrapper<T>(
     command: string,
@@ -130,6 +122,7 @@ async function invokeTauriCommandWrapper<T>(
 }
 
 function App() {
+    const {t} = useTranslation();
     const [apps, setApps] = useState<App[] | null>(null);
     const [status, setStatus] = useState<StatusState>({loading: true, error: null, info: null, messageLoading: false});
 
@@ -529,12 +522,12 @@ function App() {
         }));
         setStartingAppName(null);
 
-        updateStatus({loading: true, info: "Refreshing app list..."});
+        updateStatus({loading: true, info: "Refreshing app..."});
         await invokeTauriCommandWrapper<App[]>(
             "load_apps",
             undefined,
             () => {
-                updateStatus({loading: false, info: "App list refreshed."});
+                updateStatus({loading: false, info: "App refreshed."});
             },
             (errorMessage, rawError) => {
                 console.error("Failed to reload apps after install/clone attempt:", rawError);
@@ -716,19 +709,11 @@ function App() {
         handleSettingChange(PIP_CACHE_DIR_CONFIG_KEY, newValue);
     };
 
-    const handleChangePythonVersion = (newValue: string) => {
-        handleSettingChange(DEFAULT_PYTHON_VERSION_CONFIG_KEY, newValue);
-    };
-
-    const handleChangePipIndexUrl = (newValue: string) => {
-        handleSettingChange(PIP_INDEX_URL_CONFIG_KEY, newValue);
-    };
-
 
     let pageContent;
 
     if (currentPage === 'installConsole' && startingAppName) {
-        const consoleTitle = `Installing App: ${startingAppName}`;
+        const consoleTitle = t('Installing App: {{appName}}', {appName: startingAppName});
         pageContent = (
             <ConsolePage
                 title={consoleTitle}
@@ -742,7 +727,7 @@ function App() {
     } else if (currentPage === 'startConsole' && startingAppName) {
         pageContent = (
             <ConsolePage
-                title={`Starting App: ${startingAppName}`}
+                title={t('Starting App: {{appName}}', {appName: startingAppName})}
                 appName={startingAppName}
                 initialMessage={consoleInitialMessage}
                 onBack={handleBackFromStartConsole}
@@ -761,9 +746,14 @@ function App() {
             />
         );
     } else if (currentPage === 'versionChangeConsole' && versionChangeConsoleData && startingAppName) {
+        const actionTypeInChinese = t(versionChangeConsoleData.actionType);
+        const title = t('{{actionType}} App: {{appName}}', {
+            actionType: versionChangeConsoleData.actionType,
+            actionTypeInChinese: actionTypeInChinese
+        })
         pageContent = (
             <ConsolePage
-                title={`${versionChangeConsoleData.actionType} App: ${versionChangeConsoleData.appName}`}
+                title={title}
                 appName={startingAppName}
                 initialMessage={consoleInitialMessage}
                 onBack={handleBackFromVersionChangeConsole}
@@ -774,7 +764,7 @@ function App() {
     } else if (currentPage === 'runningAppConsole' && startingAppName) {
         pageContent = (
             <ConsolePage
-                title={`Console: ${startingAppName}`}
+                title={t('Console: {{appName}}', {appName: startingAppName})}
                 appName={startingAppName}
                 initialMessage={consoleInitialMessage}
                 onBack={handleBackFromRunningAppConsole}
@@ -786,16 +776,16 @@ function App() {
         pageContent = (
             <Container maxWidth="sm" sx={{py: 4}}>
                 <Typography variant="h5" gutterBottom sx={{mb: 3}}>
-                    Choose Profile for {profileChoiceApp.name}
+                    {t('Choose Profile for {{appName}}', {appName: profileChoiceApp.name})}
                 </Typography>
                 {profileChoiceApp.profiles && profileChoiceApp.profiles.length > 0 ? (
                     <>
                         <FormControl fullWidth sx={{my: 2}}>
-                            <InputLabel id="profile-select-label">Profile</InputLabel>
+                            <InputLabel id="profile-select-label">{t('Profile')}</InputLabel>
                             <Select
                                 labelId="profile-select-label"
                                 value={selectedProfileForInstall}
-                                label="Profile"
+                                label={t('Profile')}
                                 onChange={(e: SelectChangeEvent<string>) => setSelectedProfileForInstall(e.target.value)}
                             >
                                 {profileChoiceApp.profiles.map(profile => (
@@ -810,7 +800,7 @@ function App() {
                                 setCurrentPage('list');
                                 setProfileChoiceApp(null);
                             }}>
-                                Cancel
+                                {t('Cancel')}
                             </Button>
                             <Button
                                 variant="contained"
@@ -818,26 +808,25 @@ function App() {
                                     if (selectedProfileForInstall) {
                                         handleInstallWithProfile(profileChoiceApp.name, selectedProfileForInstall);
                                     } else {
-                                        updateStatus({error: "Please select a profile."});
+                                        updateStatus({error: t("Please select a profile.")});
                                     }
                                 }}
                                 disabled={!selectedProfileForInstall || appActionLoading[profileChoiceApp.name]}
                             >
-                                {appActionLoading[profileChoiceApp.name] ? "Starting Install..." : "Confirm & Install"}
+                                {appActionLoading[profileChoiceApp.name] ? t("Starting Install...") : t("Confirm & Install")}
                             </Button>
                         </Stack>
                     </>
                 ) : (
                     <>
                         <Typography sx={{my: 2}}>
-                            No profiles available or configured for this app. Please check the app's configuration
-                            (ok.yml).
+                            {t("No profiles available or configured for this app. Please check the app's configuration (ok.yml).")}
                         </Typography>
                         <Button variant="outlined" onClick={() => {
                             setCurrentPage('list');
                             setProfileChoiceApp(null);
                         }}>
-                            Back to List
+                            {t('Back to List')}
                         </Button>
                     </>
                 )}
@@ -847,26 +836,26 @@ function App() {
         pageContent = (
             <Container maxWidth="sm" sx={{py: 4}}>
                 <Typography variant="h5" gutterBottom sx={{mb: 3}}>
-                    Change Profile for {appForProfileChange.name}
+                    {t('Change Profile for {{appName}}', {appName: appForProfileChange.name})}
                 </Typography>
                 <Typography variant="subtitle1" gutterBottom sx={{mb: 1}}>
-                    Current Profile: {appForProfileChange.current_profile}
+                    {t('Current Profile: {{profile}}', {profile: appForProfileChange.current_profile})}
                 </Typography>
                 {appForProfileChange.profiles && appForProfileChange.profiles.length > 0 ? (
                     <>
                         <FormControl fullWidth sx={{my: 2}}>
-                            <InputLabel id="change-profile-select-label">New Profile</InputLabel>
+                            <InputLabel id="change-profile-select-label">{t('New Profile')}</InputLabel>
                             <Select
                                 labelId="change-profile-select-label"
                                 value={selectedNewProfileName}
-                                label="New Profile"
+                                label={t('New Profile')}
                                 onChange={(e: SelectChangeEvent<string>) => setSelectedNewProfileName(e.target.value)}
                             >
                                 {appForProfileChange.profiles.map(profile => (
                                     <MenuItem key={profile.name} value={profile.name}
                                               disabled={profile.name === appForProfileChange.current_profile}>
                                         {profile.name}
-                                        {profile.name === appForProfileChange.current_profile && " (Current)"}
+                                        {profile.name === appForProfileChange.current_profile && t(" (Current)")}
                                     </MenuItem>
                                 ))}
                             </Select>
@@ -877,7 +866,7 @@ function App() {
                                 setAppForProfileChange(null);
                                 setSelectedNewProfileName("");
                             }}>
-                                Cancel
+                                {t('Cancel')}
                             </Button>
                             <Button
                                 variant="contained"
@@ -885,20 +874,20 @@ function App() {
                                     if (selectedNewProfileName && selectedNewProfileName !== appForProfileChange.current_profile) {
                                         handleConfirmProfileChange(appForProfileChange.name, selectedNewProfileName);
                                     } else if (selectedNewProfileName === appForProfileChange.current_profile) {
-                                        updateStatus({error: "Please select a different profile."});
+                                        updateStatus({error: t("Please select a different profile.")});
                                     } else {
-                                        updateStatus({error: "Please select a profile."});
+                                        updateStatus({error: t("Please select a profile.")});
                                     }
                                 }}
                                 disabled={!selectedNewProfileName || selectedNewProfileName === appForProfileChange.current_profile || appActionLoading[appForProfileChange.name]}
                             >
-                                {appActionLoading[appForProfileChange.name] ? "Initiating..." : "Change Profile"}
+                                {appActionLoading[appForProfileChange.name] ? t("Initiating...") : t("Change Profile")}
                             </Button>
                         </Stack>
                     </>
                 ) : (
                     <Typography sx={{my: 2}}>
-                        No profiles available for this app. This view should not be reachable in this state.
+                        {t("No profiles available for this app. This view should not be reachable in this state.")}
                     </Typography>
                 )}
             </Container>
@@ -906,7 +895,10 @@ function App() {
     } else if (currentPage === 'profileChangeConsole' && profileChangeData && startingAppName) {
         pageContent = (
             <ConsolePage
-                title={`Changing Profile: ${profileChangeData.appName} to '${profileChangeData.newProfile}'`}
+                title={t("Changing Profile: {{appName}} to '{{newProfile}}'", {
+                    appName: profileChangeData.appName,
+                    newProfile: profileChangeData.newProfile
+                })}
                 appName={startingAppName}
                 initialMessage={consoleInitialMessage}
                 onBack={handleBackFromProfileChangeConsole}
@@ -925,42 +917,22 @@ function App() {
                     height: '100vh'
                 }}>
                     <CircularProgress/>
-                    <Typography sx={{ml: 2}}>Loading settings...</Typography>
+                    <Typography sx={{ml: 2}}>{t('Loading settings...')}</Typography>
                 </Container>
             );
         } else {
             const pipCacheConfig = allConfigs.find(c => c.name === PIP_CACHE_DIR_CONFIG_KEY);
-            const pythonVersionConfig = allConfigs.find(c => c.name === DEFAULT_PYTHON_VERSION_CONFIG_KEY);
-            const pipIndexUrlConfig = allConfigs.find(c => c.name === PIP_INDEX_URL_CONFIG_KEY);
-
             const currentPipCacheDir = (pipCacheConfig?.value as string) ?? "App Install Directory";
             const pipCacheDirOptions = (pipCacheConfig?.options as string[] | undefined) ?? ["System Default", "App Install Directory"];
-
-            const currentPythonVersion = (pythonVersionConfig?.value as string) ?? "3.12";
-            const pythonVersionOptions = (pythonVersionConfig?.options as string[] | undefined) ?? (pythonVersionConfig ? [pythonVersionConfig.default_value as string] : ["3.12"]);
-
-            const currentPipIndexUrl = pipIndexUrlConfig ? (pipIndexUrlConfig.value as string) : "";
-            const pipIndexUrlOptionsFromRust = pipIndexUrlConfig?.options ? (pipIndexUrlConfig.options as string[]) : (pipIndexUrlConfig ? [pipIndexUrlConfig.default_value as string] : [""]);
-
 
             pageContent = (
                 <SettingsPage
                     currentTheme={themeMode}
                     onChangeTheme={setThemeMode}
                     onBack={handleBackFromSettings}
-
                     currentPipCacheDir={currentPipCacheDir}
                     pipCacheDirOptions={pipCacheDirOptions}
                     onChangePipCacheDir={handleChangePipCacheDir}
-
-                    currentPythonVersion={currentPythonVersion}
-                    pythonVersionOptions={pythonVersionOptions}
-                    onChangePythonVersion={handleChangePythonVersion}
-
-                    currentPipIndexUrl={currentPipIndexUrl}
-                    pipIndexUrlOptions={pipIndexUrlOptionsFromRust}
-                    pipIndexUrlDisplayMap={PIP_INDEX_URL_DISPLAY_OPTIONS_MAP}
-                    onChangePipIndexUrl={handleChangePipIndexUrl}
                 />
             );
         }
@@ -968,7 +940,14 @@ function App() {
         pageContent = (
             <Container maxWidth="lg" sx={{py: 3}}>
                 <Box sx={{display: 'flex', justifyContent: 'flex-end', alignItems: 'center', mb: 2}}>
-                    <IconButton onClick={navigateToSettings} color="inherit" aria-label="settings" title="Settings">
+                    <Link href="https://github.com/ok-oldking/pyappify" target="_blank" rel="noopener noreferrer"
+                          color="inherit">
+                        <IconButton title={t("App made with PyAppify")} color="inherit" aria-label="info">
+                            <InfoIcon/>
+                        </IconButton>
+                    </Link>
+                    <IconButton onClick={navigateToSettings} color="inherit" aria-label="settings"
+                                title={t("Settings")}>
                         <SettingsIcon/>
                     </IconButton>
                 </Box>
@@ -976,7 +955,7 @@ function App() {
                 {status.messageLoading && currentPage === 'list' && (
                     <Box sx={{display: 'flex', alignItems: 'center', my: 2}}>
                         <CircularProgress size={24} sx={{mr: 1}}/>
-                        <Typography>Processing action...</Typography>
+                        <Typography>{t('Processing action...')}</Typography>
                     </Box>
                 )}
                 <Snackbar
@@ -1000,10 +979,9 @@ function App() {
 
                 {status.loading && apps === null && !status.messageLoading &&
                     <Box sx={{display: 'flex', justifyContent: 'center', my: 3}}><CircularProgress/><Typography
-                        sx={{ml: 1}}>Loading apps list...</Typography></Box>}
+                        sx={{ml: 1}}>{t('Loading apps list...')}</Typography></Box>}
                 {!status.loading && !status.messageLoading && !status.error && !status.info && apps && apps.length === 0 && (
-                    <Typography sx={{my: 3, textAlign: 'center'}}>No apps found. Add one using the form
-                        above.</Typography>
+                    <Typography sx={{my: 3, textAlign: 'center'}}>{t('No apps found. Add one using the form above.')}</Typography>
                 )}
 
                 {apps && apps.length > 0 && (
@@ -1021,24 +999,26 @@ function App() {
                             const availableVersionsForSelect = app.available_versions.filter(v => v !== app.current_version);
                             const currentSelectedVersionForApp = selectedTargetVersions[app.name] || '';
 
-                            let actionButtonText = "Select Version";
+                            let actionButtonText = t("Set Version");
                             let actionButtonIcon = <SettingsApplications/>;
                             let actionButtonColor: "primary" | "secondary" | "success" | "warning" | "error" | "info" = "primary";
+                            let actionType = "Set";
 
 
                             if (currentSelectedVersionForApp && app.current_version) {
                                 const comparison = compareVersions(currentSelectedVersionForApp, app.current_version);
                                 if (comparison > 0) {
-                                    actionButtonText = "Update App";
+                                    actionType = "Update";
                                     actionButtonIcon = <Update/>;
                                     actionButtonColor = "success";
                                 } else if (comparison < 0) {
-                                    actionButtonText = "Downgrade App";
+                                    actionType = "Downgrade";
                                     actionButtonIcon = <ArrowDownward/>;
                                     actionButtonColor = "warning";
                                 }
+                                actionButtonText = t('{{action}} App', {action: t(actionType)});
                             } else if (currentSelectedVersionForApp) {
-                                actionButtonText = "Set Version";
+                                actionButtonText = t("Set Version");
                                 actionButtonIcon = <Build/>;
                             }
 
@@ -1066,13 +1046,13 @@ function App() {
                                                     {isInstalled && app.current_profile && ` [${app.current_profile}]`}
                                                     {!isInstalled && !isEffectivelyInstalling &&
                                                         <Typography component="span" color="text.secondary"
-                                                                    sx={{ml: 1}}>(Not Installed)</Typography>}
+                                                                    sx={{ml: 1}}>{t('(Not Installed)')}</Typography>}
                                                     {isEffectivelyInstalling &&
                                                         <Typography component="span" color="info.main"
-                                                                    sx={{ml: 1}}>(Installing...)</Typography>}
+                                                                    sx={{ml: 1}}>{t('(Installing...)')}</Typography>}
                                                     {isInstalled && isRunning &&
                                                         <Typography component="span" color="success.main"
-                                                                    sx={{ml: 1}}>(Running)</Typography>}
+                                                                    sx={{ml: 1}}>{t('(Running)')}</Typography>}
                                                 </Typography>
                                             </Box>
 
@@ -1092,7 +1072,7 @@ function App() {
                                                                 onClick={() => handleStopApp(app.name)}
                                                                 disabled={disableRowActions}
                                                             >
-                                                                {isThisAppLoadingAction ? "Stopping..." : "Stop App"}
+                                                                {isThisAppLoadingAction ? t("Stopping...") : t("Stop App")}
                                                             </Button>
                                                             <Button
                                                                 variant="outlined"
@@ -1102,7 +1082,7 @@ function App() {
                                                                 onClick={() => handleOpenRunningAppConsole(app.name)}
                                                                 disabled={disableRowActions}
                                                             >
-                                                                Console
+                                                                {t('Console')}
                                                             </Button>
                                                         </>
                                                     ) : (
@@ -1116,7 +1096,7 @@ function App() {
                                                             onClick={() => handleStartApp(app.name)}
                                                             disabled={disableRowActions || !app.current_version}
                                                         >
-                                                            {(isThisAppLoadingAction && startingAppName === app.name && isStartAppProcessRunning) ? "Starting..." : "Start App"}
+                                                            {(isThisAppLoadingAction && startingAppName === app.name && isStartAppProcessRunning) ? t("Starting...") : t("Start App")}
                                                         </Button>
                                                     )
                                                 ) : isEffectivelyInstalling ? (
@@ -1129,7 +1109,7 @@ function App() {
                                                             onClick={() => handleOpenRunningAppConsole(app.name)}
                                                             disabled={disableRowActions}
                                                         >
-                                                            Console
+                                                            {t('Console')}
                                                         </Button>
                                                     </>
                                                 ) : (
@@ -1143,21 +1123,7 @@ function App() {
                                                         onClick={() => handleInstallClick(app)}
                                                         disabled={disableRowActions || (isThisAppLoadingAction && startingAppName === app.name && isInstallProcessRunning)}
                                                     >
-                                                        {(isThisAppLoadingAction && startingAppName === app.name && isInstallProcessRunning) ? "Installing..." : "Install"}
-                                                    </Button>
-                                                )}
-
-                                                {isInstalled && (
-                                                    <Button
-                                                        variant="outlined"
-                                                        color="error"
-                                                        size="small"
-                                                        startIcon={isThisAppLoadingAction && (isInstallProcessRunning || isProfileChangeProcessRunning || isVersionChangeProcessRunning || (isRunning && startingAppName === app.name)) ?
-                                                            <CircularProgress size={16} color="inherit"/> : <Delete/>}
-                                                        onClick={() => handleDeleteApp(app.name)}
-                                                        disabled={disableGlobalActions || isRunning || (isThisAppLoadingAction && startingAppName === app.name && (isInstallProcessRunning || isProfileChangeProcessRunning || isVersionChangeProcessRunning))}
-                                                    >
-                                                        {isThisAppLoadingAction && startingAppName === app.name && (isRunning || isInstallProcessRunning || isProfileChangeProcessRunning || isVersionChangeProcessRunning) ? "Deleting..." : "Delete"}
+                                                        {(isThisAppLoadingAction && startingAppName === app.name && isInstallProcessRunning) ? t("Installing...") : t("Install")}
                                                     </Button>
                                                 )}
 
@@ -1171,7 +1137,25 @@ function App() {
                                                         onClick={() => handleNavigateToChangeProfilePage(app)}
                                                         disabled={disableRowActions}
                                                     >
-                                                        {isProfileChangeLoading ? "Changing..." : "Change Profile"}
+                                                        {isProfileChangeLoading ? t("Changing...") : t("Change Profile")}
+                                                    </Button>
+                                                )}
+
+                                                {isInstalled && (
+                                                    <Button
+                                                        variant="outlined"
+                                                        color="error"
+                                                        size="small"
+                                                        startIcon={isThisAppLoadingAction && (isInstallProcessRunning || isProfileChangeProcessRunning || isVersionChangeProcessRunning || (isRunning && startingAppName === app.name)) ?
+                                                            <CircularProgress size={16} color="inherit"/> : <Delete/>}
+                                                        onClick={() => {
+                                                            if (window.confirm(t('Are you sure you want to delete {{appName}}? This action cannot be undone.', {appName: app.name}))) {
+                                                                handleDeleteApp(app.name);
+                                                            }
+                                                        }}
+                                                        disabled={disableGlobalActions || isRunning || (isThisAppLoadingAction && startingAppName === app.name && (isInstallProcessRunning || isProfileChangeProcessRunning || isVersionChangeProcessRunning))}
+                                                    >
+                                                        {isThisAppLoadingAction && startingAppName === app.name && (isRunning || isInstallProcessRunning || isProfileChangeProcessRunning || isVersionChangeProcessRunning) ? t("Deleting...") : t("Delete")}
                                                     </Button>
                                                 )}
                                             </Stack>
@@ -1183,12 +1167,12 @@ function App() {
                                                     <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 200}}}
                                                                  disabled={disableRowActions}>
                                                         <InputLabel id={`version-select-label-${app.name}`}>
-                                                            Change version...
+                                                            {t('Change version...')}
                                                         </InputLabel>
                                                         <Select
                                                             labelId={`version-select-label-${app.name}`}
                                                             value={currentSelectedVersionForApp}
-                                                            label="Change version..."
+                                                            label={t('Change version...')}
                                                             onChange={(e: SelectChangeEvent<string>) => {
                                                                 setSelectedTargetVersions(prev => ({
                                                                     ...prev,
@@ -1198,13 +1182,13 @@ function App() {
                                                             }}
                                                         >
                                                             <MenuItem value="" disabled={!currentSelectedVersionForApp}>
-                                                                <em>Change version...</em>
+                                                                <em>{t('Change version...')}</em>
                                                             </MenuItem>
                                                             {availableVersionsForSelect.map((version) => (
                                                                 <MenuItem key={version} value={version}>
                                                                     {version}
-                                                                    {app.current_version && compareVersions(version, app.current_version) > 0 && ' (Update)'}
-                                                                    {app.current_version && compareVersions(version, app.current_version) < 0 && ' (Downgrade)'}
+                                                                    {app.current_version && compareVersions(version, app.current_version) > 0 && ` ${t('(Update)')}`}
+                                                                    {app.current_version && compareVersions(version, app.current_version) < 0 && ` ${t('(Downgrade)')}`}
                                                                 </MenuItem>
                                                             ))}
                                                         </Select>
@@ -1218,7 +1202,7 @@ function App() {
                                                         onClick={() => handleNavigateToUpdateLogPage(app.name, currentSelectedVersionForApp, app.current_version)}
                                                         disabled={!currentSelectedVersionForApp || disableRowActions}
                                                     >
-                                                        {isVersionChangeLoading ? `${actionButtonText.split(" ")[0]}ing...` : actionButtonText}
+                                                        {isVersionChangeLoading ? t(`${actionType}ing...`) : actionButtonText}
                                                     </Button>
                                                 </Stack>
                                             )}
@@ -1227,22 +1211,21 @@ function App() {
                                             {isInstalled && !isRunning && !app.current_version && (
                                                 <Typography variant="caption" display="block"
                                                             sx={{mt: 1, fontStyle: 'italic'}}>
-                                                    App is marked installed but has no current version. Consider
-                                                    re-installing or setting a version if available.
+                                                    {t("App is marked installed but has no current version. Consider re-installing or setting a version if available.")}
                                                 </Typography>
                                             )}
                                             {isInstalled && !isRunning && app.current_version && availableVersionsForSelect.length === 0 &&
                                                 (!app.profiles || app.profiles.length <= 1) && (
                                                     <Typography variant="caption" display="block"
                                                                 sx={{mt: 1, fontStyle: 'italic'}}>
-                                                        No other versions or profiles available for modification.
+                                                        {t("No other versions or profiles available for modification.")}
                                                     </Typography>
                                                 )}
                                             {isInstalled && !isRunning && app.current_version && availableVersionsForSelect.length === 0 &&
                                                 (app.profiles && app.profiles.length > 1) && (
                                                     <Typography variant="caption" display="block"
                                                                 sx={{mt: 1, fontStyle: 'italic'}}>
-                                                        No other versions available. You can change the profile.
+                                                        {t("No other versions available. You can change the profile.")}
                                                     </Typography>
                                                 )}
                                         </CardContent>
