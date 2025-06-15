@@ -15,6 +15,7 @@ src-tauri/apps
 src-tauri/python_envs
 src-tauri/dev_cwd/*
 src-tauri/dev_cwd
+src-tauri/dev_cwd/data
 
 # Editor directories and files
 .vscode/*
@@ -26,3 +27,4 @@ src-tauri/dev_cwd
 *.njsproj
 *.sln
 *.sw?
+/src-tauri/data

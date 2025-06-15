@@ -128,13 +128,15 @@ pub(crate) async fn get_app_lock(app_name: &str) -> Arc<Mutex<()>> {
 }
 
 #[tauri::command]
-pub async fn load_apps() -> Result<(), Error> {
+pub async fn load_apps() -> Result<Vec<App>, Error> {
     {
         let apps_map = APPS.lock().await;
         if !apps_map.is_empty() {
             info!("App already loaded. Triggering update from disk.");
             drop(apps_map);
-            return update_apps_from_disk().await;
+            update_apps_from_disk().await?;
+            let apps_list: Vec<App> = APPS.lock().await.values().cloned().collect();
+            return Ok(apps_list)
         }
     }
 
@@ -198,7 +200,8 @@ pub async fn load_apps() -> Result<(), Error> {
     update_apps_from_disk().await?;
     info!("Finished loading app details.");
     emit_apps().await;
-    Ok(())
+    let apps_list: Vec<App> = APPS.lock().await.values().cloned().collect();
+    Ok(apps_list)
 }
 
 async fn update_apps_from_disk() -> Result<(), Error> {

@@ -2,7 +2,7 @@
 use once_cell::sync::OnceCell;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Wry};
-use tracing::error;
+use tracing::{debug, error};
 
 static GLOBAL_APP_HANDLE: OnceCell<AppHandle<Wry>> = OnceCell::new();
 
@@ -24,15 +24,17 @@ struct MessagePayload<'a> {
     error: bool,
 }
 
-fn get_app_handle() -> &'static AppHandle<Wry> {
-    GLOBAL_APP_HANDLE
-        .get()
-        .expect("AppHandle not initialized. Call emit::init_app_handle during tauri setup.")
+fn get_app_handle() -> Option<&'static AppHandle<Wry>> {
+    GLOBAL_APP_HANDLE.get()
 }
 
 pub fn emit<S: Serialize + Clone>(event_name: &str, payload: S) {
-    if let Err(e) = get_app_handle().emit(event_name, payload) {
-        error!("Failed to emit event '{}': {}", event_name, e);
+    if let Some(handle) = get_app_handle() {
+        if let Err(e) = handle.emit(event_name, payload) {
+            error!("Failed to emit event '{}': {}", event_name, e);
+        }
+    } else {
+        debug!("AppHandle not initialized. Cannot emit event '{}'.", event_name);
     }
 }
 

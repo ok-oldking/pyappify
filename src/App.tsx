@@ -546,12 +546,12 @@ function App() {
         clearMessages();
         updateStatus({messageLoading: false});
 
-        updateStatus({loading: true, info: "Refreshing app list..."});
+        updateStatus({loading: true, info: "Refreshing app..."});
         await invokeTauriCommandWrapper<App[]>(
             "load_apps",
             undefined,
             () => {
-                updateStatus({loading: false, info: "App list refreshed."});
+                updateStatus({loading: false, info: "App refreshed."});
             },
             (errorMessage, rawError) => {
                 console.error("Failed to reload apps after start attempt:", rawError);
@@ -572,12 +572,12 @@ function App() {
         clearMessages();
         updateStatus({messageLoading: false});
 
-        updateStatus({loading: true, info: "Refreshing app list..."});
+        updateStatus({loading: true, info: "Refreshing App..."});
         await invokeTauriCommandWrapper<App[]>(
             "load_apps",
             undefined,
             () => {
-                updateStatus({loading: false, info: "App list refreshed."});
+                updateStatus({loading: false, info: "App refreshed."});
                 if (appNameThatChanged) {
                     setSelectedTargetVersions(prev => ({
                         ...prev,
@@ -636,12 +636,12 @@ function App() {
         clearMessages();
         updateStatus({messageLoading: false});
 
-        updateStatus({loading: true, info: "Refreshing app list..."});
+        updateStatus({loading: true, info: "Refreshing app..."});
         await invokeTauriCommandWrapper<App[]>(
             "load_apps",
             undefined,
             () => {
-                updateStatus({loading: false, info: "App list refreshed."});
+                updateStatus({loading: false, info: "App refreshed."});
             },
             (errorMessage, rawError) => {
                 console.error("Failed to reload apps after profile change attempt:", rawError);

@@ -1,17 +1,12 @@
 name: "ok-gf2"
 profiles:
-  - name: "ok-gf2-cpu版本"
+  - name: "release"
     git_url: "https://cnb.cool/ok-oldking/ok-gf2.git"
     main_script: "main.py"
     requires_python: "3.12"
     admin: true
     requirements: "requirements.txt"
     # PYTHONPATH: "your/default/path" # Optional, will be "" if missing
-  - name: "ok-gf2-Cuda加速(需要30系以上N卡,最新驱动"
-    main_script: "main_cuda_paddle.py"
-    requirements: "requirements-cuda-paddle.txt"
-    # admin will default to false (due to #[serde(default)] on the bool field)
-    # PYTHONPATH will default to "" (due to #[serde(default)] on the String field)
   - name: "debug"
     main_script: "main_debug.py"
     # admin will default to false

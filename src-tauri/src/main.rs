@@ -3,5 +3,5 @@
 
 #[tokio::main]
 async fn main() {
-    ok_store_lib::run()
+    pyappify_lib::run().await;
 }
