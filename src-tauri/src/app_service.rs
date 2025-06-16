@@ -437,29 +437,31 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
         );
     }
 
-    {
-        let mut apps_map = APPS.lock().await;
-        if let Some(app) = apps_map.get_mut(app_name) {
-            app.installed = true;
-            app.current_profile = final_profile_name_to_set.clone();
-            load_app_details(app).await?;
-            let app_to_save = app.clone();
-            drop(apps_map);
 
-            if let Err(e) = save_app_config_to_json(&app_to_save).await {
-                error!(
-                    "Failed to save app config for {} after setup (installed=true, profile='{}'): {:?}",
-                    app_name, final_profile_name_to_set, e
-                );
-            }
-            emit_apps().await;
-        } else {
-            warn!(
-                "App {} not found in APPS map after setup, cannot mark as installed or set profile.",
-                app_name
+    let mut apps_map = APPS.lock().await;
+    if let Some(app) = apps_map.get_mut(app_name) {
+        load_app_details(app).await?;
+        app.installed = true;
+        app.current_profile = final_profile_name_to_set.clone();
+
+        let app_to_save = app.clone();
+        drop(apps_map);
+
+        if let Err(e) = save_app_config_to_json(&app_to_save).await {
+            error!(
+                "Failed to save app config for {} after setup (installed=true, profile='{}'): {:?}",
+                app_name, final_profile_name_to_set, e
             );
         }
+        info!("App config json saved successfully after setup {} installed {}", app_to_save.name, app_to_save.installed);
+        emit_apps().await;
+    } else {
+        warn!(
+            "App {} not found in APPS map after setup, cannot mark as installed or set profile.",
+            app_name
+        );
     }
+
     emit_success_finish!(app_name);
     Ok(venv_python_exe)
 }

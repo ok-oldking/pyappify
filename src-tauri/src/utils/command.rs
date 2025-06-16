@@ -3,7 +3,7 @@ use crate::utils::error::Error;
 use crate::{emit_error, emit_info, ensure_some, err};
 use std::process::{ExitStatus, Stdio};
 use tokio::io::AsyncBufReadExt;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 pub async fn run_command_and_stream_output(
     mut command: tokio::process::Command,
@@ -76,8 +76,13 @@ pub async fn run_command_and_stream_output(
             match stderr_buf_reader.read_line(&mut buffer).await {
                 Ok(0) => break,
                 Ok(_) => {
-                    emit_error!(app_name_for_stderr, "{}", buffer.as_str());
+                    let err_string = buffer.to_string();
                     buffer.clear();
+                    if !err_string.trim().is_empty() && !err_string.contains("A new release of pip is available") && !err_string.contains("[notice] To update, run") {
+                        emit_error!(app_name_for_stderr, "{}", err_string);
+                    } else {
+                        debug!("not emitting black listed stderr {}", err_string);
+                    }
                 }
                 Err(e) => {
                     emit_error!(app_name_for_stderr, "Error reading stderr line: {}", e);
