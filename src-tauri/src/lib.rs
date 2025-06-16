@@ -123,6 +123,19 @@ pub async fn run() {
         }
     }
 
+    #[cfg(not(debug_assertions))]
+    {
+        if let Some(exe_path) = env::current_exe().ok() {
+            if let Some(exe_dir) = exe_path.parent() {
+                if let Err(e) = env::set_current_dir(exe_dir) {
+                    eprintln!("Failed to set current directory to executable path: {}", e);
+                } else {
+                    println!("Current directory set to: {}", env::current_dir().unwrap().display());
+                }
+            }
+        }
+    }
+
     if has_cli_command() {
         let context = tauri::generate_context!();
         let app = tauri::Builder::default()
