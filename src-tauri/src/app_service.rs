@@ -715,6 +715,9 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
         profile_to_run_with.name.clone(),
     ));
 
+    envs.push(("PYAPPIFY_PID".to_string(), std::process::id().to_string()));
+    envs.push(("PYAPPIFY_UPGRADEABLE".to_string(), 1.to_string()));
+
     execute_python::run_python_script(
         app_name.as_str(),
         &venv_path,
