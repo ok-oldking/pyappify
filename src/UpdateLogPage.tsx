@@ -74,7 +74,7 @@ const UpdateLogPage: React.FC<UpdateLogPageProps> = ({
                 sx={{mb: 3, alignSelf: 'flex-start'}}
                 disabled={isConfirmingAction}
             >
-                {t('Back to App List')}
+                {t('Back to App')}
             </Button>
 
             <Typography variant="h5" component="h2" gutterBottom>

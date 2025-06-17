@@ -858,7 +858,7 @@ function App() {
                             setCurrentPage('list');
                             setProfileChoiceApp(null);
                         }}>
-                            {t('Back to List')}
+                            {t('Back')}
                         </Button>
                     </>
                 )}
@@ -1005,7 +1005,7 @@ function App() {
 
                 {status.loading && apps === null && !status.messageLoading &&
                     <Box sx={{display: 'flex', justifyContent: 'center', my: 3}}><CircularProgress/><Typography
-                        sx={{ml: 1}}>{t('Loading apps list...')}</Typography></Box>}
+                        sx={{ml: 1}}>{t('Loading app...')}</Typography></Box>}
                 {!status.loading && !status.messageLoading && !status.error && !status.info && apps && apps.length === 0 && (
                     <Typography sx={{my: 3, textAlign: 'center'}}>{t('No apps found. Add one using the form above.')}</Typography>
                 )}

@@ -114,7 +114,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
                 <Box sx={{mt: 4, display: 'flex', justifyContent: 'center'}}>
                     <Button variant="outlined" onClick={onBack}>
-                        {t('Back to App List')}
+                        {t('Back to App')}
                     </Button>
                 </Box>
             </Paper>

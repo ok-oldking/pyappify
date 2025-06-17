@@ -14,7 +14,7 @@ const resources = {
             "App made with": "打包使用:",
             "Settings": "设置",
             "Processing action...": "正在处理操作...",
-            "Loading apps list...": "正在加载应用列表...",
+            "Loading app...": "正在加载应用...",
             "No apps found. Add one using the form above.": "未找到应用。请使用上方的表单添加一个。",
             "Update": "升级",
             "Downgrade": "降级",
@@ -51,7 +51,7 @@ const resources = {
             "No other versions available. You can change the profile.": "没有其他可用版本。您可以更改配置。",
 
             // UpdateLogPage
-            "Back to App List": "返回应用列表",
+            "Back to App": "返回应用",
             "Update Notes for {{appName}} (Version: {{version}})": "{{appName}} (版本: {{version}}) 的升级说明",
             "Downgrade Notes for {{appName}} (Version: {{version}})": "{{appName}} (版本: {{version}}) 的降级说明",
             "Set Notes for {{appName}} (Version: {{version}})": "{{appName}} (版本: {{version}}) 的版本设置说明",
@@ -89,7 +89,7 @@ const resources = {
             "Confirm & Install": "确认并安装",
             "Starting Install...": "开始安装...",
             "No profiles available or configured for this app. Please check the app's configuration (ok.yml).": "此应用没有可用或配置的档案。请检查应用的配置 (ok.yml)。",
-            "Back to List": "返回列表",
+            "Back": "返回",
             "Please select a profile.": "请选择一个配置。",
 
             // Change Profile
