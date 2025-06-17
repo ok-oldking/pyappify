@@ -13,31 +13,27 @@ use tokio::io::BufReader;
 use tokio::process::Command;
 use tracing::{error, info};
 
-// RAII Guard for managing CWD and environment variables for the current process
 struct ProcessContextGuard {
     original_dir: PathBuf,
-    original_env_vars: HashMap<String, Option<OsString>>, // Stores original values (or None if not set)
+    original_env_vars: HashMap<String, Option<OsString>>,
 }
 
 impl ProcessContextGuard {
     fn new(
         new_dir: &Path,
-        vars_to_set: &HashMap<String, String>, // Env vars to set with their new values
-        vars_to_remove: &[String],             // Env vars to remove
+        vars_to_set: &HashMap<String, String>,
+        vars_to_remove: &[String],
     ) -> Result<Self, std::io::Error> {
-        // 1. Capture all original states BEFORE making any changes to the process
         let original_dir = std::env::current_dir()?;
 
         let mut original_env_vars = HashMap::new();
 
-        // Consolidate all keys we will touch to capture their original state once
         let mut all_keys_to_manage = Vec::new();
         for key in vars_to_remove {
             all_keys_to_manage.push(key.clone());
         }
         for key in vars_to_set.keys() {
             if !vars_to_remove.contains(key) {
-                // Avoid duplicate if a key is in both lists (though unlikely for set/remove)
                 all_keys_to_manage.push(key.clone());
             }
         }
@@ -46,13 +42,8 @@ impl ProcessContextGuard {
             original_env_vars.insert(key.clone(), std::env::var_os(&key));
         }
 
-        // 2. Attempt to set the new CWD. If this fails, we bail out.
-        //    The environment variables of the current process have not been modified yet.
         std::env::set_current_dir(new_dir)?;
-        // If set_current_dir succeeded, original_dir and original_env_vars are populated correctly.
-        // The ProcessContextGuard object will be created, and its Drop will run.
 
-        // 3. CWD change was successful. Now change environment variables for the current process.
         for key_to_remove in vars_to_remove {
             std::env::remove_var(key_to_remove);
             info!(env_var = %key_to_remove, "Temporarily removed environment variable for current process.");
@@ -73,11 +64,10 @@ impl ProcessContextGuard {
 
 impl Drop for ProcessContextGuard {
     fn drop(&mut self) {
-        // Restore environment variables first
         info!("ProcessContextGuard: Restoring environment variables and CWD...");
         for (key, original_os_value) in &self.original_env_vars {
             if let Some(val) = original_os_value {
-                std::env::set_var(key, val); // val is OsString, set_var takes &OsStr
+                std::env::set_var(key, val);
                 info!(env_var = %key, value = %val.to_string_lossy(), "Restored environment variable.");
             } else {
                 std::env::remove_var(key);
@@ -85,7 +75,6 @@ impl Drop for ProcessContextGuard {
             }
         }
 
-        // Then restore original CWD
         if let Err(e) = std::env::set_current_dir(&self.original_dir) {
             error!(original_path = %self.original_dir.display(), "Failed to restore original working directory: {}", e);
         } else {
@@ -99,29 +88,19 @@ async fn run_python_script_as_admin_internal(
     python_executable: String,
     script_path: String,
     working_dir: &Path,
-    python_path: String,
+    envs: &[(String, String)],
 ) -> Result<(), Error> {
     info!(app_name = app_name, script = script_path, desired_cwd = %working_dir.display(), "Attempting to run Python script with admin privileges using runas.");
 
     let mut env_vars_to_set = HashMap::new();
     env_vars_to_set.insert("PYTHONIOENCODING".to_string(), "utf-8".to_string());
     env_vars_to_set.insert("PYTHONUNBUFFERED".to_string(), "1".to_string());
-
-    let mut env_vars_to_remove = vec!["PYTHONHOME".to_string()];
-
-    if !python_path.is_empty() {
-        info!(app_name = app_name, pythonpath = %python_path, "Setting PYTHONPATH for admin script.");
-        env_vars_to_set.insert("PYTHONPATH".to_string(), python_path);
-    } else {
-        info!(
-            app_name = app_name,
-            "PYTHONPATH is empty, will ensure it's removed for admin script if originally set."
-        );
-        env_vars_to_remove.push("PYTHONPATH".to_string());
+    for (key, value) in envs {
+        env_vars_to_set.insert(key.clone(), value.clone());
     }
 
-    // _guard will manage CWD and environment variables for the current process scope using std::env.
-    // These changes will be inherited by the process spawned by `runas`.
+    let env_vars_to_remove = vec!["PYTHONHOME".to_string()];
+
     let _guard = ProcessContextGuard::new(working_dir, &env_vars_to_set, &env_vars_to_remove)?;
     emit_info!(
         app_name,
@@ -138,9 +117,6 @@ async fn run_python_script_as_admin_internal(
     let app_name_clone = app_name.to_string();
 
     let status_result = tokio::task::spawn_blocking(move || runas_cmd_builder.status()).await;
-
-    // _guard goes out of scope here (or if an error occurred earlier and the function returned),
-    // its Drop implementation will restore the original CWD and environment variables for the Rust process.
 
     match status_result {
         Ok(Ok(status)) => {
@@ -185,7 +161,7 @@ async fn run_python_script_normal_internal(
     python_executable: String,
     script_path: String,
     working_dir: &Path,
-    python_path: String,
+    envs: &[(String, String)],
 ) -> Result<(), Error> {
     let mut cmd = Command::new(python_executable);
     cmd.arg(script_path)
@@ -195,15 +171,8 @@ async fn run_python_script_normal_internal(
         .kill_on_drop(false);
 
     cmd.env_remove("PYTHONHOME");
-    if !python_path.is_empty() {
-        info!(app_name = app_name, pythonpath = %python_path, "Setting PYTHONPATH for normal script.");
-        cmd.env("PYTHONPATH", python_path);
-    } else {
-        info!(
-            app_name = app_name,
-            "PYTHONPATH is empty, ensuring it's removed for normal script."
-        );
-        cmd.env_remove("PYTHONPATH");
+    for (key, value) in envs {
+        cmd.env(key, value);
     }
     cmd.env("PYTHONIOENCODING", "utf-8");
     cmd.env("PYTHONUNBUFFERED", "1");
@@ -228,7 +197,7 @@ pub async fn run_python_script(
     script_path: &Path,
     working_dir: &Path,
     as_admin: bool,
-    python_path: String,
+    envs: Vec<(String, String)>,
 ) -> Result<(), Error> {
     let python_executable = if cfg!(windows) {
         venv_path.join("Scripts").join("python.exe")
@@ -275,15 +244,15 @@ pub async fn run_python_script(
         python_exec_str,
         script_path_str
     );
-    if !python_path.is_empty() {
-        emit_info!(app_name, "PYTHONPATH will be set to: {}", python_path);
+    for (key, value) in &envs {
+        emit_info!(app_name, "Env: {}={}", key, value);
     }
 
     let app_name_owned = app_name.to_string();
     let python_exec_str_owned = python_exec_str.clone();
     let script_path_str_owned = script_path_str.clone();
     let working_dir_owned = working_dir.to_path_buf();
-    let python_path_owned = python_path.clone();
+    let envs_owned = envs;
 
     tokio::spawn(async move {
         let result = if as_admin {
@@ -292,20 +261,19 @@ pub async fn run_python_script(
                 python_exec_str_owned,
                 script_path_str_owned,
                 &working_dir_owned,
-                python_path_owned,
+                &envs_owned,
             )
-            .await
+                .await
         } else {
             run_python_script_normal_internal(
                 app_name_owned.as_str(),
                 python_exec_str_owned,
                 script_path_str_owned,
                 &working_dir_owned,
-                python_path_owned,
+                &envs_owned,
             )
-            .await
+                .await
         };
-        // Handle the result after awaiting the chosen future
         if let Err(e) = result {
             emit_error!(app_name_owned, "Python run Error {}", e);
             emit_error_finish!(app_name_owned);

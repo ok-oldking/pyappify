@@ -307,34 +307,18 @@ function App() {
                     return;
                 }
 
+                const sortedVersions = [...app.available_versions].sort((a, b) => compareVersions(b, a));
+                const latestVersion = sortedVersions.length > 0 ? sortedVersions[0] : undefined;
                 const currentExistingSelection = selectedTargetVersionsRef.current[app.name];
-                const isExistingSelectionValidAndByUser =
-                    currentExistingSelection &&
-                    app.available_versions.includes(currentExistingSelection) &&
-                    currentExistingSelection !== app.current_version;
 
-                if (isExistingSelectionValidAndByUser) {
+                if (app.current_version && latestVersion && compareVersions(latestVersion, app.current_version) > 0) {
+                    newSelectedTargets[app.name] = latestVersion;
+                } else if (currentExistingSelection && app.available_versions.includes(currentExistingSelection) && currentExistingSelection !== app.current_version) {
                     newSelectedTargets[app.name] = currentExistingSelection;
+                } else if (!app.current_version && latestVersion) {
+                    newSelectedTargets[app.name] = latestVersion;
                 } else {
-                    const availableForSelection = app.available_versions.filter(v => v !== app.current_version);
-                    if (availableForSelection.length > 0) {
-                        const sortedAvailable = [...availableForSelection].sort((a, b) => compareVersions(b, a));
-                        let versionToAutoSelect: string | undefined = undefined;
-
-                        if (app.current_version) {
-                            const newestUpgrade = sortedAvailable.find(v => compareVersions(v, app.current_version!) > 0);
-                            if (newestUpgrade) {
-                                versionToAutoSelect = newestUpgrade;
-                            }
-                        } else {
-                            if (sortedAvailable.length > 0) {
-                                versionToAutoSelect = sortedAvailable[0];
-                            }
-                        }
-                        if (versionToAutoSelect) {
-                            newSelectedTargets[app.name] = versionToAutoSelect;
-                        }
-                    }
+                    newSelectedTargets[app.name] = '';
                 }
             });
             setSelectedTargetVersions(prev => ({...prev, ...newSelectedTargets}));
@@ -550,7 +534,7 @@ function App() {
         }));
         setStartingAppName(null);
 
-        updateStatus({loading: true, info: "Refreshing app..."});
+        updateStatus({loading: true, info: t("Refreshing app...")});
         await invokeTauriCommandWrapper<App[]>(
             "load_apps",
             undefined,
@@ -746,7 +730,7 @@ function App() {
             "load_apps",
             undefined,
             () => {
-                updateStatus({info: t("App list refreshed.")});
+                updateStatus({info: t("App Refreshed.")});
             },
             (errorMessage, rawError) => {
                 console.error("Failed to check for updates:", rawError);

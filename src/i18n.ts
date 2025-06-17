@@ -11,7 +11,7 @@ const resources = {
     zh: {
         translation: {
             "Confirm Deletion": "确认删除",
-            "App made with PyAppify": "使用 PyAppify 构建",
+            "App made with": "打包使用:",
             "Settings": "设置",
             "Processing action...": "正在处理操作...",
             "Loading apps list...": "正在加载应用列表...",
@@ -43,6 +43,8 @@ const resources = {
             "(Downgrade)": "(降级)",
             "Updating...": "升级中...",
             "Downgrading...": "降级中...",
+            "App Refreshed.": "应用已刷新",
+            "Refreshing app...":"刷新应用中",
             "Setting...": "设置中...",
             "App is marked installed but has no current version. Consider re-installing or setting a version if available.": "应用已标记为已安装但没有当前版本。如果可用，请考虑重新安装或设置一个版本。",
             "No other versions or profiles available for modification.": "没有其他版本或配置可供修改。",

@@ -1,4 +1,4 @@
-// src/app_manager.rs
+//src/app_service.rs
 use crate::{
     app::{read_embedded_app, update_app_from_yml, YML_FILE_NAME},
     emit_error_finish, emit_info, emit_success_finish, emitter, err, execute_python, git,
@@ -637,12 +637,13 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
     let app_dir_lock = get_app_lock(&app_name).await;
     let _guard = app_dir_lock.lock().await;
 
-    let (profile_to_run_with, working_dir) = {
+    let (profile_to_run_with, working_dir, current_version) = {
         let mut apps_map = APPS.lock().await;
         if let Some(app) = apps_map.get_mut(&app_name) {
             app.last_start = Utc::now();
 
             let profile_settings = app.get_current_profile_settings().clone();
+            let current_version = app.current_version.clone();
 
             let app_to_save = app.clone();
             drop(apps_map); // Drop lock before async I/O
@@ -653,7 +654,11 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
                     app_name, e
                 );
             }
-            (profile_settings, get_app_working_dir_path(&app_name))
+            (
+                profile_settings,
+                get_app_working_dir_path(&app_name),
+                current_version,
+            )
         } else {
             return Err(anyhow!("App '{}' not found.", app_name).into());
         }
@@ -695,13 +700,28 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
         main_script_relative
     );
 
+    let mut envs = Vec::new();
+    if !profile_to_run_with.python_path.is_empty() {
+        envs.push((
+            "PYTHONPATH".to_string(),
+            profile_to_run_with.python_path.clone(),
+        ));
+    }
+    if let Some(version) = current_version {
+        envs.push(("PYAPPIFY_APP_VERSION".to_string(), version));
+    }
+    envs.push((
+        "PYAPPIFY_APP_PROFILE".to_string(),
+        profile_to_run_with.name.clone(),
+    ));
+
     execute_python::run_python_script(
         app_name.as_str(),
         &venv_path,
         &script_path,
         &working_dir,
         profile_to_run_with.is_admin(),
-        profile_to_run_with.python_path.clone(),
+        envs,
     )
         .await?;
 
