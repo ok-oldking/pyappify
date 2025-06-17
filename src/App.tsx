@@ -1,4 +1,5 @@
-import './i18n'; // Initialize i18next
+// src/App.tsx
+import './i18n';
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {listen, UnlistenFn} from "@tauri-apps/api/event";
@@ -14,6 +15,11 @@ import {
     CardContent,
     CircularProgress,
     Container,
+    Dialog,
+    DialogActions,
+    DialogContent,
+    DialogContentText,
+    DialogTitle,
     FormControl,
     IconButton,
     InputLabel,
@@ -25,6 +31,7 @@ import {
     SelectChangeEvent,
     Snackbar,
     Stack,
+    Tooltip,
     Typography
 } from "@mui/material";
 import {
@@ -32,7 +39,6 @@ import {
     Build,
     Cached,
     Delete,
-    Info as InfoIcon,
     OpenInNew,
     PlayArrow,
     Settings as SettingsIcon,
@@ -178,6 +184,10 @@ function App() {
     const [isProfileChangeProcessRunning, setIsProfileChangeProcessRunning] = useState<boolean>(false);
     const [profileChangeData, setProfileChangeData] = useState<{ appName: string; newProfile: string } | null>(null);
     const initialAutoStartDoneRef = useRef(false);
+
+    const [isConfirmDeleteDialogOpen, setConfirmDeleteDialogOpen] = useState(false);
+    const [appToDelete, setAppToDelete] = useState<string | null>(null);
+    const [checkingUpdateForApp, setCheckingUpdateForApp] = useState<string | null>(null);
 
 
     useEffect(() => {
@@ -402,6 +412,24 @@ function App() {
 
         updateStatus({messageLoading: false});
         setAppActionLoading(prev => ({...prev, [appName]: false}));
+    };
+
+    const handleDeleteClick = (appName: string) => {
+        setAppToDelete(appName);
+        setConfirmDeleteDialogOpen(true);
+    };
+
+    const handleConfirmDelete = () => {
+        if (appToDelete) {
+            handleDeleteApp(appToDelete);
+        }
+        setAppToDelete(null);
+        setConfirmDeleteDialogOpen(false);
+    };
+
+    const handleCancelDelete = () => {
+        setAppToDelete(null);
+        setConfirmDeleteDialogOpen(false);
     };
 
     const handleStopApp = async (appName: string) => {
@@ -709,6 +737,27 @@ function App() {
         handleSettingChange(PIP_CACHE_DIR_CONFIG_KEY, newValue);
     };
 
+    const handleCheckForUpdates = async (appName: string) => {
+        clearMessages();
+        setAppActionLoading(prev => ({...prev, [appName]: true}));
+        setCheckingUpdateForApp(appName);
+
+        await invokeTauriCommandWrapper<void>(
+            "load_apps",
+            undefined,
+            () => {
+                updateStatus({info: t("App list refreshed.")});
+            },
+            (errorMessage, rawError) => {
+                console.error("Failed to check for updates:", rawError);
+                updateStatus({error: `Failed to check for updates: ${errorMessage}`});
+            }
+        );
+
+        setAppActionLoading(prev => ({...prev, [appName]: false}));
+        setCheckingUpdateForApp(null);
+    };
+
 
     let pageContent;
 
@@ -746,11 +795,10 @@ function App() {
             />
         );
     } else if (currentPage === 'versionChangeConsole' && versionChangeConsoleData && startingAppName) {
-        const actionTypeInChinese = t(versionChangeConsoleData.actionType);
         const title = t('{{actionType}} App: {{appName}}', {
-            actionType: versionChangeConsoleData.actionType,
-            actionTypeInChinese: actionTypeInChinese
-        })
+            actionType: t(versionChangeConsoleData.actionType),
+            appName: startingAppName,
+        });
         pageContent = (
             <ConsolePage
                 title={title}
@@ -940,12 +988,6 @@ function App() {
         pageContent = (
             <Container maxWidth="lg" sx={{py: 3}}>
                 <Box sx={{display: 'flex', justifyContent: 'flex-end', alignItems: 'center', mb: 2}}>
-                    <Link href="https://github.com/ok-oldking/pyappify" target="_blank" rel="noopener noreferrer"
-                          color="inherit">
-                        <IconButton title={t("App made with PyAppify")} color="inherit" aria-label="info">
-                            <InfoIcon/>
-                        </IconButton>
-                    </Link>
                     <IconButton onClick={navigateToSettings} color="inherit" aria-label="settings"
                                 title={t("Settings")}>
                         <SettingsIcon/>
@@ -1148,11 +1190,7 @@ function App() {
                                                         size="small"
                                                         startIcon={isThisAppLoadingAction && (isInstallProcessRunning || isProfileChangeProcessRunning || isVersionChangeProcessRunning || (isRunning && startingAppName === app.name)) ?
                                                             <CircularProgress size={16} color="inherit"/> : <Delete/>}
-                                                        onClick={() => {
-                                                            if (window.confirm(t('Are you sure you want to delete {{appName}}? This action cannot be undone.', {appName: app.name}))) {
-                                                                handleDeleteApp(app.name);
-                                                            }
-                                                        }}
+                                                        onClick={() => handleDeleteClick(app.name)}
                                                         disabled={disableGlobalActions || isRunning || (isThisAppLoadingAction && startingAppName === app.name && (isInstallProcessRunning || isProfileChangeProcessRunning || isVersionChangeProcessRunning))}
                                                     >
                                                         {isThisAppLoadingAction && startingAppName === app.name && (isRunning || isInstallProcessRunning || isProfileChangeProcessRunning || isVersionChangeProcessRunning) ? t("Deleting...") : t("Delete")}
@@ -1160,74 +1198,81 @@ function App() {
                                                 )}
                                             </Stack>
 
-                                            {isInstalled && !isRunning && app.current_version && availableVersionsForSelect.length > 0 && (
+                                            {isInstalled && !isRunning && (
                                                 <Stack direction={{xs: 'column', sm: 'row'}} spacing={1}
                                                        alignItems="center"
                                                        sx={{mt: 2}}>
-                                                    <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 200}}}
-                                                                 disabled={disableRowActions}>
-                                                        <InputLabel id={`version-select-label-${app.name}`}>
-                                                            {t('Change version...')}
-                                                        </InputLabel>
-                                                        <Select
-                                                            labelId={`version-select-label-${app.name}`}
-                                                            value={currentSelectedVersionForApp}
-                                                            label={t('Change version...')}
-                                                            onChange={(e: SelectChangeEvent<string>) => {
-                                                                setSelectedTargetVersions(prev => ({
-                                                                    ...prev,
-                                                                    [app.name]: e.target.value,
-                                                                }));
-                                                                if (!status.messageLoading) clearMessages();
-                                                            }}
-                                                        >
-                                                            <MenuItem value="" disabled={!currentSelectedVersionForApp}>
-                                                                <em>{t('Change version...')}</em>
-                                                            </MenuItem>
-                                                            {availableVersionsForSelect.map((version) => (
-                                                                <MenuItem key={version} value={version}>
-                                                                    {version}
-                                                                    {app.current_version && compareVersions(version, app.current_version) > 0 && ` ${t('(Update)')}`}
-                                                                    {app.current_version && compareVersions(version, app.current_version) < 0 && ` ${t('(Downgrade)')}`}
-                                                                </MenuItem>
-                                                            ))}
-                                                        </Select>
-                                                    </FormControl>
-                                                    <Button
-                                                        variant="contained"
-                                                        size="small"
-                                                        color={actionButtonColor}
-                                                        startIcon={isVersionChangeLoading ? <CircularProgress size={16}
-                                                                                                              color="inherit"/> : actionButtonIcon}
-                                                        onClick={() => handleNavigateToUpdateLogPage(app.name, currentSelectedVersionForApp, app.current_version)}
-                                                        disabled={!currentSelectedVersionForApp || disableRowActions}
-                                                    >
-                                                        {isVersionChangeLoading ? t(`${actionType}ing...`) : actionButtonText}
-                                                    </Button>
+                                                    {availableVersionsForSelect.length > 0 ? (
+                                                        <>
+                                                            <FormControl size="small"
+                                                                         sx={{minWidth: {xs: '100%', sm: 200}}}
+                                                                         disabled={disableRowActions}>
+                                                                <InputLabel
+                                                                    id={`version-select-label-${app.name}`}>{t('Change version...')}</InputLabel>
+                                                                <Select
+                                                                    labelId={`version-select-label-${app.name}`}
+                                                                    value={currentSelectedVersionForApp}
+                                                                    label={t('Change version...')}
+                                                                    onChange={(e: SelectChangeEvent<string>) => {
+                                                                        setSelectedTargetVersions(prev => ({
+                                                                            ...prev,
+                                                                            [app.name]: e.target.value,
+                                                                        }));
+                                                                        if (!status.messageLoading) clearMessages();
+                                                                    }}
+                                                                >
+                                                                    <MenuItem value=""
+                                                                              disabled={!currentSelectedVersionForApp}>
+                                                                        <em>{t('Change version...')}</em>
+                                                                    </MenuItem>
+                                                                    {availableVersionsForSelect.map((version) => (
+                                                                        <MenuItem key={version} value={version}>
+                                                                            {version}
+                                                                            {app.current_version && compareVersions(version, app.current_version) > 0 && ` ${t('(Update)')}`}
+                                                                            {app.current_version && compareVersions(version, app.current_version) < 0 && ` ${t('(Downgrade)')}`}
+                                                                        </MenuItem>
+                                                                    ))}
+                                                                </Select>
+                                                            </FormControl>
+                                                            <Button
+                                                                variant="contained"
+                                                                size="small"
+                                                                color={actionButtonColor}
+                                                                startIcon={isVersionChangeLoading ?
+                                                                    <CircularProgress size={16}
+                                                                                      color="inherit"/> : actionButtonIcon}
+                                                                onClick={() => handleNavigateToUpdateLogPage(app.name, currentSelectedVersionForApp, app.current_version)}
+                                                                disabled={!currentSelectedVersionForApp || disableRowActions}
+                                                            >
+                                                                {isVersionChangeLoading ? t(`${actionType}ing...`) : actionButtonText}
+                                                            </Button>
+                                                        </>
+                                                    ) : (
+                                                        <Typography variant="caption" sx={{
+                                                            flexGrow: 1,
+                                                            textAlign: {xs: 'center', sm: 'left'}
+                                                        }}>
+                                                            {t("No other versions found.")}
+                                                        </Typography>
+                                                    )}
+                                                    <Tooltip title={t("Check for updates")}>
+                                                        <span>
+                                                          <IconButton
+                                                              onClick={() => handleCheckForUpdates(app.name)}
+                                                              disabled={disableRowActions}
+                                                              aria-label={t("Check for updates")}
+                                                              size="small"
+                                                          >
+                                                            {isThisAppLoadingAction && checkingUpdateForApp === app.name ? (
+                                                                <CircularProgress size={20}/>
+                                                            ) : (
+                                                                <Cached/>
+                                                            )}
+                                                          </IconButton>
+                                                        </span>
+                                                    </Tooltip>
                                                 </Stack>
                                             )}
-
-
-                                            {isInstalled && !isRunning && !app.current_version && (
-                                                <Typography variant="caption" display="block"
-                                                            sx={{mt: 1, fontStyle: 'italic'}}>
-                                                    {t("App is marked installed but has no current version. Consider re-installing or setting a version if available.")}
-                                                </Typography>
-                                            )}
-                                            {isInstalled && !isRunning && app.current_version && availableVersionsForSelect.length === 0 &&
-                                                (!app.profiles || app.profiles.length <= 1) && (
-                                                    <Typography variant="caption" display="block"
-                                                                sx={{mt: 1, fontStyle: 'italic'}}>
-                                                        {t("No other versions or profiles available for modification.")}
-                                                    </Typography>
-                                                )}
-                                            {isInstalled && !isRunning && app.current_version && availableVersionsForSelect.length === 0 &&
-                                                (app.profiles && app.profiles.length > 1) && (
-                                                    <Typography variant="caption" display="block"
-                                                                sx={{mt: 1, fontStyle: 'italic'}}>
-                                                        {t("No other versions available. You can change the profile.")}
-                                                    </Typography>
-                                                )}
                                         </CardContent>
                                     </Card>
                                 </ListItem>
@@ -1235,6 +1280,27 @@ function App() {
                         })}
                     </List>
                 )}
+                <Dialog
+                    open={isConfirmDeleteDialogOpen}
+                    onClose={handleCancelDelete}
+                    aria-labelledby="alert-dialog-title"
+                    aria-describedby="alert-dialog-description"
+                >
+                    <DialogTitle id="alert-dialog-title">
+                        {t('Confirm Deletion')}
+                    </DialogTitle>
+                    <DialogContent>
+                        <DialogContentText id="alert-dialog-description">
+                            {appToDelete && t('Are you sure you want to delete {{appName}}? This action cannot be undone.', {appName: appToDelete})}
+                        </DialogContentText>
+                    </DialogContent>
+                    <DialogActions>
+                        <Button onClick={handleCancelDelete}>{t('Cancel')}</Button>
+                        <Button onClick={handleConfirmDelete} color="error" autoFocus>
+                            {t('Delete')}
+                        </Button>
+                    </DialogActions>
+                </Dialog>
             </Container>
         );
     }
@@ -1243,7 +1309,22 @@ function App() {
     return (
         <ThemeProvider theme={muiTheme}>
             <CssBaseline/>
-            {pageContent}
+            <Box sx={{display: 'flex', flexDirection: 'column', minHeight: '100vh'}}>
+                <Box component="main" sx={{flex: '1 1 auto'}}>
+                    {pageContent}
+                </Box>
+                {currentPage === 'list' && (
+                    <Box component="footer" sx={{py: 2, textAlign: 'center'}}>
+                        <Typography variant="body2" color="text.secondary">
+                            {t('App made with')} {' '}
+                            <Link href="https://github.com/ok-oldking/pyappify" target="_blank"
+                                  rel="noopener noreferrer">
+                                PyAppify
+                            </Link>
+                        </Typography>
+                    </Box>
+                )}
+            </Box>
         </ThemeProvider>
     );
 }

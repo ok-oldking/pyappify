@@ -10,14 +10,16 @@ const resources = {
     },
     zh: {
         translation: {
+            "Confirm Deletion": "确认删除",
             "App made with PyAppify": "使用 PyAppify 构建",
             "Settings": "设置",
             "Processing action...": "正在处理操作...",
             "Loading apps list...": "正在加载应用列表...",
             "No apps found. Add one using the form above.": "未找到应用。请使用上方的表单添加一个。",
-            "Update": "更新",
+            "Update": "升级",
             "Downgrade": "降级",
             "Set": "设置",
+            "Check for updates": "检查更新",
             "Update App": "更新应用",
             "Downgrade App": "降级应用",
             "Set Version": "设置版本",
@@ -37,9 +39,9 @@ const resources = {
             "Change Profile": "切换配置",
             "Changing...": "正在切换...",
             "Change version...": "更改版本...",
-            "(Update)": "(更新)",
+            "(Update)": "(升级)",
             "(Downgrade)": "(降级)",
-            "Updating...": "更新中...",
+            "Updating...": "升级中...",
             "Downgrading...": "降级中...",
             "Setting...": "设置中...",
             "App is marked installed but has no current version. Consider re-installing or setting a version if available.": "应用已标记为已安装但没有当前版本。如果可用，请考虑重新安装或设置一个版本。",
@@ -48,7 +50,7 @@ const resources = {
 
             // UpdateLogPage
             "Back to App List": "返回应用列表",
-            "Update Notes for {{appName}} (Version: {{version}})": "{{appName}} (版本: {{version}}) 的更新说明",
+            "Update Notes for {{appName}} (Version: {{version}})": "{{appName}} (版本: {{version}}) 的升级说明",
             "Downgrade Notes for {{appName}} (Version: {{version}})": "{{appName}} (版本: {{version}}) 的降级说明",
             "Set Notes for {{appName}} (Version: {{version}})": "{{appName}} (版本: {{version}}) 的版本设置说明",
             "Loading notes...": "正在加载说明...",

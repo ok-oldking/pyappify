@@ -40,7 +40,7 @@ impl App {
 
     pub fn get_current_profile_settings(&self) -> &Profile {
         debug!("get_current_profile_settings {} {}", self.current_profile, self.profiles.len());
-        self.get_profile(&self.current_profile)           
+        self.get_profile(&self.current_profile)
             .expect("Critical: Default profile missing in AppConfig.")
     }
 
@@ -128,7 +128,9 @@ pub fn update_app_from_yml(app: &mut App, file_path_str: &str) {
     if !file_path.exists() {
         return;
     }
-
+    
+    info!("update_app_from_yml: {}", file_path.display());
+    
     let yaml_content = match fs::read_to_string(file_path) {
         Ok(content) => content,
         Err(e) => {
@@ -156,5 +158,13 @@ pub fn update_app_from_yml(app: &mut App, file_path_str: &str) {
     };
 
     apply_profile_inheritance(&mut parsed_app);
-    *app = parsed_app;
+
+    app.name = parsed_app.name;
+    app.profiles = parsed_app.profiles;
+
+    if app.get_profile(&app.current_profile).is_none() {
+        if let Some(first_profile) = app.profiles.first() {
+            app.current_profile = first_profile.name.clone();
+        }
+    }
 }

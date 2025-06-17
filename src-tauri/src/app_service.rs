@@ -196,9 +196,9 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
 
     load_app_details(&mut app).await?;
     save_app_config_to_json(&app).await?;
+    info!("Finished loading app details. {} {}", app.name, app.installed);
     APPS.lock().await.insert(app.name.clone(), app);
     update_apps_from_disk().await?;
-    info!("Finished loading app details.");
     emit_apps().await;
     let apps_list: Vec<App> = APPS.lock().await.values().cloned().collect();
     Ok(apps_list)
