@@ -17,7 +17,6 @@ use std::{
     sync::Arc,
 };
 use sysinfo::{Pid, ProcessesToUpdate, System};
-use tauri::async_runtime::TokioJoinHandle;
 use tokio::sync::Mutex;
 use tokio::task;
 use tokio::task::JoinHandle;

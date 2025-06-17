@@ -9,13 +9,12 @@ mod submodule;
 mod utils;
 mod app;
 
-use crate::app::App;
 use crate::app_service::{load_apps, setup_app, start_app, stop_app};
 use crate::config_manager::init_config_manager;
 use crate::utils::logger::LoggerBuilder;
 use std::env;
 use tauri::{Manager};
-use tracing::{debug, info};
+use tracing::info;
 
 fn has_cli_command() -> bool {
     let args: Vec<String> = env::args().collect();

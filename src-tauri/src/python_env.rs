@@ -1,5 +1,4 @@
 // src/python_env.rs
-use crate::utils::command::command_to_string;
 // Added GLOBAL_CONFIG_STATE
 use crate::utils::error::Error;
 use crate::utils::path::get_python_dir;

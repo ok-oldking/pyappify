@@ -3,8 +3,7 @@ use crate::{emit_info, emit_update_info};
 use anyhow::{Context, Result};
 use git2::{
     build::CheckoutBuilder, Cred, Error as GitError, ErrorClass, ErrorCode, FetchOptions,
-    ObjectType, Oid, Progress, ProxyOptions, RemoteCallbacks, Repository, Revwalk, Sort,
-    SubmoduleUpdateOptions,
+    ObjectType, Oid, Progress, ProxyOptions, RemoteCallbacks, Repository, Sort,
 };
 use semver::Version;
 use std::collections::HashSet;
