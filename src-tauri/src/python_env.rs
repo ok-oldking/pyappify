@@ -469,7 +469,7 @@ fn download_file(url: &str, dest_path: &Path) -> Result<()> {
 /// using the specified Python version.
 #[cfg(target_os = "windows")]
 pub fn setup_python_venv(app_name:String, venv_creation_dir: &Path, python_version_spec: &str) -> Result<PathBuf> {
-    info!(
+    emit_info!(app_name,
         "Setting up Python venv in {} using Python version spec '{}'",
         venv_creation_dir.display(),
         python_version_spec
@@ -478,7 +478,7 @@ pub fn setup_python_venv(app_name:String, venv_creation_dir: &Path, python_versi
     let venv_python_exe_path = venv_path.join("Scripts").join("python.exe");
     let (managed_python_exe, managed_python_actual_version) =
         ensure_python_version(python_version_spec)?;
-    info!(
+    emit_info!(app_name,
         "Using managed Python {} (version {}) for venv setup.",
         managed_python_exe.display(),
         managed_python_actual_version
@@ -505,7 +505,7 @@ pub fn setup_python_venv(app_name:String, venv_creation_dir: &Path, python_versi
             ),
         }
     } else {
-        info!(
+        emit_error!(app_name,
             "No existing venv or venv python {} is missing. Will create/recreate venv.",
             venv_python_exe_path.display()
         );
@@ -519,6 +519,7 @@ pub fn setup_python_venv(app_name:String, venv_creation_dir: &Path, python_versi
             })?;
         }
         let venv_creation_cmd_output = std::process::Command::new(&managed_python_exe)
+            .creation_flags(0x08000000)
             .arg("-m")
             .arg("venv")
             .arg(&venv_path)
@@ -534,13 +535,13 @@ pub fn setup_python_venv(app_name:String, venv_creation_dir: &Path, python_versi
         let stdout_str = String::from_utf8_lossy(&venv_creation_cmd_output.stdout);
         let trimmed_stdout = stdout_str.trim();
         if !trimmed_stdout.is_empty() {
-            emit_info!("{}", trimmed_stdout);
+            emit_info!(app_name, "{}", trimmed_stdout);
         }
 
         let stderr_str = String::from_utf8_lossy(&venv_creation_cmd_output.stderr);
         let trimmed_stderr = stderr_str.trim();
         if !trimmed_stderr.is_empty() {
-            emit_error!("{}", trimmed_stderr);
+            emit_error!(app_name, "{}", trimmed_stderr);
         }
 
         if !venv_creation_cmd_output.status.success() {
@@ -663,8 +664,8 @@ fn get_python_version_from_exe(python_exe_path: &Path) -> Result<String> {
         ));
     }
     let version_cmd_output = std::process::Command::new(python_exe_path)
-        .arg("--version")
         .creation_flags(0x08000000)
+        .arg("--version")
         .output()
         .with_context(|| format!("Failed to execute {} --version", python_exe_path.display()))?;
 

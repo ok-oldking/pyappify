@@ -769,10 +769,12 @@ fn try_kill_with_elevation(pid: Pid, app_name: &str) -> Result<()> {
 
     #[cfg(windows)]
     let cmd = runas::Command::new("taskkill")
+        .show(false)
         .args(&["/F", "/PID", &pid_str])
         .status();
     #[cfg(not(windows))]
     let cmd = runas::Command::new("kill")
+        .show(false)
         .args(&["-9", &pid_str])
         .force_prompt(true)
         .status();
