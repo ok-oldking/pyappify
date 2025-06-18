@@ -195,15 +195,21 @@ fn ensure_venv_cfg(env_dir: &Path) -> Result<(), Error> {
     let abs_env_dir = fs::canonicalize(env_dir)?;
     let file_path = abs_env_dir.join("pyvenv.cfg");
 
+    debug!("ensure_venv_cfg {}", file_path.display());
+
+    if !file_path.exists() {
+        let err_msg = format!("venv cfg not found: {}", file_path.display());
+        err!(err_msg);
+    }
+
     let original_content = fs::read_to_string(&file_path)?;
 
-    let version_regex = Regex::new(r"(?m)^\s*version\s*=\s*(\d+)\.(\d+)")?;
+    let version_regex = Regex::new(r"(?m)^\s*version\s*=\s*([\d.]+)")?;
     let captures = version_regex
         .captures(&original_content)
         .ok_or("Could not find version info in pyvenv.cfg")?;
-
-    let version_dir_name = format!("Python{}{}", &captures[1], &captures[2]);
-    let python_dir = get_python_dir().join(version_dir_name);
+    
+    let python_dir = get_python_dir().join( &captures[1]);
     let abs_python_dir = fs::canonicalize(python_dir)?;
 
     let home_regex = Regex::new(r"(\s*home\s*=\s*).*")?;
@@ -219,7 +225,7 @@ fn ensure_venv_cfg(env_dir: &Path) -> Result<(), Error> {
     if content != original_content {
         info!("modified venv cfg {}", python_exe_path.display());
         fs::write(&file_path, content.as_ref())?;
-    } else { 
+    } else {
         debug!("no need to modify venv cfg {}", python_exe_path.display());
     }
 
@@ -269,9 +275,9 @@ pub async fn run_python_script(
         );
         err!(err_msg);
     }
-    
+
     ensure_venv_cfg(venv_path)?;
-    
+
     let python_exec_str = path_to_abs(&python_executable);
     let script_path_str = path_to_abs(script_path);
 
