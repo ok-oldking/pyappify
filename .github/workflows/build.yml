@@ -1,10 +1,10 @@
-# .github/workflows/release.yml
-name: release
+# .github/workflows/build.yml
+name: build
 
 on:
   push:
     tags:
-      - v*
+      - 'v*'
 jobs:
   publish-tauri:
     permissions:
