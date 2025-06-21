@@ -58,7 +58,7 @@ const resources = {
             "Loading notes...": "正在加载说明...",
             "Failed to load notes: {{error}}": "加载说明失败: {{error}}",
             "Cancel": "取消",
-            "Confirm {{actionType}}": "确认{{actionTypeInChinese}}",
+            "Confirm {{actionType}}": "确认{{actionType}}",
 
             // ConsolePage
             "Process in progress...": "进程正在进行中...",
@@ -69,7 +69,7 @@ const resources = {
             "No logs received yet for {{appName}}.": "尚未收到 {{appName}} 的日志。",
             "Installing App: {{appName}}": "正在安装应用: {{appName}}",
             "Starting App: {{appName}}": "正在启动应用: {{appName}}",
-            "{{actionType}} App: {{appName}}": "{{actionTypeInChinese}}应用: {{appName}}",
+            "{{actionType}} App: {{appName}}": "{{actionType}}应用: {{appName}}",
             "Console: {{appName}}": "控制台: {{appName}}",
             "Changing Profile: {{appName}} to '{{newProfile}}'": "正在切换配置: {{appName}} 到 '{{newProfile}}'",
 

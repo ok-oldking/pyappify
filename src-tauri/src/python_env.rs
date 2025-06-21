@@ -505,7 +505,7 @@ pub fn setup_python_venv(app_name:String, venv_creation_dir: &Path, python_versi
             ),
         }
     } else {
-        emit_error!(app_name,
+        emit_info!(app_name,
             "No existing venv or venv python {} is missing. Will create/recreate venv.",
             venv_python_exe_path.display()
         );
