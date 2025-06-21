@@ -1,0 +1,62 @@
+# .github/workflows/release.yml
+name: release
+
+on:
+  push:
+    tags:
+      - v*
+jobs:
+  publish-tauri:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+           #          - platform: macos-latest # Arm based macs
+           #            args: --target aarch64-apple-darwin
+           #          - platform: macos-latest # Intel based macs
+           #            args: --target x86_64-apple-darwin
+           #          - platform: ubuntu-22.04
+           #            args: ""
+          - platform: windows-latest
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 23.8.0
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.9.0
+
+      - name: install frontend dependencies
+        run: pnpm install
+
+      - name: Update version in tauri.conf.json
+        shell: pwsh
+        run: |
+          $newVersion = "${{ github.ref_name }}".Substring(1)
+          $pattern = '"version":\s*".*?"'
+          $replacement = '"version": "' + $newVersion + '"'
+          (Get-Content -Raw src-tauri/tauri.conf.json) -replace $pattern, $replacement | Set-Content src-tauri/tauri.conf.json
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: app-v__VERSION__
+          releaseName: 'App v__VERSION__'
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
