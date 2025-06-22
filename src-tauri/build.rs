@@ -1,4 +1,4 @@
-const UAC: bool = false;
+const UAC: bool = true;
 
 fn main() {
     if UAC {
@@ -32,7 +32,6 @@ fn build_uac(){
         </dependentAssembly>
       </dependency>
     </assembly>
-    [manifest]: https://learn.microsoft.com/en-us/windows/win32/sbscs/application-manifests
     "#);
     let attrs =  tauri_build::Attributes::new().windows_attributes(windows);
     tauri_build::try_build(attrs).expect("failed to run build script");
