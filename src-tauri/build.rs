@@ -1,4 +1,4 @@
-const UAC: bool = true;
+const UAC: bool = false;
 
 fn main() {
     if UAC {
