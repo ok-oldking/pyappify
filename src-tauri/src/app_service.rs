@@ -135,7 +135,7 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
             drop(apps_map);
             update_apps_from_disk().await?;
             let apps_list: Vec<App> = APPS.lock().await.values().cloned().collect();
-            return Ok(apps_list)
+            return Ok(apps_list);
         }
     }
 
@@ -183,9 +183,9 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
         }
         Err(e) => {
             warn!(
-            "Failed to get repository versions for {}: {}",
-            app.name, e
-        );
+                "Failed to get repository versions for {}: {}",
+                app.name, e
+            );
             app.available_versions = Vec::new();
             app.current_version = None;
         }
@@ -264,9 +264,10 @@ pub async fn delete_app(app_name: &str) -> Result<(), Error> {
     } else {
         info!("App dir {} not on disk.", app_base_path.display());
     }
-    let mut app: App = get_app_by_name(&app_name).await?;
+    let mut app: App = get_app_by_name(app_name).await?;
     app.installed = false;
     save_app_config_to_json(&app).await?;
+    APPS.lock().await.insert(app_name.to_string(), app);
     emit_apps().await;
     Ok(())
 }
@@ -432,7 +433,6 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
         );
     }
 
-
     let mut apps_map = APPS.lock().await;
     if let Some(app) = apps_map.get_mut(app_name) {
         load_app_details(app).await?;
@@ -448,7 +448,10 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
                 app_name, final_profile_name_to_set, e
             );
         }
-        info!("App config json saved successfully after setup {} installed {}", app_to_save.name, app_to_save.installed);
+        info!(
+            "App config json saved successfully after setup {} installed {}",
+            app_to_save.name, app_to_save.installed
+        );
         emit_apps().await;
     } else {
         warn!(
@@ -574,7 +577,10 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
             new_requirements_relative_path
         );
     } else {
-        emit_info!(app_name, "No significant reqs file changes. Skipping sync.");
+        emit_info!(
+            app_name,
+            "No significant reqs file changes. Skipping sync."
+        );
     }
 
     if needs_pip_sync {
