@@ -1,9 +1,7 @@
 // src/python_env.rs
-// Added GLOBAL_CONFIG_STATE
 use crate::utils::error::Error;
 use crate::utils::path::get_python_dir;
-// Removed ConfigState from here if it was only for the parameter
-use crate::{config_manager::GLOBAL_CONFIG_STATE, emit_error, emit_info, err, utils::command};
+use crate::{config_manager::GLOBAL_CONFIG_STATE, emit_error, emit_info, emit_update_info, err, utils::command};
 use anyhow::{anyhow, Context, Result};
 use flate2::read::GzDecoder;
 use rand::distr::Alphanumeric;
@@ -12,7 +10,7 @@ use regex::Regex;
 use reqwest::blocking::Client;
 use reqwest::Url;
 use std::fs;
-use std::io::Cursor;
+use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use tar::Archive;
@@ -29,14 +27,14 @@ const KNOWN_PATCHES: [(&str, &str, &str, &str); 7] = [
     ("3.7", "3.7.9", "https://github.com/astral-sh/python-build-standalone/releases/download/20200822/cpython-3.7.9-x86_64-pc-windows-msvc-shared-pgo-20200823T0118.tar.zst", "https://www.modelscope.cn/models/okoldking/ok/resolve/master/pythons/cpython-3.7.9-x86_64-pc-windows-msvc-shared-pgo-20200823T0118.tar.zst"),
 ];
 
-fn get_download_url(patch_version: &str) -> Result<String> {
+fn get_download_urls(patch_version: &str) -> Result<(String, String)> {
     let locale = "zh_CN";
     for patch in KNOWN_PATCHES.iter() {
         if patch.0 == patch_version || patch.1 == patch_version {
             return if locale == "zh_CN" {
-                Ok(patch.3.to_string())
+                Ok((patch.3.to_string(), patch.2.to_string()))
             } else {
-                Ok(patch.2.to_string())
+                Ok((patch.2.to_string(), patch.3.to_string()))
             };
         }
     }
@@ -58,7 +56,7 @@ fn get_filename_from_url(url_string: &str) -> Result<String> {
 }
 
 #[cfg(target_os = "windows")]
-pub fn ensure_python_version(version_str: &str) -> Result<(PathBuf, String)> {
+fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(PathBuf, String)> {
     let base_install_path = PathBuf::from(get_python_dir());
     fs::create_dir_all(&base_install_path).with_context(|| {
         format!(
@@ -92,16 +90,25 @@ pub fn ensure_python_version(version_str: &str) -> Result<(PathBuf, String)> {
     let install_dir = base_install_path.join(&version_to_ensure);
     let python_exe_path = install_dir.join("python.exe");
 
-    let archive_url = get_download_url(&version_to_ensure)?;
-    let archive_path = base_install_path.join(get_filename_from_url(archive_url.as_str())?);
+    let (primary_url, backup_url) = get_download_urls(&version_to_ensure)?;
+    let archive_path = base_install_path.join(get_filename_from_url(&primary_url)?);
 
-    info!(
-        "Downloading from {} to {}...",
-        archive_url,
-        archive_path.display()
-    );
-    if let Err(download_err) = download_file(archive_url.as_str(), &archive_path) {
-        error!("Download from {} failed: {:#}", archive_url, download_err);
+    let download_result = download_file(&primary_url, &archive_path, app_name).or_else(|e| {
+        warn!(
+            "Download from primary URL {} failed: {:#}. Trying backup URL: {}",
+            primary_url, e, backup_url
+        );
+        if archive_path.exists() {
+            fs::remove_file(&archive_path).ok();
+        }
+        download_file(&backup_url, &archive_path, app_name)
+    });
+
+    if let Err(download_err) = download_result {
+        error!(
+            "Download failed from both primary and backup URLs: {:#}",
+            download_err
+        );
         if archive_path.exists() {
             info!(
                 "Attempting to remove partially downloaded file: {}",
@@ -116,8 +123,8 @@ pub fn ensure_python_version(version_str: &str) -> Result<(PathBuf, String)> {
             }
         }
         return Err(download_err.context(format!(
-            "Downloading Python {} from {} failed",
-            version_to_ensure, archive_url
+            "Downloading Python {} from all available sources failed",
+            version_to_ensure
         )));
     }
     info!(
@@ -245,8 +252,6 @@ fn extract_tar_gz(archive_path: &Path, extract_to_dir: &Path) -> Result<()> {
     for entry_result in archive.entries()? {
         let mut entry = entry_result.context("Failed to read entry from tar archive")?;
         let path_in_archive = entry.path()?.into_owned();
-
-        // Standalone builds typically have a "python/" prefix in the archive
         let path_after_stripping_python_dir = match path_in_archive.strip_prefix("python") {
             Ok(p) => p.to_path_buf(),
             Err(_) => {
@@ -320,7 +325,7 @@ fn find_installed_version(
     }
 
     let mut latest_found_for_major_minor: Option<(String, PathBuf)> = None;
-    let version_pattern = Regex::new(r"^\d+\.\d+\.\d+$").unwrap(); // Not ideal to unwrap here, but for this context it's probably fine. Consider lazy_static or once_cell.
+    let version_pattern = Regex::new(r"^\d+\.\d+\.\d+$").unwrap();
 
     for entry_res in fs::read_dir(base_path).context("Failed to read base python install dir")? {
         let entry = entry_res.context("Failed to read entry in python install dir")?;
@@ -386,12 +391,12 @@ fn compare_versions(v1: &str, v2: &str) -> Result<i8> {
     let parts1: Vec<u32> = v1
         .split('.')
         .map(|s| s.parse::<u32>())
-        .collect::<std::result::Result<Vec<u32>, _>>() // Specify full path to avoid ambiguity with anyhow::Result
+        .collect::<std::result::Result<Vec<u32>, _>>()
         .with_context(|| format!("Failed to parse version string v1: {}", v1))?;
     let parts2: Vec<u32> = v2
         .split('.')
         .map(|s| s.parse::<u32>())
-        .collect::<std::result::Result<Vec<u32>, _>>() // Specify full path
+        .collect::<std::result::Result<Vec<u32>, _>>()
         .with_context(|| format!("Failed to parse version string v2: {}", v2))?;
 
     for i in 0..std::cmp::max(parts1.len(), parts2.len()) {
@@ -424,13 +429,14 @@ fn get_user_agent() -> String {
         "unknown"
     )
 }
-fn download_file(url: &str, dest_path: &Path) -> Result<()> {
+
+fn download_file(url: &str, dest_path: &Path, app_name: &str) -> Result<()> {
     let mut client_builder = Client::builder();
     if url.starts_with("https://www.modelscope.cn") {
         client_builder = client_builder.user_agent(get_user_agent());
     }
     let client = client_builder.build()?;
-    let response = client
+    let mut response = client
         .get(url)
         .send()
         .with_context(|| format!("Failed to initiate download from {}", url))?;
@@ -448,27 +454,47 @@ fn download_file(url: &str, dest_path: &Path) -> Result<()> {
         ));
     }
 
+    let total_size = response
+        .content_length()
+        .ok_or_else(|| anyhow!("Failed to get content length from {}", url))?;
+
     let mut file = fs::File::create(dest_path)
         .with_context(|| format!("Failed to create file at {}", dest_path.display()))?;
 
-    // response is consumed here by .bytes() if status was success
-    let content = response
-        .bytes()
-        .with_context(|| format!("Failed to read bytes from download response of {}", url))?;
-    let mut content_cursor = Cursor::new(content);
-    std::io::copy(&mut content_cursor, &mut file).with_context(|| {
-        format!(
-            "Failed to write downloaded content to {}",
-            dest_path.display()
-        )
-    })?;
+    emit_info!(app_name, "Start Downloading Python from {}...", url);
+    emit_info!(app_name, "Python Download Progress: 0%");
+    let mut downloaded: u64 = 0;
+    let mut last_reported_percent: i64 = -1;
+    let mut buffer = [0; 8192];
+
+    loop {
+        let bytes_read = response
+            .read(&mut buffer)
+            .with_context(|| format!("Failed to read chunk from download stream of {}", url))?;
+        if bytes_read == 0 {
+            break;
+        }
+        file.write_all(&buffer[..bytes_read])
+            .with_context(|| format!("Failed to write chunk to file {}", dest_path.display()))?;
+        downloaded += bytes_read as u64;
+
+        if total_size > 0 {
+            let percent = (100 * downloaded / total_size) as i64;
+            if percent > last_reported_percent {
+                emit_update_info!(app_name, "Python Download Progress: {}%", percent);
+                last_reported_percent = percent;
+            }
+        }
+    }
     Ok(())
 }
 
-/// Sets up a Python virtual environment (.venv) in the specified directory,
-/// using the specified Python version.
 #[cfg(target_os = "windows")]
-pub fn setup_python_venv(app_name:String, venv_creation_dir: &Path, python_version_spec: &str) -> Result<PathBuf> {
+pub fn setup_python_venv(
+    app_name: String,
+    venv_creation_dir: &Path,
+    python_version_spec: &str,
+) -> Result<PathBuf> {
     emit_info!(app_name,
         "Setting up Python venv in {} using Python version spec '{}'",
         venv_creation_dir.display(),
@@ -477,7 +503,7 @@ pub fn setup_python_venv(app_name:String, venv_creation_dir: &Path, python_versi
     let venv_path = venv_creation_dir.join(".venv");
     let venv_python_exe_path = venv_path.join("Scripts").join("python.exe");
     let (managed_python_exe, managed_python_actual_version) =
-        ensure_python_version(python_version_spec)?;
+        ensure_python_version(&app_name, python_version_spec)?;
     emit_info!(app_name,
         "Using managed Python {} (version {}) for venv setup.",
         managed_python_exe.display(),
@@ -572,7 +598,6 @@ pub fn setup_python_venv(_venv_creation_dir: &Path, _python_version_spec: &str) 
     ))
 }
 
-/// Synchronizes the Python virtual environment with a requirements.txt file using pip-sync.
 #[cfg(target_os = "windows")]
 pub async fn install_requirements(
     app_name: &str,
@@ -645,16 +670,11 @@ pub fn install_requirements(
     _requirements_txt_path: &Path,
     _project_dir: &Path,
 ) -> Result<()> {
-    // Even though this function errors out, its signature should match.
-    // Accessing GLOBAL_CONFIG_STATE here isn't strictly necessary for its current logic,
-    // but if it were to do any work dependent on config, it would need it.
-    // let _config_state = GLOBAL_CONFIG_STATE.get().ok_or_else(|| anyhow!("GLOBAL_CONFIG_STATE not initialized."))?;
     Err(anyhow!(
         "install_requirements (using pip-sync) is only implemented for Windows."
     ))
 }
 
-// Helper to get Python version from an executable
 #[cfg(target_os = "windows")]
 fn get_python_version_from_exe(python_exe_path: &Path) -> Result<String> {
     if !python_exe_path.exists() {

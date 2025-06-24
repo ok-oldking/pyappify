@@ -176,24 +176,19 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
 
     let repo_path = path::get_app_repo_path(&app.name);
 
-    app.available_versions = match git::get_tag_versions(&app.name, repo_path.clone()).await {
-        Ok(versions) => versions,
-        Err(e_str) => {
+    match git::get_tags_and_current_version(&app.name, repo_path.clone()).await {
+        Ok((versions, current)) => {
+            app.available_versions = versions;
+            app.current_version = Some(current);
+        }
+        Err(e) => {
             warn!(
-                "Failed to get remote versions for {}: {}",
-                app.name, e_str
-            );
-            Vec::new()
+            "Failed to get repository versions for {}: {}",
+            app.name, e
+        );
+            app.available_versions = Vec::new();
+            app.current_version = None;
         }
-    };
-
-    app.current_version = if repo_path.exists() && repo_path.join(".git").exists() {
-        match git::open_repository(&repo_path) {
-            Ok(repo) => git::determine_current_checked_out_tag(&repo)?,
-            Err(_) => None,
-        }
-    } else {
-        None
     };
 
     load_app_details(&mut app).await?;
@@ -222,12 +217,10 @@ async fn update_apps_from_disk() -> Result<(), Error> {
             let full_load_logic = async {
                 let mut app = get_app_by_name(&task_app_name).await?;
                 let repo_path = path::get_app_repo_path(&app.name);
-                app.available_versions =
-                    git::get_tag_versions(&app.name, repo_path.clone()).await?;
-                if repo_path.exists() {
-                    let repo = git::open_repository(&repo_path)?;
-                    app.current_version = git::determine_current_checked_out_tag(&repo)?;
-                }
+                let (versions, current) =
+                    git::get_tags_and_current_version(&app.name, repo_path.clone()).await?;
+                app.available_versions = versions;
+                app.current_version = Some(current);
                 load_app_details(&mut app).await?;
                 save_app_config_to_json(&app).await?;
                 let mut apps = APPS.lock().await;

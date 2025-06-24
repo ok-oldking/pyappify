@@ -98,11 +98,14 @@ pub fn get_repository_origin_url(repo: &Repository) -> Result<Option<String>> {
 }
 
 #[tauri::command]
-pub async fn get_tag_versions(app_name: &str, repo_path: PathBuf) -> Result<Vec<String>> {
+pub async fn get_tags_and_current_version(
+    app_name: &str,
+    repo_path: PathBuf,
+) -> Result<(Vec<String>, String)> {
     let app_name_for_task = app_name.to_string();
     let repo_path_for_task = repo_path.clone();
 
-    let tags = task::spawn_blocking(move || -> Result<Vec<String>> {
+    let result = task::spawn_blocking(move || -> Result<(Vec<String>, String)> {
         emit_info!(
             app_name_for_task,
             "Fetching all tags for repository at {}",
@@ -187,48 +190,37 @@ pub async fn get_tag_versions(app_name: &str, repo_path: PathBuf) -> Result<Vec<
         }
         semver_tags.sort_by(|a, b| b.0.cmp(&a.0));
 
-        Ok(semver_tags.into_iter().map(|(_, name)| name).collect())
-    })
-        .await
-        .context("Task for get_tag_versions panicked or was cancelled")??;
+        let head_ref = repo.head().context("Failed to get repo HEAD")?;
+        let head_oid = head_ref.target().context("HEAD has no target OID")?;
 
-    Ok(tags)
-}
-
-pub fn determine_current_checked_out_tag(repo: &Repository) -> Result<Option<String>> {
-    let head_ref = repo.head().context("Failed to get repo HEAD")?;
-    let head_oid = head_ref.target().context("HEAD has no target OID")?;
-
-    let tags = repo.tag_names(None).context("Failed to list tags")?;
-    let mut semver_tags: Vec<(Version, String)> = Vec::new();
-
-    for tag_name_opt in tags.iter() {
-        if let Some(tag_name) = tag_name_opt {
-            let clean_tag = tag_name.trim_start_matches('v');
-            if let Ok(version) = Version::parse(clean_tag) {
-                semver_tags.push((version, tag_name.to_string()));
-            }
-        }
-    }
-    semver_tags.sort_by(|a, b| b.0.cmp(&a.0));
-
-    for (_version, tag_name) in &semver_tags {
-        let tag_ref_name = format!("refs/tags/{}", tag_name);
-        if let Ok(reference) = repo.find_reference(&tag_ref_name) {
-            if let Ok(obj) = reference.peel(ObjectType::Commit) {
-                if obj.id() == head_oid {
-                    return Ok(Some(tag_name.clone()));
-                }
-            } else if let Ok(obj) = reference.peel(ObjectType::Tag) {
-                if let Some(annotated_tag) = obj.as_tag() {
-                    if annotated_tag.target_id() == head_oid {
-                        return Ok(Some(tag_name.clone()));
+        let mut current_version_tag: Option<String> = None;
+        for (_version, tag_name) in &semver_tags {
+            let tag_ref_name = format!("refs/tags/{}", tag_name);
+            if let Ok(reference) = repo.find_reference(&tag_ref_name) {
+                if let Ok(obj) = reference.peel(ObjectType::Commit) {
+                    if obj.id() == head_oid {
+                        current_version_tag = Some(tag_name.clone());
+                        break;
+                    }
+                } else if let Ok(obj) = reference.peel(ObjectType::Tag) {
+                    if let Some(annotated_tag) = obj.as_tag() {
+                        if annotated_tag.target_id() == head_oid {
+                            current_version_tag = Some(tag_name.clone());
+                            break;
+                        }
                     }
                 }
             }
         }
-    }
-    Ok(None)
+        let current_version = current_version_tag.unwrap_or_else(|| head_oid.to_string());
+        let sorted_tag_names = semver_tags.into_iter().map(|(_, name)| name).collect();
+
+        Ok((sorted_tag_names, current_version))
+    })
+        .await
+        .context("Task for get_tags_and_current_version panicked or was cancelled")??;
+
+    Ok(result)
 }
 
 fn format_bytes(bytes: usize) -> String {
@@ -249,6 +241,7 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
     let url = profile.git_url.clone();
     let app_name = app.name.clone();
     info!("ensure_repository {} {}", app_name, &url);
+    emit_info!(app_name, "Clone {} from {}", app_name, &url);
 
     if repo_path.exists() {
         emit_info!(app.name, "Repository already exists {}", repo_path.display());
