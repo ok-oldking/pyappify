@@ -278,6 +278,8 @@ function App() {
     useEffect(() => {
         const unlistenPromises: Promise<UnlistenFn>[] = [];
 
+        invoke('show_main_window').then();
+
         unlistenPromises.push(listen<App[]>("apps", (event) => {
             console.log("Received apps event:", event);
             const newApps = event.payload;

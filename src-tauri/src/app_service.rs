@@ -149,7 +149,10 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
     let mut app = match load_app_config_from_json(&app_name).await {
         Ok(Some(mut app_from_disk)) => {
             info!("Loaded app '{}' from app.json.", app_name);
-            app_from_disk.running = false;
+            let mut sys = System::new();
+            sys.refresh_processes(ProcessesToUpdate::All, true);
+            let working_dir = get_app_working_dir_path(&app_name);
+            app_from_disk.running = is_app_running(&sys, &working_dir);
             let current_profile = app_from_disk.current_profile.clone();
             app_from_disk.profiles = app_template.profiles;
             app_from_disk.current_profile = current_profile;

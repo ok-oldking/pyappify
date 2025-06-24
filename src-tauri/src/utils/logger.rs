@@ -84,7 +84,3 @@ impl LoggerBuilder {
         Ok(())
     }
 }
-
-pub fn init_logging_default() {
-    let _ = LoggerBuilder::new().init();
-}

@@ -6,7 +6,6 @@ use std::vec::Vec;
 use chrono::{DateTime, Utc};
 use tracing::{debug, info, warn};
 use crate::utils::path;
-use crate::utils::path::get_app_working_dir_path;
 
 pub const YML_FILE_NAME: &str = "pyappify.yml";
 
@@ -47,19 +46,6 @@ impl App {
     pub fn get_profile(&self, profile_name: &str) -> Option<&Profile> {
         self.profiles.iter().find(|p| p.name == profile_name)
             .or_else(|| self.profiles.first())
-    }
-
-    pub fn read_and_set_config_from_working_dir(&mut self) {
-        let working_dir = get_app_working_dir_path(&self.name);
-        let yml_path = working_dir.join(YML_FILE_NAME);
-        let yml_path_str = yml_path.to_string_lossy();
-
-        update_app_from_yml(self, &yml_path_str);
-        debug!(
-            "Attempted to refresh app config for '{}' from {}",
-            self.name,
-            yml_path.display()
-        );
     }
 }
 

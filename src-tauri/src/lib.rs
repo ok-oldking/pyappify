@@ -78,6 +78,12 @@ async fn handle_command_line() {
     }
 }
 
+#[tauri::command]
+async fn show_main_window(window: tauri::Window) {
+    window.show().unwrap();
+    window.set_focus().unwrap();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub async fn run() {
     #[cfg(debug_assertions)]
@@ -166,6 +172,7 @@ pub async fn run() {
                 Ok(())
             })
             .invoke_handler(tauri::generate_handler![
+                show_main_window,
                 start_app,
                 stop_app,
                 load_apps,

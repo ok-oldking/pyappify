@@ -153,7 +153,3 @@ macro_rules! emit_error_finish {
         $crate::emitter::emit_finish_impl($app_name.to_string(), true);
     };
 }
-
-pub fn emit_custom_event<S: Serialize + Clone>(event_name: &str, payload: S) {
-    emit(event_name, payload);
-}

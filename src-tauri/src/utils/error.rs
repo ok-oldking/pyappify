@@ -17,8 +17,6 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Join(#[from] tokio::task::JoinError),
-    #[error("{0}")]
-    Utils(Box<Error>),
 }
 
 #[derive(serde::Serialize)]
@@ -32,7 +30,6 @@ enum ErrorKind {
     Anyhow(String),
     Json(String),
     Join(String),
-    Utils(String),
 }
 
 impl serde::Serialize for Error {
@@ -49,7 +46,6 @@ impl serde::Serialize for Error {
             Self::Anyhow(_) => ErrorKind::Anyhow(error_message),
             Self::Json(_) => ErrorKind::Json(error_message),
             Self::Join(_) => ErrorKind::Join(error_message),
-            Self::Utils(_) => ErrorKind::Utils(error_message),
         };
         error_kind.serialize(serializer)
     }
