@@ -1,90 +1,90 @@
-  //.github/workflows/main.yml
-  name: build-tauri
+#.github/workflows/main.yml
+name: build-tauri
 
-  on:
-    push:
-      branches: [ "main" ]
-    pull_request:
-      branches: [ "main" ]
-    workflow_dispatch:
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
 
-  jobs:
-    build-tauri:
-      strategy:
-        fail-fast: false
-        matrix:
-          platform: [windows-latest]
+jobs:
+  build-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-latest]
 
-      runs-on: ${{ matrix.platform }}
-      steps:
-        - name: Checkout
-          uses: actions/checkout@v4
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-        - name: install dependencies (ubuntu only)
-          if: matrix.platform == 'ubuntu-22.04'
-          run: |
-            sudo apt-get update
-            sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: install dependencies (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev librsvg2-dev patchelf
 
-        - name: rust setup
-          uses: dtolnay/rust-toolchain@stable
+      - name: rust setup
+        uses: dtolnay/rust-toolchain@stable
 
-        - name of the os
-          run: echo ${{ matrix.platform }}
+      - name of the os
+        run: echo ${{ matrix.platform }}
 
-        - name: rust cache
-          uses: swatinem/rust-cache@v2
-          with:
-            workspaces: './src-tauri -> target'
+      - name: rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
 
-        - name: sync node version and setup cache
-          uses: actions/setup-node@v4
-          with:
-            node-version: 'lts/*'
-            cache: 'npm'
+      - name: sync node version and setup cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'npm'
 
-        - name: install frontend dependencies
-          run: npm install
+      - name: install frontend dependencies
+        run: npm install
 
-        - name: Install 7-Zip
-          run: choco install 7zip
-          if: matrix.platform == 'windows-latest'
+      - name: Install 7-Zip
+        run: choco install 7zip
+        if: matrix.platform == 'windows-latest'
 
-        - name: build-tauri
-          uses: tauri-apps/tauri-action@v0
-          env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          with:
-            tagName: v__VERSION__
-            releaseName: 'pyappify v__VERSION__'
-            releaseBody: 'See the assets to download this version and install.'
-            releaseDraft: true
-            prerelease: false
-            args: ${{ matrix.platform == 'windows-latest' && '--verbose --target x86_64-pc-windows-msvc' || '' }}
+      - name: build-tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'pyappify v__VERSION__'
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.platform == 'windows-latest' && '--verbose --target x86_64-pc-windows-msvc' || '' }}
 
-        - name: Zip the bundle
-          run: |
-            $TAG_NAME = (Get-Content ./src-tauri/tauri.conf.json | ConvertFrom-Json).package.version
-            $ARTIFACT_NAME = "pyappify_v${TAG_NAME}_win32.zip"
-            $BUNDLE_PATH = "./src-tauri/target/release/bundle/msi/*.msi"
-            $STAGING_DIR = "pyappify"
-            New-Item -ItemType Directory -Path $STAGING_DIR
-            Copy-Item -Path $BUNDLE_PATH -Destination $STAGING_DIR
-            7z a -tzip "$ARTIFACT_NAME" $STAGING_DIR
-            echo "ARTIFACT_PATH=$ARTIFACT_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          if: matrix.platform == 'windows-latest'
-          shell: pwsh
+      - name: Zip the bundle
+        run: |
+          $TAG_NAME = (Get-Content ./src-tauri/tauri.conf.json | ConvertFrom-Json).package.version
+          $ARTIFACT_NAME = "pyappify_v${TAG_NAME}_win32.zip"
+          $BUNDLE_PATH = "./src-tauri/target/release/bundle/msi/*.msi"
+          $STAGING_DIR = "pyappify"
+          New-Item -ItemType Directory -Path $STAGING_DIR
+          Copy-Item -Path $BUNDLE_PATH -Destination $STAGING_DIR
+          7z a -tzip "$ARTIFACT_NAME" $STAGING_DIR
+          echo "ARTIFACT_PATH=$ARTIFACT_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
 
-        - name: Upload Artifacts
-          uses: actions/upload-artifact@v4
-          with:
-            name: pyappify-artifacts-win32
-            path: ${{ env.ARTIFACT_PATH }}
-          if: matrix.platform == 'windows-latest'
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyappify-artifacts-win32
+          path: ${{ env.ARTIFACT_PATH }}
+        if: matrix.platform == 'windows-latest'
 
-        - name: Update Release Assets
-          uses: softprops/action-gh-release@v2.0.5
-          with:
-            files: |
-              ${{ env.ARTIFACT_PATH }}
-          if: matrix.platform == 'windows-latest'
+      - name: Update Release Assets
+        uses: softprops/action-gh-release@v2.0.5
+        with:
+          files: |
+            ${{ env.ARTIFACT_PATH }}
+        if: matrix.platform == 'windows-latest'
