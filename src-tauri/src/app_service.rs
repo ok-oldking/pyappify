@@ -719,6 +719,10 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
     envs.push(("PYAPPIFY_PID".to_string(), std::process::id().to_string()));
     envs.push(("PYAPPIFY_UPGRADEABLE".to_string(), 1.to_string()));
 
+    if let Ok(exe_path) = std::env::current_exe() {
+        envs.push(("PYAPPIFY_EXECUTABLE".to_string(), exe_path.to_string_lossy().to_string()));
+    }
+
     execute_python::run_python_script(
         app_name.as_str(),
         &venv_path,
