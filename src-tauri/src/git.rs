@@ -213,6 +213,26 @@ pub async fn get_tags_and_current_version(
             }
         }
         let current_version = current_version_tag.unwrap_or_else(|| head_oid.to_string());
+
+        let lts_commit_oid = repo
+            .revparse_single("refs/tags/lts")
+            .ok()
+            .and_then(|obj| obj.peel_to_commit().ok())
+            .map(|commit| commit.id());
+
+        if let Some(lts_oid) = lts_commit_oid {
+            let lts_version_index = semver_tags.iter().position(|(_version, tag_name)| {
+                repo.revparse_single(&format!("refs/tags/{}", tag_name))
+                    .ok()
+                    .and_then(|obj| obj.peel_to_commit().ok())
+                    .map_or(false, |commit| commit.id() == lts_oid)
+            });
+
+            if let Some(index) = lts_version_index {
+                semver_tags.truncate(index + 1);
+            }
+        }
+
         let sorted_tag_names = semver_tags.into_iter().map(|(_, name)| name).collect();
 
         Ok((sorted_tag_names, current_version))
