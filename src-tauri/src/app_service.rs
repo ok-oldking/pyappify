@@ -1,6 +1,6 @@
 //src/app_service.rs
 use crate::{
-    app::{read_embedded_app, update_app_from_yml, YML_FILE_NAME},
+    app::{read_embedded_app, update_app_from_yml, Profile, YML_FILE_NAME},
     emit_error_finish, emit_info, emit_success_finish, emitter, err, execute_python, git,
     python_env,
     utils::path,
@@ -126,35 +126,47 @@ pub(crate) async fn get_app_lock(app_name: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-#[tauri::command]
-pub async fn load_apps() -> Result<Vec<App>, Error> {
-    {
-        let apps_map = APPS.lock().await;
-        if !apps_map.is_empty() {
-            info!("App already loaded. Triggering update from disk.");
-            drop(apps_map);
-            update_apps_from_disk().await?;
-            let apps_list: Vec<App> = APPS.lock().await.values().cloned().collect();
-            return Ok(apps_list);
+async fn cleanup_stale_app_directories(app_name: &str) -> Result<()> {
+    if let Some(apps_dir) = path::get_app_base_path(app_name).parent() {
+        if apps_dir.exists() {
+            let mut entries = tokio::fs::read_dir(apps_dir)
+                .await
+                .with_context(|| format!("Failed to read apps directory: {}", apps_dir.display()))?;
+            while let Some(entry) = entries.next_entry().await? {
+                if entry.file_type().await?.is_dir() {
+                    let dir_name = entry.file_name().to_string_lossy().into_owned();
+                    if dir_name != app_name {
+                        let full_path = entry.path();
+                        info!(
+                            "Removing stale application directory: {}",
+                            full_path.display()
+                        );
+                        if let Err(e) = tokio::fs::remove_dir_all(&full_path).await {
+                            warn!(
+                                "Failed to remove stale app directory {}: {}",
+                                full_path.display(),
+                                e
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
+    Ok(())
+}
 
-    let app_template = read_embedded_app();
-    let app_name = app_template.name.clone();
-    info!(
-        "Loading the single, embedded application. profiles {:?}",
-        app_template.profiles
-    );
-
-    let mut app = match load_app_config_from_json(&app_name).await {
+async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
+    let app_name = &app_template.name;
+    let mut app = match load_app_config_from_json(app_name).await {
         Ok(Some(mut app_from_disk)) => {
             info!("Loaded app '{}' from app.json.", app_name);
             let mut sys = System::new();
             sys.refresh_processes(ProcessesToUpdate::All, true);
-            let working_dir = get_app_working_dir_path(&app_name);
+            let working_dir = get_app_working_dir_path(app_name);
             app_from_disk.running = is_app_running(&sys, &working_dir);
             let current_profile = app_from_disk.current_profile.clone();
-            app_from_disk.profiles = app_template.profiles;
+            app_from_disk.profiles = app_template.profiles.clone();
             app_from_disk.current_profile = current_profile;
             app_from_disk
         }
@@ -163,8 +175,8 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                 "app.json for '{}' not found. Creating from embedded template.",
                 app_name
             );
-            save_app_config_to_json(&app_template).await?;
-            app_template
+            save_app_config_to_json(app_template).await?;
+            app_template.clone()
         }
         Err(e) => return Err(e.into()),
     };
@@ -173,9 +185,7 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
         "Loading full app details (git info, yml) for {}...",
         app.name
     );
-
     let repo_path = path::get_app_repo_path(&app.name);
-
     match git::get_tags_and_current_version(&app.name, repo_path.clone()).await {
         Ok((versions, current)) => {
             app.available_versions = versions;
@@ -186,19 +196,40 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                 "Failed to get repository versions for {}: {}",
                 app.name, e
             );
-            app.available_versions = Vec::new();
-            app.current_version = None;
         }
     };
 
     load_app_details(&mut app).await?;
     save_app_config_to_json(&app).await?;
+    Ok(app)
+}
+
+#[tauri::command]
+pub async fn load_apps() -> Result<Vec<App>, Error> {
+    {
+        let apps_map = APPS.lock().await;
+        if !apps_map.is_empty() {
+            info!("App already loaded. Triggering update from disk.");
+            drop(apps_map);
+            update_apps_from_disk().await?;
+            return Ok(get_apps_as_vec().await);
+        }
+    }
+
+    let app_template = read_embedded_app();
+    cleanup_stale_app_directories(&app_template.name).await?;
+    info!(
+        "Loading the single, embedded application. profiles {:?}",
+        app_template.profiles
+    );
+
+    let app = load_and_prepare_app_state(&app_template).await?;
     info!("Finished loading app details. {} {}", app.name, app.installed);
+
     APPS.lock().await.insert(app.name.clone(), app);
     update_apps_from_disk().await?;
     emit_apps().await;
-    let apps_list: Vec<App> = APPS.lock().await.values().cloned().collect();
-    Ok(apps_list)
+    Ok(get_apps_as_vec().await)
 }
 
 async fn update_apps_from_disk() -> Result<(), Error> {
@@ -328,6 +359,34 @@ pub async fn update_working_from_repo(app_name: &str) -> Result<()> {
     Ok(())
 }
 
+fn get_profile_for_setup<'a>(
+    temp_app_config: &'a App,
+    profile_name: &str,
+    app_name: &str,
+) -> Result<(&'a Profile, String)> {
+    match temp_app_config.get_profile(profile_name) {
+        Some(profile) => Ok((profile, profile_name.to_string())),
+        None => {
+            if profile_name != "default" {
+                warn!(
+                    "Profile '{}' not found for setup in app '{}'. Falling back to 'default' profile.",
+                    profile_name, app_name
+                );
+            }
+            let final_profile_name_to_set = "default".to_string();
+            let profile = temp_app_config.get_profile("default").ok_or_else(|| {
+                anyhow!(
+                    "Profile '{}' (and fallback 'default') not found in {} for app {}",
+                    profile_name,
+                    YML_FILE_NAME,
+                    app_name
+                )
+            })?;
+            Ok((profile, final_profile_name_to_set))
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Error> {
     let app_dir_lock = get_app_lock(app_name).await;
@@ -339,7 +398,6 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
     ensure_repository(&app).await?;
 
     let working_dir_path = get_app_working_dir_path(app_name);
-
     if !repo_path.exists() {
         err!("Repo for {} not at {}", app_name, repo_path.display());
     }
@@ -365,39 +423,17 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
     let mut temp_app_for_config = read_embedded_app();
     temp_app_for_config.name = app_name.to_string();
     update_app_from_yml(&mut temp_app_for_config, &yml_path_str);
-    let temp_app_config = &temp_app_for_config;
 
-    let final_profile_name_to_set: String;
-    let profile_settings_for_setup = match temp_app_config.get_profile(profile_name) {
-        Some(profile) => {
-            final_profile_name_to_set = profile_name.to_string();
-            profile
-        }
-        None => {
-            if profile_name != "default" {
-                warn!(
-                    "Profile '{}' not found for setup in app '{}'. Falling back to 'default' profile.",
-                    profile_name, app_name
-                );
-            }
-            final_profile_name_to_set = "default".to_string();
-            temp_app_config.get_profile("default").ok_or_else(|| {
-                anyhow!(
-                    "Profile '{}' (and fallback 'default') not found in {} for app {}",
-                    profile_name,
-                    YML_FILE_NAME,
-                    app_name
-                )
-            })?
-        }
-    };
+    let (profile_settings_for_setup, final_profile_name_to_set) =
+        get_profile_for_setup(&temp_app_for_config, profile_name, app_name)?;
+
     let requirements_relative_path = &profile_settings_for_setup.requirements;
     let python_version_spec = &profile_settings_for_setup.requires_python;
-    let app_name_clone = app_name.to_string();
 
     let venv_python_exe = task::spawn_blocking({
         let wd_path = working_dir_path.clone();
         let py_spec = python_version_spec.to_string();
+        let app_name_clone = app_name.to_string();
         move || python_env::setup_python_venv(app_name_clone, &wd_path, &py_spec).map_err(|e| anyhow!(e))
     })
         .await??;
@@ -438,7 +474,6 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
         load_app_details(app).await?;
         app.installed = true;
         app.current_profile = final_profile_name_to_set.clone();
-
         let app_to_save = app.clone();
         drop(apps_map);
 
@@ -632,6 +667,33 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
     Ok(())
 }
 
+fn build_python_execution_environment(
+    profile: &Profile,
+    current_version: Option<String>,
+) -> Vec<(String, String)> {
+    let mut envs = Vec::new();
+    if !profile.python_path.is_empty() {
+        envs.push(("PYTHONPATH".to_string(), profile.python_path.clone()));
+    }
+    if let Some(version) = current_version {
+        envs.push(("PYAPPIFY_APP_VERSION".to_string(), version));
+    }
+    envs.push(("PYAPPIFY_APP_PROFILE".to_string(), profile.name.clone()));
+    envs.push(("PYAPPIFY_PID".to_string(), std::process::id().to_string()));
+    envs.push(("PYAPPIFY_UPGRADEABLE".to_string(), 1.to_string()));
+    envs.push((
+        "PYAPPIFY_VERSION".to_string(),
+        env!("CARGO_PKG_VERSION").to_string(),
+    ));
+    if let Ok(exe_path) = std::env::current_exe() {
+        envs.push((
+            "PYAPPIFY_EXECUTABLE".to_string(),
+            exe_path.to_string_lossy().to_string(),
+        ));
+    }
+    envs
+}
+
 #[tauri::command]
 pub async fn start_app(app_name: String) -> Result<(), Error> {
     info!("Attempting to start app: {}", app_name);
@@ -642,12 +704,10 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
         let mut apps_map = APPS.lock().await;
         if let Some(app) = apps_map.get_mut(&app_name) {
             app.last_start = Utc::now();
-
             let profile_settings = app.get_current_profile_settings().clone();
             let current_version = app.current_version.clone();
-
             let app_to_save = app.clone();
-            drop(apps_map); // Drop lock before async I/O
+            drop(apps_map);
 
             if let Err(e) = save_app_config_to_json(&app_to_save).await {
                 error!(
@@ -676,13 +736,13 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
     }
 
     let script_path = find_main_script(&app_name, &working_dir, main_script_relative)?;
-
     let venv_path = working_dir.join(".venv");
     let python_exe_in_venv = venv_path.join(if cfg!(windows) {
         "Scripts\\python.exe"
     } else {
         "bin/python"
     });
+
     if !venv_path.exists() || !python_exe_in_venv.exists() {
         emit_error_finish!(app_name);
         return Err(anyhow!(
@@ -692,7 +752,6 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
         )
             .into());
     }
-
     info!(
         "Starting app '{}' (profile '{}', admin: {}, script: '{}')",
         app_name,
@@ -701,35 +760,7 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
         main_script_relative
     );
 
-    let mut envs = Vec::new();
-    if !profile_to_run_with.python_path.is_empty() {
-        envs.push((
-            "PYTHONPATH".to_string(),
-            profile_to_run_with.python_path.clone(),
-        ));
-    }
-    if let Some(version) = current_version {
-        envs.push(("PYAPPIFY_APP_VERSION".to_string(), version));
-    }
-    envs.push((
-        "PYAPPIFY_APP_PROFILE".to_string(),
-        profile_to_run_with.name.clone(),
-    ));
-
-    envs.push(("PYAPPIFY_PID".to_string(), std::process::id().to_string()));
-    envs.push(("PYAPPIFY_UPGRADEABLE".to_string(), 1.to_string()));
-    envs.push((
-        "PYAPPIFY_VERSION".to_string(),
-        env!("CARGO_PKG_VERSION").to_string(),
-    ));
-
-    if let Ok(exe_path) = std::env::current_exe() {
-        envs.push((
-            "PYAPPIFY_EXECUTABLE".to_string(),
-            exe_path.to_string_lossy().to_string(),
-        ));
-    }
-
+    let envs = build_python_execution_environment(&profile_to_run_with, current_version);
     execute_python::run_python_script(
         app_name.as_str(),
         &venv_path,
@@ -763,12 +794,8 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
 
     if status_changed {
         emit_apps().await;
-    } else {
-        let apps_map_check = APPS.lock().await;
-        if apps_map_check.contains_key(&app_name) {
-            drop(apps_map_check);
-            emit_apps().await;
-        }
+    } else if APPS.lock().await.contains_key(&app_name) {
+        emit_apps().await;
     }
     Ok(())
 }
@@ -807,26 +834,19 @@ fn try_kill_with_elevation(pid: Pid, app_name: &str) -> Result<()> {
     }
 }
 
-#[tauri::command]
-pub async fn stop_app(app_name: String) -> Result<(), Error> {
-    info!("Attempting to stop app: {}", app_name);
-    let app_dir_lock = get_app_lock(&app_name).await;
-    let _guard = app_dir_lock.lock().await;
-    let working_dir = get_app_working_dir_path(&app_name);
+async fn kill_app_processes(app_name: &str, working_dir: &Path) -> Result<bool> {
+    let app_name_clone = app_name.to_string();
+    let working_dir_clone = working_dir.to_path_buf();
 
-    let app_name_clone_for_task = app_name.clone();
-    let working_dir_clone_for_task = working_dir.clone();
-
-    let any_pids_were_targeted: bool = task::spawn_blocking(move || -> Result<bool> {
+    task::spawn_blocking(move || -> Result<bool> {
         let mut sys_task = System::new();
         sys_task.refresh_processes(ProcessesToUpdate::All, true);
         debug!(
             "Scanning processes to stop for '{}' in '{}'",
-            app_name_clone_for_task,
-            working_dir_clone_for_task.display()
+            app_name_clone,
+            working_dir_clone.display()
         );
-        let pids_to_kill =
-            process::get_pids_related_to_app_dir(&sys_task, &working_dir_clone_for_task);
+        let pids_to_kill = process::get_pids_related_to_app_dir(&sys_task, &working_dir_clone);
         let targeted_any = !pids_to_kill.is_empty();
 
         for pid_to_kill in pids_to_kill {
@@ -835,47 +855,38 @@ pub async fn stop_app(app_name: String) -> Result<(), Error> {
                     "Killing {:?} (PID {}) for app '{}'",
                     process_to_kill.name(),
                     pid_to_kill.as_u32(),
-                    app_name_clone_for_task
+                    app_name_clone
                 );
-                if process_to_kill.kill() {
-                    info!("Kill signal sent to PID {}.", pid_to_kill.as_u32());
-                } else {
-                    sys_task.refresh_processes(ProcessesToUpdate::Some(&[pid_to_kill]), true);
-                    if sys_task.process(pid_to_kill).is_none() {
-                        info!(
-                            "PID {} for '{}' exited post-kill failure report.",
+                if !process_to_kill.kill() {
+                    warn!(
+                        "Standard kill failed for PID {} ('{}'). Attempting elevated.",
+                        pid_to_kill.as_u32(),
+                        app_name_clone
+                    );
+                    if let Err(e) = try_kill_with_elevation(pid_to_kill, &app_name_clone) {
+                        error!(
+                            "Elevated kill for PID {} ('{}') failed: {:?}",
                             pid_to_kill.as_u32(),
-                            app_name_clone_for_task
+                            app_name_clone,
+                            e
                         );
-                    } else {
-                        warn!(
-                            "Standard kill failed for PID {} ('{}'). Attempting elevated.",
-                            pid_to_kill.as_u32(),
-                            app_name_clone_for_task
-                        );
-                        if let Err(e) =
-                            try_kill_with_elevation(pid_to_kill, &app_name_clone_for_task)
-                        {
-                            error!(
-                                "Elevated kill for PID {} ('{}') failed: {:?}",
-                                pid_to_kill.as_u32(),
-                                app_name_clone_for_task,
-                                e
-                            );
-                        }
                     }
                 }
-            } else {
-                info!(
-                    "PID {} for '{}' already exited.",
-                    pid_to_kill.as_u32(),
-                    app_name_clone_for_task
-                );
             }
         }
         Ok(targeted_any)
     })
-        .await??;
+        .await?
+}
+
+#[tauri::command]
+pub async fn stop_app(app_name: String) -> Result<(), Error> {
+    info!("Attempting to stop app: {}", app_name);
+    let app_dir_lock = get_app_lock(&app_name).await;
+    let _guard = app_dir_lock.lock().await;
+
+    let working_dir = get_app_working_dir_path(&app_name);
+    let any_pids_were_targeted = kill_app_processes(&app_name, &working_dir).await?;
 
     if any_pids_were_targeted {
         info!("Processes targeted for '{}'. Waiting 1s.", app_name);

@@ -98,16 +98,19 @@ fn apply_profile_inheritance(config: &mut App) {
 }
 
 pub fn read_embedded_app() -> App {
-    let yaml_content = include_str!("../assets/pyappify.yml");
-    let mut app: App = serde_yaml::from_str(yaml_content).expect("Failed to parse embedded pyappify.yml");
+    let yml_content = fs::read_to_string("pyappify.yml")
+        .unwrap_or_else(|_| include_str!("../assets/pyappify.yml").to_string());
+    let mut app: App = serde_yaml::from_str(&yml_content).expect("Failed to parse pyappify.yml");
     apply_profile_inheritance(&mut app);
     if app.current_profile.is_empty() {
         app.current_profile = app.profiles.first().unwrap().name.clone();
-        info!("app current_profile is empty set to first {}", &app.current_profile);
+        info!(
+            "app current_profile is empty, set to first profile: {}",
+            &app.current_profile
+        );
     }
     app
 }
-
 pub fn update_app_from_yml(app: &mut App, file_path_str: &str) {
     let file_path = Path::new(file_path_str);
 

@@ -29,9 +29,6 @@ jobs:
       - name: rust setup
         uses: dtolnay/rust-toolchain@stable
 
-      - name of the os
-        run: echo ${{ matrix.platform }}
-
       - name: rust cache
         uses: swatinem/rust-cache@v2
         with:
