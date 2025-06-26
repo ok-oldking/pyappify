@@ -6,12 +6,13 @@ const resources = {
     en: {
         translation: {
             // English uses keys as-is, no translations needed here.
+            "appMadeWith": "App made with {{name}}",
         },
     },
     zh: {
         translation: {
             "Confirm Deletion": "确认删除",
-            "App made with": "打包使用:",
+            "appMadeWith": "使用 {{name}} 打包",
             "Settings": "设置",
             "Processing action...": "正在处理操作...",
             "Loading app...": "正在加载应用...",

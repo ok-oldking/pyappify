@@ -3,6 +3,7 @@ import './i18n';
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {listen, UnlistenFn} from "@tauri-apps/api/event";
+import {getVersion} from '@tauri-apps/api/app';
 import UpdateLogPage from "./UpdateLogPage";
 import ConsolePage from "./ConsolePage.tsx";
 import SettingsPage from "./SettingsPage.tsx";
@@ -188,6 +189,7 @@ function App() {
     const [isConfirmDeleteDialogOpen, setConfirmDeleteDialogOpen] = useState(false);
     const [appToDelete, setAppToDelete] = useState<string | null>(null);
     const [checkingUpdateForApp, setCheckingUpdateForApp] = useState<string | null>(null);
+    const [appVersion, setAppVersion] = useState('');
 
 
     useEffect(() => {
@@ -274,6 +276,10 @@ function App() {
             handleInstallWithProfile(app.name, profileName);
         }
     };
+
+    useEffect(() => {
+        getVersion().then(setAppVersion);
+    }, []);
 
     useEffect(() => {
         const unlistenPromises: Promise<UnlistenFn>[] = [];
@@ -1302,10 +1308,10 @@ function App() {
                 {currentPage === 'list' && (
                     <Box component="footer" sx={{py: 2, textAlign: 'center'}}>
                         <Typography variant="body2" color="text.secondary">
-                            {t('App made with')} {' '}
+
                             <Link href="https://github.com/ok-oldking/pyappify" target="_blank"
                                   rel="noopener noreferrer">
-                                PyAppify
+                                {t('appMadeWith', { name:`PyAppify ${appVersion}`} )}
                             </Link>
                         </Typography>
                     </Box>
