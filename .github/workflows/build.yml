@@ -37,8 +37,13 @@ jobs:
         with:
           node-version: 'lts/*'
 
-      - name: install frontend dependencies
-        run: npm install
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10 # Or a specific version like '8.x.x'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Install 7-Zip
         run: choco install 7zip
