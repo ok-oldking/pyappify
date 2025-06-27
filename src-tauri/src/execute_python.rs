@@ -4,13 +4,13 @@ use crate::utils::error::Error;
 use crate::utils::path::{get_python_dir, path_to_abs};
 use crate::{emit_error, emit_error_finish, emit_info, emit_success_finish, err};
 use anyhow::anyhow;
+use regex::Regex;
 use runas;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use regex::Regex;
 use tokio::process::Command;
 use tracing::{debug, error, info};
 
@@ -208,8 +208,8 @@ fn ensure_venv_cfg(env_dir: &Path) -> Result<(), Error> {
     let captures = version_regex
         .captures(&original_content)
         .ok_or("Could not find version info in pyvenv.cfg")?;
-    
-    let python_dir = get_python_dir().join( &captures[1]);
+
+    let python_dir = get_python_dir().join(&captures[1]);
     let abs_python_dir = fs::canonicalize(python_dir)?;
 
     let home_regex = Regex::new(r"(\s*home\s*=\s*).*")?;
@@ -220,7 +220,14 @@ fn ensure_venv_cfg(env_dir: &Path) -> Result<(), Error> {
 
     let content = home_regex.replace(&original_content, format!("$1{}", abs_python_dir.display()));
     let content = executable_regex.replace(&content, format!("$1{}", python_exe_path.display()));
-    let content = command_regex.replace(&content, format!("$1{} -m venv {}", python_exe_path.display(), abs_env_dir.display()));
+    let content = command_regex.replace(
+        &content,
+        format!(
+            "$1{} -m venv {}",
+            python_exe_path.display(),
+            abs_env_dir.display()
+        ),
+    );
 
     if content != original_content {
         info!("modified venv cfg {}", python_exe_path.display());
@@ -230,6 +237,28 @@ fn ensure_venv_cfg(env_dir: &Path) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+#[cfg(windows)]
+async fn is_currently_admin() -> bool {
+    Command::new("net")
+        .arg("session")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+async fn is_currently_admin() -> bool {
+    if let Ok(output) = Command::new("id").arg("-u").output().await {
+        if output.status.success() {
+            return String::from_utf8_lossy(&output.stdout).trim() == "0";
+        }
+    }
+    false
 }
 
 pub async fn run_python_script(
@@ -298,7 +327,18 @@ pub async fn run_python_script(
     let envs_owned = envs;
 
     tokio::spawn(async move {
-        let result = if as_admin {
+        let needs_elevation = as_admin && !is_currently_admin().await;
+
+        if needs_elevation {
+            emit_info!(app_name_owned, "Elevation required, using admin execution.");
+        } else if as_admin {
+            emit_info!(
+                app_name_owned,
+                "Admin rights requested, but process is already elevated. Using standard execution."
+            );
+        }
+
+        let result = if needs_elevation {
             run_python_script_as_admin_internal(
                 app_name_owned.as_str(),
                 python_exec_str_owned,
