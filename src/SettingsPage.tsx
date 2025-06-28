@@ -1,3 +1,4 @@
+// src/components/SettingsPage.tsx
 import React from 'react';
 import {
     Box,
@@ -20,10 +21,13 @@ interface SettingsPageProps {
     currentTheme: ThemeModeSetting;
     onChangeTheme: (theme: ThemeModeSetting) => void;
 
-    // Props for Pip Cache Directory
     currentPipCacheDir: string;
     pipCacheDirOptions: string[];
     onChangePipCacheDir: (value: string) => void;
+
+    currentIndexUrl: string;
+    pipIndexUrlOptions: string[];
+    onChangePipIndexUrl: (value: string) => void;
 
     onBack: () => void;
 }
@@ -31,9 +35,12 @@ interface SettingsPageProps {
 const SettingsPage: React.FC<SettingsPageProps> = ({
                                                        currentTheme,
                                                        onChangeTheme,
-                                                       currentPipCacheDir,
-                                                       pipCacheDirOptions,
+                                                       currentPipCacheDir = '',
+                                                       pipCacheDirOptions = [],
                                                        onChangePipCacheDir,
+                                                       currentIndexUrl = '',
+                                                       pipIndexUrlOptions = [],
+                                                       onChangePipIndexUrl,
                                                        onBack
                                                    }) => {
     const {t} = useTranslation();
@@ -50,6 +57,21 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
         onChangePipCacheDir(event.target.value as string);
     };
 
+    const handlePipIndexUrlChange = (event: SelectChangeEvent<string>) => {
+        onChangePipIndexUrl(event.target.value as string);
+    };
+
+    const getPipIndexUrlName = (url: string) => {
+        if (url === '') return t('System Default');
+        if (url.includes('pypi.org')) return 'PyPI';
+        if (url.includes('tsinghua')) return 'Tsinghua';
+        if (url.includes('aliyun')) return 'Aliyun';
+        if (url.includes('ustc')) return 'USTC';
+        if (url.includes('huaweicloud')) return 'Huawei Cloud';
+        if (url.includes('tencent')) return 'Tencent Cloud';
+        return url;
+    };
+
     return (
         <Container maxWidth="sm" sx={{py: 4}}>
             <Paper elevation={3} sx={{p: 3}}>
@@ -57,7 +79,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                     {t('Settings')}
                 </Typography>
 
-                {/* Language Setting */}
                 <Box sx={{my: 2}}>
                     <FormControl fullWidth variant="outlined">
                         <InputLabel id="language-select-label">{t('Language')}</InputLabel>
@@ -74,7 +95,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                     </FormControl>
                 </Box>
 
-                {/* Theme Setting */}
                 <Box sx={{my: 2}}>
                     <FormControl fullWidth variant="outlined">
                         <InputLabel id="theme-select-label">{t('Theme')}</InputLabel>
@@ -92,7 +112,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                     </FormControl>
                 </Box>
 
-                {/* Pip Cache Directory Setting */}
                 <Box sx={{my: 2}}>
                     <FormControl fullWidth variant="outlined">
                         <InputLabel id="pip-cache-dir-select-label">{t('Pip Cache Directory')}</InputLabel>
@@ -105,7 +124,26 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                         >
                             {pipCacheDirOptions.map((option) => (
                                 <MenuItem key={option} value={option}>
-                                    {option}
+                                    {t(option)}
+                                </MenuItem>
+                            ))}
+                        </Select>
+                    </FormControl>
+                </Box>
+
+                <Box sx={{my: 2}}>
+                    <FormControl fullWidth variant="outlined">
+                        <InputLabel id="pip-index-url-select-label">{t('Pip Index URL')}</InputLabel>
+                        <Select
+                            labelId="pip-index-url-select-label"
+                            id="pip-index-url-select"
+                            value={currentIndexUrl}
+                            label={t('Pip Index URL')}
+                            onChange={handlePipIndexUrlChange}
+                        >
+                            {pipIndexUrlOptions.map((option) => (
+                                <MenuItem key={option} value={option}>
+                                    {t(getPipIndexUrlName(option))}
                                 </MenuItem>
                             ))}
                         </Select>

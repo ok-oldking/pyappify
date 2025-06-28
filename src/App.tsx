@@ -106,6 +106,7 @@ type Page =
 type ThemeModeSetting = 'light' | 'dark' | 'system';
 
 const PIP_CACHE_DIR_CONFIG_KEY = "Pip Cache Directory";
+const PIP_INDEX_URL_CONFIG_KEY = "Pip Index URL";
 
 
 async function invokeTauriCommandWrapper<T>(
@@ -729,6 +730,10 @@ function App() {
         handleSettingChange(PIP_CACHE_DIR_CONFIG_KEY, newValue);
     };
 
+    const handleChangePipIndexUrl = (newValue: string) => {
+        handleSettingChange(PIP_INDEX_URL_CONFIG_KEY, newValue);
+    };
+
     const handleCheckForUpdates = async (appName: string) => {
         clearMessages();
         setAppActionLoading(prev => ({...prev, [appName]: true}));
@@ -962,8 +967,12 @@ function App() {
             );
         } else {
             const pipCacheConfig = allConfigs.find(c => c.name === PIP_CACHE_DIR_CONFIG_KEY);
-            const currentPipCacheDir = (pipCacheConfig?.value as string) ?? "App Install Directory";
-            const pipCacheDirOptions = (pipCacheConfig?.options as string[] | undefined) ?? ["System Default", "App Install Directory"];
+            const currentPipCacheDir = (pipCacheConfig?.value as string) ?? '';
+            const pipCacheDirOptions = (pipCacheConfig?.options as string[] | undefined) ?? [];
+
+            const pipIndexUrlConfig = allConfigs.find(c => c.name === PIP_INDEX_URL_CONFIG_KEY);
+            const currentIndexUrl = (pipIndexUrlConfig?.value as string) ?? '';
+            const pipIndexUrlOptions = (pipIndexUrlConfig?.options as string[] | undefined) ?? [];
 
             pageContent = (
                 <SettingsPage
@@ -973,6 +982,9 @@ function App() {
                     currentPipCacheDir={currentPipCacheDir}
                     pipCacheDirOptions={pipCacheDirOptions}
                     onChangePipCacheDir={handleChangePipCacheDir}
+                    currentIndexUrl={currentIndexUrl}
+                    pipIndexUrlOptions={pipIndexUrlOptions}
+                    onChangePipIndexUrl={handleChangePipIndexUrl}
                 />
             );
         }

@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use tar::Archive;
 use tokio::process::Command;
 use tracing::{error, info, warn};
+use crate::utils::locale::get_locale;
 
 const KNOWN_PATCHES: [(&str, &str, &str, &str); 7] = [
     ("3.13", "3.13.2", "https://github.com/astral-sh/python-build-standalone/releases/download/20250317/cpython-3.13.2+20250317-x86_64-pc-windows-msvc-install_only_stripped.tar.gz", "https://www.modelscope.cn/models/okoldking/ok/resolve/master/pythons/cpython-3.13.2+20250317-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"),
@@ -28,7 +29,7 @@ const KNOWN_PATCHES: [(&str, &str, &str, &str); 7] = [
 ];
 
 fn get_download_urls(patch_version: &str) -> Result<(String, String)> {
-    let locale = "zh_CN";
+    let locale = get_locale();
     for patch in KNOWN_PATCHES.iter() {
         if patch.0 == patch_version || patch.1 == patch_version {
             return if locale == "zh_CN" {
@@ -646,6 +647,8 @@ pub async fn install_requirements(
     if let Some(cache_dir) = pip_cache_dir {
         pip_install_cmd.arg("--cache-dir").arg(cache_dir);
     }
+
+    emit_info!(app_name, "set --index-url {:?}", pip_index_url);
 
     if let Some(index_url) = pip_index_url {
         pip_install_cmd.arg("--index-url").arg(index_url);

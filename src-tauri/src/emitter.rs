@@ -2,7 +2,7 @@
 use once_cell::sync::OnceCell;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Wry};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 static GLOBAL_APP_HANDLE: OnceCell<AppHandle<Wry>> = OnceCell::new();
 
@@ -79,8 +79,8 @@ pub(crate) fn emit_log_impl(
 
     if is_error {
         error!("{}{} [{}]: {}", prefix, log_type, app_name, actual_message);
-    } else {
-        println!("{}{} [{}]: {}", prefix, log_type, app_name, actual_message);
+    } else if !final_is_update {
+        info!("{}{} [{}]: {}", prefix, log_type, app_name, actual_message);
     }
 }
 

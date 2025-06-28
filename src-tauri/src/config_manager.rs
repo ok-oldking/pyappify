@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tracing::{error, info, warn};
-// Added
+use crate::utils::locale::get_locale;
 
 const PIP_CACHE_DIR_CONFIG_KEY: &str = "Pip Cache Directory";
 const PIP_CACHE_DIR_OPTION_APP_INSTALL: &str = "App Install Directory";
@@ -20,10 +20,10 @@ const PIP_CACHE_DIR_OPTION_SYSTEM_DEFAULT: &str = "System Default";
 const DEFAULT_PYTHON_VERSION_CONFIG_KEY: &str = "Default Python Version";
 
 const PIP_INDEX_URL_CONFIG_KEY: &str = "Pip Index URL";
-const PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT: &str = ""; // "None(Use System Config File)"
+const PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT: &str = "";
 const PIP_INDEX_URL_OPTION_PYPI: &str = "https://pypi.org/simple/";
 const PIP_INDEX_URL_OPTION_TSINGHUA: &str = "https://pypi.tuna.tsinghua.edu.cn/simple";
-const PIP_INDEX_URL_OPTION_ALIYUN: &str = "http://mirrors.aliyun.com/pypi/simple/";
+const PIP_INDEX_URL_OPTION_ALIYUN: &str = "https://mirrors.aliyun.com/pypi/simple/";
 const PIP_INDEX_URL_OPTION_USTC: &str = "https://mirrors.ustc.edu.cn/pypi/simple/";
 const PIP_INDEX_URL_OPTION_HUAWEI: &str = "https://repo.huaweicloud.com/repository/pypi/simple/";
 const PIP_INDEX_URL_OPTION_TENCENT: &str = "https://mirrors.cloud.tencent.com/pypi/simple/";
@@ -143,13 +143,21 @@ impl AppConfig {
             },
         );
 
+        let locale = get_locale();
+        info!("System locale is: {}", locale);
+        let default_pip_url = if locale == "zh_CN" {
+            PIP_INDEX_URL_OPTION_ALIYUN.to_string()
+        } else {
+            PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT.to_string()
+        };
+
         items.insert(
             PIP_INDEX_URL_CONFIG_KEY.to_string(),
             ConfigItem {
                 name: PIP_INDEX_URL_CONFIG_KEY.to_string(),
                 description: "Specifies the pip index URL. Select the empty option to use the system's default pip configuration (equivalent to not setting an index URL).".to_string(),
-                value: ConfigValue::String(PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT.to_string()),
-                default_value: ConfigValue::String(PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT.to_string()),
+                value: ConfigValue::String(default_pip_url.clone()),
+                default_value: ConfigValue::String(default_pip_url),
                 options: Some(vec![
                     ConfigValue::String(PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT.to_string()),
                     ConfigValue::String(PIP_INDEX_URL_OPTION_PYPI.to_string()),
@@ -470,9 +478,8 @@ pub fn save_configuration(state: tauri::State<'_, ConfigState>) -> Result<(), St
 pub fn init_config_manager(app_handle: &tauri::AppHandle) {
     let config = AppConfig::new();
     let config_state_arc = Arc::new(Mutex::new(config));
-    app_handle.manage(config_state_arc.clone()); // Tauri manages one Arc
+    app_handle.manage(config_state_arc.clone());
 
-    // Store another Arc in the global static variable
     if GLOBAL_CONFIG_STATE.set(config_state_arc).is_err() {
         warn!("GLOBAL_CONFIG_STATE was already initialized. This should not happen if init_config_manager is called only once.");
     }

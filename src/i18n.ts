@@ -1,3 +1,4 @@
+// src/i18n.ts
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 import LanguageDetector from "i18next-browser-languagedetector";
@@ -83,6 +84,14 @@ const resources = {
             "Light": "浅色模式",
             "Dark": "深色模式",
             "Pip Cache Directory": "Pip 缓存目录",
+            "App Install Directory": "应用安装目录",
+            "Pip Index URL": "Pip 镜像源",
+            "PyPI": "PyPI (官方)",
+            "Tsinghua": "清华大学",
+            "Aliyun": "阿里云",
+            "USTC": "中国科学技术大学",
+            "Huawei Cloud": "华为云",
+            "Tencent Cloud": "腾讯云",
 
             // Profile Chooser
             "Choose Profile for {{appName}}": "为 {{appName}} 选择配置",
