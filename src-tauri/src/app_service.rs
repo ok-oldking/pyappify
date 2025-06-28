@@ -16,13 +16,17 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use std::collections::HashSet;
 use sysinfo::{Pid, ProcessesToUpdate, System};
+use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 use tokio::task;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
-
+use windows_sys::core::BOOL;
+use windows_sys::Win32::Foundation::{HWND, LPARAM, TRUE};
+use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindow, IsWindowVisible};
 use crate::app::App;
 use crate::git::ensure_repository;
 use crate::utils::error::Error;
@@ -127,7 +131,7 @@ pub(crate) async fn get_app_lock(app_name: &str) -> Arc<Mutex<()>> {
 }
 
 async fn cleanup_stale_app_directories(app_name: &str) -> Result<()> {
-    if let Some(apps_dir) = path::get_app_base_path(app_name).parent() {
+    if let Some(apps_dir) = get_app_base_path(app_name).parent() {
         if apps_dir.exists() {
             let mut entries = tokio::fs::read_dir(apps_dir)
                 .await
@@ -694,8 +698,111 @@ fn build_python_execution_environment(
     envs
 }
 
+async fn minimize_to_tray(app_handle: &AppHandle) {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        if let Err(e) = window.hide() {
+            error!("Failed to hide window (minimize to tray): {}", e);
+        }
+    }
+}
+
+struct EnumData {
+    pids: HashSet<u32>,
+    found: bool,
+}
+
+unsafe extern "system" fn enum_proc(window: HWND, lparam: LPARAM) -> BOOL {
+    let data = &mut *(lparam as *mut EnumData);
+    let mut pid = 0;
+    GetWindowThreadProcessId(window, &mut pid);
+    if pid != 0 && data.pids.contains(&pid) && IsWindow(window) == TRUE {
+        data.found = true;
+        return 0;
+    }
+
+    TRUE
+}
+
+#[cfg(windows)]
+fn has_visible_window(pids: &[Pid]) -> bool {
+    if pids.is_empty() {
+        return false;
+    }
+
+    let mut data = EnumData {
+        pids: pids.iter().map(|p| p.as_u32()).collect(),
+        found: false,
+    };
+
+    unsafe {
+        EnumWindows(Some(enum_proc), &mut data as *mut _ as LPARAM);
+    }
+
+    data.found
+}
+
+#[cfg(not(windows))]
+fn has_visible_window(_pids: &[sysinfo::Pid]) -> bool {
+    true
+}
+
+async fn check_and_minimize_on_start(
+    app_name: &str,
+    working_dir: &Path,
+    app_handle: &AppHandle,
+) -> Result<()> {
+    let start_time = tokio::time::Instant::now();
+    let timeout = Duration::from_secs(10);
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    let mut sys = System::new();
+
+    info!(
+        "Monitoring for app '{}' to start for up to 10 seconds...",
+        app_name
+    );
+
+    while tokio::time::Instant::now().duration_since(start_time) < timeout {
+        interval.tick().await;
+        sys.refresh_processes(ProcessesToUpdate::All, true);
+        let pids = process::get_pids_related_to_app_dir(&sys, &working_dir.to_path_buf());
+        if !pids.is_empty() && has_visible_window(&pids) {
+            info!(
+                "App '{}' detected as running with a visible window. Updating status and minimizing main window.",
+                app_name
+            );
+
+            let mut apps_map = APPS.lock().await;
+            if let Some(app) = apps_map.get_mut(app_name) {
+                app.running = true;
+            }
+            drop(apps_map);
+
+            emit_apps().await;
+            minimize_to_tray(app_handle).await;
+            return Ok(());
+        }
+    }
+
+    warn!(
+        "App '{}' did not appear to be running with a visible window within 10 seconds.",
+        app_name
+    );
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let is_running_after_timeout = is_app_running(&sys, working_dir);
+    let mut apps_map = APPS.lock().await;
+    if let Some(app) = apps_map.get_mut(app_name) {
+        if app.running != is_running_after_timeout {
+            app.running = is_running_after_timeout;
+            drop(apps_map);
+            emit_apps().await;
+        }
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
-pub async fn start_app(app_name: String) -> Result<(), Error> {
+pub async fn start_app(app_name: String, app_handle: AppHandle) -> Result<(), Error> {
     info!("Attempting to start app: {}", app_name);
     let app_dir_lock = get_app_lock(&app_name).await;
     let _guard = app_dir_lock.lock().await;
@@ -771,32 +878,8 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
     )
         .await?;
 
-    let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
-    let currently_running = is_app_running(&sys, &working_dir);
-    let mut status_changed = false;
+    check_and_minimize_on_start(&app_name, &working_dir, &app_handle).await?;
 
-    {
-        let mut apps_map = APPS.lock().await;
-        if let Some(app) = apps_map.get_mut(&app_name) {
-            if app.running != currently_running {
-                debug!(
-                    "Updating running status for '{}' after start: {} -> {}",
-                    app_name, app.running, currently_running
-                );
-                app.running = currently_running;
-                status_changed = true;
-            }
-        } else {
-            warn!("App '{}' not in APPS map after start_app.", app_name);
-        }
-    }
-
-    if status_changed {
-        emit_apps().await;
-    } else if APPS.lock().await.contains_key(&app_name) {
-        emit_apps().await;
-    }
     Ok(())
 }
 
@@ -928,12 +1011,17 @@ pub async fn stop_app(app_name: String) -> Result<(), Error> {
     Ok(())
 }
 
-pub async fn periodically_update_all_apps_running_status() {
+pub async fn periodically_update_all_apps_running_status(app_handle: AppHandle) {
     let mut ticker = interval(Duration::from_secs(2));
     info!("Starting periodic app status update (2s interval).");
     let mut sys = System::new();
     loop {
         ticker.tick().await;
+        if let Some(window) = app_handle.get_webview_window("main") {
+            if !window.is_visible().unwrap_or(false) {
+                continue;
+            }
+        }
         sys.refresh_processes(ProcessesToUpdate::All, true);
         let apps_to_check_data: Vec<(String, PathBuf)> = APPS
             .lock()

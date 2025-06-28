@@ -548,7 +548,7 @@ function App() {
             "load_apps",
             undefined,
             () => {
-                updateStatus({loading: false, info: "App refreshed."});
+                updateStatus({loading: false, info: t("App Refreshed.")});
             },
             (errorMessage, rawError) => {
                 console.error("Failed to reload apps after install/clone attempt:", rawError);
@@ -572,7 +572,7 @@ function App() {
             "load_apps",
             undefined,
             () => {
-                updateStatus({loading: false, info: "App refreshed."});
+                updateStatus({loading: false, info: "App Refreshed."});
             },
             (errorMessage, rawError) => {
                 console.error("Failed to reload apps after start attempt:", rawError);
@@ -598,7 +598,7 @@ function App() {
             "load_apps",
             undefined,
             () => {
-                updateStatus({loading: false, info: "App refreshed."});
+                updateStatus({loading: false, info: "App Refreshed."});
                 if (appNameThatChanged) {
                     setSelectedTargetVersions(prev => ({
                         ...prev,
@@ -662,7 +662,7 @@ function App() {
             "load_apps",
             undefined,
             () => {
-                updateStatus({loading: false, info: "App refreshed."});
+                updateStatus({loading: false, info: "App Refreshed."});
             },
             (errorMessage, rawError) => {
                 console.error("Failed to reload apps after profile change attempt:", rawError);

@@ -12,6 +12,7 @@ mod app;
 use crate::app_service::{load_apps, setup_app, start_app, stop_app};
 use crate::config_manager::init_config_manager;
 use crate::utils::logger::LoggerBuilder;
+use crate::utils::window;
 use std::env;
 use tauri::{Manager};
 use tracing::info;
@@ -158,17 +159,15 @@ pub async fn run() {
         tauri::Builder::default()
             .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
                 info!("tauri_plugin_single_instance args:{:?} cwd:{}", args, cwd);
-                let _ = app
-                    .get_webview_window("main")
-                    .expect("no main window")
-                    .set_focus();
+                window::show_and_focus_main_window(app.app_handle());
             }))
             .plugin(tauri_plugin_opener::init())
             .setup(|app| {
+                window::create_system_tray(&app);
                 let app_handle = app.handle();
                 emitter::init_app_handle(app_handle.clone());
                 init_config_manager(&app_handle);
-                tokio::spawn(app_service::periodically_update_all_apps_running_status());
+                tokio::spawn(app_service::periodically_update_all_apps_running_status(app_handle.clone()));
                 Ok(())
             })
             .invoke_handler(tauri::generate_handler![

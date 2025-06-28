@@ -7,3 +7,4 @@ pub mod logger;
 pub mod path;
 pub mod process;
 pub mod locale;
+pub mod window;
