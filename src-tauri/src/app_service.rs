@@ -16,7 +16,6 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use std::collections::HashSet;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
@@ -24,9 +23,6 @@ use tokio::task;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
-use windows_sys::core::BOOL;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, TRUE};
-use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindow, IsWindowVisible};
 use crate::app::App;
 use crate::git::ensure_repository;
 use crate::utils::error::Error;
@@ -698,55 +694,7 @@ fn build_python_execution_environment(
     envs
 }
 
-async fn minimize_to_tray(app_handle: &AppHandle) {
-    if let Some(window) = app_handle.get_webview_window("main") {
-        if let Err(e) = window.hide() {
-            error!("Failed to hide window (minimize to tray): {}", e);
-        }
-    }
-}
-
-struct EnumData {
-    pids: HashSet<u32>,
-    found: bool,
-}
-
-unsafe extern "system" fn enum_proc(window: HWND, lparam: LPARAM) -> BOOL {
-    let data = &mut *(lparam as *mut EnumData);
-    let mut pid = 0;
-    GetWindowThreadProcessId(window, &mut pid);
-    if pid != 0 && data.pids.contains(&pid) && IsWindow(window) == TRUE {
-        data.found = true;
-        return 0;
-    }
-
-    TRUE
-}
-
-#[cfg(windows)]
-fn has_visible_window(pids: &[Pid]) -> bool {
-    if pids.is_empty() {
-        return false;
-    }
-
-    let mut data = EnumData {
-        pids: pids.iter().map(|p| p.as_u32()).collect(),
-        found: false,
-    };
-
-    unsafe {
-        EnumWindows(Some(enum_proc), &mut data as *mut _ as LPARAM);
-    }
-
-    data.found
-}
-
-#[cfg(not(windows))]
-fn has_visible_window(_pids: &[sysinfo::Pid]) -> bool {
-    true
-}
-
-async fn check_and_minimize_on_start(
+async fn check_running_on_start(
     app_name: &str,
     working_dir: &Path,
     app_handle: &AppHandle,
@@ -765,7 +713,7 @@ async fn check_and_minimize_on_start(
         interval.tick().await;
         sys.refresh_processes(ProcessesToUpdate::All, true);
         let pids = process::get_pids_related_to_app_dir(&sys, &working_dir.to_path_buf());
-        if !pids.is_empty() && has_visible_window(&pids) {
+        if !pids.is_empty() {
             info!(
                 "App '{}' detected as running with a visible window. Updating status and minimizing main window.",
                 app_name
@@ -778,7 +726,6 @@ async fn check_and_minimize_on_start(
             drop(apps_map);
 
             emit_apps().await;
-            minimize_to_tray(app_handle).await;
             return Ok(());
         }
     }
@@ -878,7 +825,7 @@ pub async fn start_app(app_name: String, app_handle: AppHandle) -> Result<(), Er
     )
         .await?;
 
-    check_and_minimize_on_start(&app_name, &working_dir, &app_handle).await?;
+    check_running_on_start(&app_name, &working_dir, &app_handle).await?;
 
     Ok(())
 }

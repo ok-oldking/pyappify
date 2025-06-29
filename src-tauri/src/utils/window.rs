@@ -1,7 +1,19 @@
 // src/utils/window.rs
-use tauri::{App, AppHandle, Manager, Wry};
+use tauri::{App, AppHandle, Manager, WebviewWindow, Window, WindowEvent, Wry};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tracing::info;
+
+
+pub fn on_window_event(window: &Window, _event: &WindowEvent) {
+    if let WindowEvent::Resized(size) = _event {
+        if size.width == 0 && size.height == 0 && window.label() == "main" {
+            info!("on_window_event {:?}, hide", _event);
+            window.hide().unwrap();
+        }
+    }
+}
+
 
 pub fn create_system_tray(app: &App<Wry>) -> anyhow::Result<()> {
     let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -26,15 +38,14 @@ pub fn create_system_tray(app: &App<Wry>) -> anyhow::Result<()> {
                 button_state: MouseButtonState::Up,
                 ..
             } => {
-                println!("left click pressed and released");
+                info!("left click pressed and released");
                 let app = tray.app_handle();
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                    show_window(window);
                 }
             }
             _ => {
-                println!("unhandled event {event:?}");
+                info!("unhandled event {event:?}");
             }
         })
         .build(app)?;
@@ -44,7 +55,12 @@ pub fn create_system_tray(app: &App<Wry>) -> anyhow::Result<()> {
 
 pub fn show_and_focus_main_window(app: &AppHandle<Wry>) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.set_focus();
+        show_window(window);
     }
+}
+
+fn show_window(window: WebviewWindow) {
+    window.unminimize().unwrap();
+    window.show().unwrap();
+    window.set_focus().unwrap();
 }

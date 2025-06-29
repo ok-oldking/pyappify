@@ -14,8 +14,9 @@ use crate::config_manager::init_config_manager;
 use crate::utils::logger::LoggerBuilder;
 use crate::utils::window;
 use std::env;
-use tauri::{Manager};
+use tauri::{Manager, Window, WindowEvent};
 use tracing::info;
+use crate::utils::window::on_window_event;
 
 fn has_cli_command() -> bool {
     let args: Vec<String> = env::args().collect();
@@ -161,9 +162,10 @@ pub async fn run() {
                 info!("tauri_plugin_single_instance args:{:?} cwd:{}", args, cwd);
                 window::show_and_focus_main_window(app.app_handle());
             }))
+            .on_window_event(on_window_event)
             .plugin(tauri_plugin_opener::init())
             .setup(|app| {
-                window::create_system_tray(&app);
+                window::create_system_tray(&app).unwrap();
                 let app_handle = app.handle();
                 emitter::init_app_handle(app_handle.clone());
                 init_config_manager(&app_handle);
