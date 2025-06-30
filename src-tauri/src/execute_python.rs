@@ -86,12 +86,12 @@ impl Drop for ProcessContextGuard {
 
 async fn run_python_script_as_admin_internal(
     app_name: &str,
-    python_executable: String,
-    script_path: String,
+    executable: String,
+    args: &[String],
     working_dir: &Path,
     envs: &[(String, String)],
 ) -> Result<(), Error> {
-    info!(app_name = app_name, script = script_path, desired_cwd = %working_dir.display(), "Attempting to run Python script with admin privileges using runas.");
+    info!(app_name = app_name, executable = %executable, args = %args.join(" "), desired_cwd = %working_dir.display(), "Attempting to run script with admin privileges using runas.");
 
     let mut env_vars_to_set = HashMap::new();
     env_vars_to_set.insert("PYTHONIOENCODING".to_string(), "utf-8".to_string());
@@ -106,12 +106,14 @@ async fn run_python_script_as_admin_internal(
     emit_info!(
         app_name,
         "run as admin command: {} {}, cwd: {}",
-        python_executable,
-        script_path,
+        executable,
+        args.join(" "),
         working_dir.display()
     );
-    let mut runas_cmd_builder = runas::Command::new(python_executable);
-    runas_cmd_builder.arg(script_path);
+    let mut runas_cmd_builder = runas::Command::new(&executable);
+    for arg in args {
+        runas_cmd_builder.arg(arg);
+    }
     runas_cmd_builder.show(false);
 
     let app_name_clone = app_name.to_string();
@@ -123,7 +125,7 @@ async fn run_python_script_as_admin_internal(
             if status.success() {
                 emit_info!(
                     app_name_clone,
-                    "Admin Python script (via runas) finished successfully with code {}",
+                    "Admin script (via runas) finished successfully with code {}",
                     status.code().unwrap_or(-1)
                 );
                 Ok(())
@@ -132,7 +134,7 @@ async fn run_python_script_as_admin_internal(
                     .code()
                     .map_or_else(|| "N/A".to_string(), |c| c.to_string());
                 let err_msg = format!(
-                    "Admin Python script (via runas) exited with status code: {}",
+                    "Admin script (via runas) exited with status code: {}",
                     exit_code_display
                 );
                 error!(exit_code = %exit_code_display, %err_msg);
@@ -158,13 +160,13 @@ async fn run_python_script_as_admin_internal(
 
 async fn run_python_script_normal_internal(
     app_name: &str,
-    python_executable: String,
-    script_path: String,
+    executable: String,
+    args: &[String],
     working_dir: &Path,
     envs: &[(String, String)],
 ) -> Result<(), Error> {
-    let mut cmd = Command::new(python_executable);
-    cmd.arg(script_path)
+    let mut cmd = Command::new(executable);
+    cmd.args(args)
         .current_dir(working_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -199,7 +201,7 @@ fn ensure_venv_cfg(env_dir: &Path) -> Result<(), Error> {
 
     if !file_path.exists() {
         let err_msg = format!("venv cfg not found: {}", file_path.display());
-        err!(err_msg);
+        return Err(err!(err_msg));
     }
 
     let original_content = fs::read_to_string(&file_path)?;
@@ -264,65 +266,86 @@ async fn is_currently_admin() -> bool {
 pub async fn run_python_script(
     app_name: &str,
     venv_path: &Path,
-    script_path: &Path,
+    script: &str,
     working_dir: &Path,
     as_admin: bool,
     envs: Vec<(String, String)>,
 ) -> Result<(), Error> {
-    let python_executable = if cfg!(windows) {
-        venv_path.join("Scripts").join("python.exe")
+    let venv_script_dir = if cfg!(windows) {
+        venv_path.join("Scripts")
     } else {
-        venv_path.join("bin").join("python")
+        venv_path.join("bin")
     };
+    let python_executable = venv_script_dir.join(if cfg!(windows) { "python.exe" } else { "python" });
 
     if !python_executable.exists() {
         let err_msg = format!(
             "Python executable not found: {}",
             python_executable.display()
         );
-        emit_error!(
-            app_name,
-            "Python executable not found: {}",
-            python_executable.display()
-        );
-        err!(err_msg);
-    }
-    if !script_path.exists() {
-        let err_msg = format!("Script not found: {}", script_path.display());
-        emit_error!(app_name, "Script not found: {}", script_path.display());
-        err!(err_msg);
+        emit_error!(app_name, "{}", err_msg);
+        return Err(err!(err_msg));
     }
     if !working_dir.is_dir() {
         let err_msg = format!(
             "Working directory not found or not a directory: {}",
             working_dir.display()
         );
-        emit_error!(
-            app_name,
-            "Working directory not found or not a directory: {}",
-            working_dir.display()
-        );
-        err!(err_msg);
+        emit_error!(app_name, "{}", err_msg);
+        return Err(err!(err_msg));
     }
+
+    let script_in_cwd = working_dir.join(script);
+    let (executable_path, args) = if script_in_cwd.is_file() {
+        (python_executable.clone(), vec![script_in_cwd])
+    } else {
+        let script_in_venv_scripts = venv_script_dir.join(script);
+        if script_in_venv_scripts.is_file() {
+            (python_executable.clone(), vec![script_in_venv_scripts])
+        } else {
+            let extensions = if cfg!(windows) {
+                vec!["", ".exe", ".bat", ".cmd", ".ps1"]
+            } else {
+                vec!["", ".sh"]
+            };
+            let found_executable = extensions
+                .iter()
+                .map(|ext| venv_script_dir.join(format!("{}{}", script, ext)))
+                .find(|path| path.is_file());
+
+            if let Some(exec_path) = found_executable {
+                (exec_path, vec![])
+            } else {
+                let err_msg = format!(
+                    "Script '{}' not found in '{}' or as an executable in '{}'",
+                    script,
+                    working_dir.display(),
+                    venv_script_dir.display()
+                );
+                emit_error!(app_name, "{}", err_msg);
+                return Err(err!(err_msg));
+            }
+        }
+    };
 
     ensure_venv_cfg(venv_path)?;
 
-    let python_exec_str = path_to_abs(&python_executable);
-    let script_path_str = path_to_abs(script_path);
+    let executable_str = path_to_abs(&executable_path);
+    let args_str: Vec<String> = args.iter().map(|p| path_to_abs(p)).collect();
 
     emit_info!(
         app_name,
-        "Python executable: {} Script path: {}",
-        python_exec_str,
-        script_path_str
+        "Executable: {} Args: [{}]",
+        executable_str,
+        args_str.join(", ")
     );
     for (key, value) in &envs {
         emit_info!(app_name, "Env: {}={}", key, value);
     }
 
     let app_name_owned = app_name.to_string();
-    let python_exec_str_owned = python_exec_str.clone();
-    let script_path_str_owned = script_path_str.clone();
+    let executable_str_owned = executable_str.clone();
+    let args_str_owned = args_str.clone();
     let working_dir_owned = working_dir.to_path_buf();
     let envs_owned = envs;
 
@@ -341,8 +364,8 @@ pub async fn run_python_script(
         let result = if needs_elevation {
             run_python_script_as_admin_internal(
                 app_name_owned.as_str(),
-                python_exec_str_owned,
-                script_path_str_owned,
+                executable_str_owned,
+                &args_str_owned,
                 &working_dir_owned,
                 &envs_owned,
             )
@@ -350,23 +373,23 @@ pub async fn run_python_script(
         } else {
             run_python_script_normal_internal(
                 app_name_owned.as_str(),
-                python_exec_str_owned,
-                script_path_str_owned,
+                executable_str_owned,
+                &args_str_owned,
                 &working_dir_owned,
                 &envs_owned,
             )
                 .await
         };
         if let Err(e) = result {
-            emit_error!(app_name_owned, "Python run Error {}", e);
+            emit_error!(app_name_owned, "Script run Error {}", e);
             emit_error_finish!(app_name_owned);
         } else {
-            emit_info!(app_name_owned, "Python run Success");
+            emit_info!(app_name_owned, "Script run Success");
             emit_success_finish!(app_name_owned);
         }
     });
 
-    emit_info!(app_name, "Python {} run call done.", app_name);
+    emit_info!(app_name, "Script {} run call dispatched.", app_name);
 
     Ok(())
 }

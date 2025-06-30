@@ -11,11 +11,7 @@ use chrono::Utc;
 use futures::future::join_all;
 use once_cell::sync::Lazy;
 use runas;
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::HashMap, fs, path::{Path, PathBuf}, sync::Arc};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
@@ -427,7 +423,7 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
     let (profile_settings_for_setup, final_profile_name_to_set) =
         get_profile_for_setup(&temp_app_for_config, profile_name, app_name)?;
 
-    let requirements_relative_path = &profile_settings_for_setup.requirements;
+    let requirements = &profile_settings_for_setup.requirements;
     let python_version_spec = &profile_settings_for_setup.requires_python;
 
     let venv_python_exe = task::spawn_blocking({
@@ -438,30 +434,13 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
     })
         .await??;
 
-    if !requirements_relative_path.is_empty() {
-        let full_req_path = working_dir_path.join(requirements_relative_path);
-        if full_req_path.exists() {
-            info!(
-                "Requirements '{}' for profile '{}' found. Syncing.",
-                requirements_relative_path, final_profile_name_to_set
-            );
-            python_env::install_requirements(
-                app_name,
-                &venv_python_exe,
-                &full_req_path,
-                &working_dir_path,
-            )
-                .await?;
-        } else {
-            emit_error_finish!(app_name);
-            err!(
-                "Reqs '{}' (profile '{}') in {} not at {}. Skipping.",
-                requirements_relative_path,
-                final_profile_name_to_set,
-                YML_FILE_NAME,
-                full_req_path.display()
-            );
-        }
+    if !requirements.is_empty() {
+        python_env::install_requirements(
+            app_name,
+            &venv_python_exe,
+            &requirements,
+            &working_dir_path,
+        ).await?;
     } else {
         info!(
             "No reqs in profile '{}' of {}. Skipping sync.",
@@ -499,155 +478,85 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
     Ok(venv_python_exe)
 }
 
+fn get_relevant_content(spec: &str, dir: &Path) -> Option<String> {
+    if spec.is_empty() {
+        return None;
+    }
+    let file_to_check = if spec.ends_with(".txt") {
+        dir.join(spec)
+    } else {
+        dir.join("pyproject.toml")
+    };
+    fs::read_to_string(file_to_check).ok()
+}
+
 #[tauri::command]
 pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Error> {
     info!("Updating {} to version {}", app_name, version);
     let app_dir_lock = get_app_lock(app_name).await;
     let _lock_guard = app_dir_lock.lock().await;
 
-    let repo_path = path::get_app_repo_path(app_name);
-    let working_dir_path = get_app_working_dir_path(app_name);
+    let working_dir_path = path::get_app_working_dir_path(app_name);
 
-    let old_req_info: Option<(PathBuf, String)> = {
-        let apps_guard = APPS.lock().await;
-        if let Some(app) = apps_guard.get(app_name) {
-            let profile_settings = app.get_current_profile_settings();
-            if !profile_settings.requirements.is_empty() {
-                let old_req_path = working_dir_path.join(&profile_settings.requirements);
-                if old_req_path.exists() {
-                    tokio::fs::read_to_string(&old_req_path)
-                        .await
-                        .ok()
-                        .map(|content| (old_req_path, content))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+    let old_requirements_spec = {
+        let apps = APPS.lock().await;
+        apps.get(app_name)
+            .map(|app| app.get_current_profile_settings().requirements.clone())
+            .unwrap_or_default()
     };
-    let old_req_path = old_req_info.as_ref().map(|(p, _)| p.clone());
-    let old_req_content = old_req_info.map(|(_, c)| c);
+    let old_content = get_relevant_content(&old_requirements_spec, &working_dir_path);
 
-    let commit_oid = git::checkout_version_tag(app_name, &repo_path, version)
-        .await
-        .map_err(|e| anyhow!(e))?;
+    let repo_path = path::get_app_repo_path(app_name);
+    let commit_oid = git::checkout_version_tag(app_name, &repo_path, version).await?;
     emit_info!(
         app_name,
         "Checked out commit {} for version {}",
         commit_oid,
         version
     );
-
     update_working_from_repo(app_name).await?;
     debug!("Updated working dir for app {}", app_name);
 
-    let yml_path_new = working_dir_path.join(YML_FILE_NAME);
-    let yml_path_str_new = yml_path_new.to_string_lossy().into_owned();
-
-    let mut temp_app_for_config = read_embedded_app();
-    temp_app_for_config.name = app_name.to_string();
-    update_app_from_yml(&mut temp_app_for_config, &yml_path_str_new);
-    let new_app_config_from_yml = &temp_app_for_config;
-
-    let new_default_profile = new_app_config_from_yml
-        .get_profile("default")
-        .ok_or_else(|| {
-            anyhow!(
-                "Default profile missing in new {} for {}",
-                YML_FILE_NAME,
-                app_name
-            )
-        })?;
-    let new_requirements_relative_path = &new_default_profile.requirements;
-
-    let new_req_path_for_sync = if !new_requirements_relative_path.is_empty() {
-        Some(working_dir_path.join(new_requirements_relative_path))
-    } else {
-        None
+    let new_requirements_spec = {
+        let yml_path = working_dir_path.join(YML_FILE_NAME);
+        let mut temp_app = read_embedded_app();
+        temp_app.name = app_name.to_string();
+        update_app_from_yml(&mut temp_app, &yml_path.to_string_lossy());
+        temp_app.get_profile("default")
+            .map(|p| p.requirements.clone())
+            .unwrap_or_default()
     };
-    let new_req_content = if let Some(ref p) = new_req_path_for_sync {
-        if p.exists() {
-            tokio::fs::read_to_string(p).await.ok()
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let new_content = get_relevant_content(&new_requirements_spec, &working_dir_path);
 
-    let mut needs_pip_sync = false;
-    if new_req_path_for_sync.is_some() && new_req_content.is_some() {
-        if old_req_path.as_ref() != new_req_path_for_sync.as_ref()
-            || old_req_content != new_req_content
-        {
-            emit_info!(
-                app_name,
-                "Reqs file/path changed (now '{}'). Syncing.",
-                new_requirements_relative_path
-            );
-            needs_pip_sync = true;
-        } else {
-            emit_info!(
-                app_name,
-                "Reqs file ('{}') unchanged. Skipping sync.",
-                new_requirements_relative_path
-            );
-        }
-    } else if old_req_path.is_some() && old_req_content.is_some() {
-        emit_info!(
-            app_name,
-            "Reqs file removed/empty for {}. Not re-syncing.",
-            app_name
-        );
-    } else if new_req_path_for_sync.is_some()
-        && new_req_content.is_none()
-        && !new_requirements_relative_path.is_empty()
-    {
-        warn!(
-            "New reqs file '{}' specified but empty/not found. Skipping sync.",
-            new_requirements_relative_path
-        );
-    } else {
-        emit_info!(
-            app_name,
-            "No significant reqs file changes. Skipping sync."
-        );
-    }
+    let spec_changed = old_requirements_spec != new_requirements_spec;
+    let content_changed = old_content != new_content;
+    let needs_pip_sync = !new_requirements_spec.is_empty() && (spec_changed || content_changed);
 
     if needs_pip_sync {
-        if let Some(ref sync_path) = new_req_path_for_sync {
-            if sync_path.exists() {
-                let venv_python_exe = working_dir_path.join(".venv").join(if cfg!(windows) {
-                    "Scripts\\python.exe"
-                } else {
-                    "bin/python"
-                });
-                if !venv_python_exe.exists() {
-                    return Err(anyhow!(
-                        "Python exe not at {} for {}. Venv corrupted.",
-                        venv_python_exe.display(),
-                        app_name
-                    )
-                        .into());
-                }
-                python_env::install_requirements(
-                    app_name,
-                    &venv_python_exe,
-                    &sync_path,
-                    &working_dir_path,
-                )
-                    .await?;
+        if spec_changed {
+            emit_info!(app_name, "Requirements spec changed from '{}' to '{}'. Syncing dependencies.", old_requirements_spec, new_requirements_spec);
+        } else {
+            let file_type = if new_requirements_spec.ends_with(".txt") {
+                &new_requirements_spec
             } else {
-                warn!(
-                    "Reqs file {} expected for sync but not found. Skipping.",
-                    sync_path.display()
-                );
-            }
+                "pyproject.toml"
+            };
+            emit_info!(app_name, "Content of '{}' changed. Syncing dependencies.", file_type);
         }
+
+        let venv_python_exe = working_dir_path.join(".venv").join(if cfg!(windows) { "Scripts\\python.exe" } else { "bin/python" });
+        if venv_python_exe.exists() {
+            python_env::install_requirements(
+                app_name,
+                &venv_python_exe,
+                &new_requirements_spec,
+                &working_dir_path,
+            ).await?;
+        } else {
+            warn!("Venv python not found at {}. Skipping dependency sync.", venv_python_exe.display());
+        }
+    } else {
+        emit_info!(app_name, "Requirements are up to date. Skipping dependency sync.");
     }
 
     {
@@ -779,8 +688,7 @@ pub async fn start_app(app_name: String, app_handle: AppHandle) -> Result<(), Er
         }
     };
 
-    let main_script_relative = &profile_to_run_with.main_script;
-    if main_script_relative.is_empty() {
+    if profile_to_run_with.main_script.is_empty() {
         return Err(anyhow!(
             "Main script empty for profile '{}' in app '{}'.",
             profile_to_run_with.name,
@@ -789,7 +697,6 @@ pub async fn start_app(app_name: String, app_handle: AppHandle) -> Result<(), Er
             .into());
     }
 
-    let script_path = find_main_script(&app_name, &working_dir, main_script_relative)?;
     let venv_path = working_dir.join(".venv");
     let python_exe_in_venv = venv_path.join(if cfg!(windows) {
         "Scripts\\python.exe"
@@ -811,14 +718,14 @@ pub async fn start_app(app_name: String, app_handle: AppHandle) -> Result<(), Er
         app_name,
         profile_to_run_with.name,
         profile_to_run_with.is_admin(),
-        main_script_relative
+        profile_to_run_with.main_script
     );
 
     let envs = build_python_execution_environment(&profile_to_run_with, current_version);
     execute_python::run_python_script(
         app_name.as_str(),
         &venv_path,
-        &script_path,
+        profile_to_run_with.main_script.as_str(),
         &working_dir,
         profile_to_run_with.is_admin(),
         envs,

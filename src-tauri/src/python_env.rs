@@ -603,7 +603,7 @@ pub fn setup_python_venv(_venv_creation_dir: &Path, _python_version_spec: &str) 
 pub async fn install_requirements(
     app_name: &str,
     venv_python_exe: &Path,
-    requirements_txt_path: &Path,
+    requirements: &str,
     project_dir: &Path,
 ) -> Result<(), Error> {
     if !venv_python_exe.exists() {
@@ -612,15 +612,9 @@ pub async fn install_requirements(
             venv_python_exe.display()
         );
     }
-    if !requirements_txt_path.exists() {
-        err!(
-            "requirements.txt not found at {}",
-            requirements_txt_path.display()
-        );
-    }
     if !project_dir.is_dir() {
         err!(
-            "Project directory for pip-sync execution not found or not a directory: {}",
+            "Project directory for pip execution not found or not a directory: {}",
             project_dir.display()
         );
     }
@@ -638,11 +632,26 @@ pub async fn install_requirements(
 
     let mut pip_install_cmd = Command::new(venv_python_exe);
     pip_install_cmd
+        .current_dir(project_dir)
         .arg("-m")
         .arg("pip")
-        .arg("install")
-        .arg("-r")
-        .arg(requirements_txt_path);
+        .arg("install");
+
+    let pip_install_desc;
+    if requirements.ends_with(".txt") {
+        let requirements_path = project_dir.join(requirements);
+        if !requirements_path.exists() {
+            err!(
+                "Requirements file not found at {}",
+                requirements_path.display()
+            );
+        }
+        pip_install_cmd.arg("-r").arg(&requirements_path);
+        pip_install_desc = format!("pip install -r {}", requirements_path.display());
+    } else {
+        pip_install_cmd.arg(requirements);
+        pip_install_desc = format!("pip install {}", requirements);
+    }
 
     if let Some(cache_dir) = pip_cache_dir {
         pip_install_cmd.arg("--cache-dir").arg(cache_dir);
@@ -654,28 +663,24 @@ pub async fn install_requirements(
         pip_install_cmd.arg("--index-url").arg(index_url);
     }
 
-    let pip_install_desc = format!("pip install -r {}", requirements_txt_path.display());
-
     command::run_command_and_stream_output(pip_install_cmd, app_name, &pip_install_desc).await?;
 
     emit_info!(
         app_name,
-        "Successfully installed requirements from {}.",
-        requirements_txt_path.display()
+        "Successfully installed requirements from '{}'.",
+        requirements
     );
     Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn install_requirements(
+pub async fn install_requirements(
     _app_name: &str,
     _venv_python_exe: &Path,
-    _requirements_txt_path: &Path,
+    _requirements: &str,
     _project_dir: &Path,
-) -> Result<()> {
-    Err(anyhow!(
-        "install_requirements (using pip-sync) is only implemented for Windows."
-    ))
+) -> Result<(), Error> {
+    err!("install_requirements is only implemented for Windows.")
 }
 
 #[cfg(target_os = "windows")]
