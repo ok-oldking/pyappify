@@ -425,6 +425,7 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
 
     let requirements = &profile_settings_for_setup.requirements;
     let python_version_spec = &profile_settings_for_setup.requires_python;
+    let pip_args = &profile_settings_for_setup.pip_args;
 
     let venv_python_exe = task::spawn_blocking({
         let wd_path = working_dir_path.clone();
@@ -438,8 +439,9 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
         python_env::install_requirements(
             app_name,
             &venv_python_exe,
-            &requirements,
+            requirements,
             &working_dir_path,
+            pip_args,
         ).await?;
     } else {
         info!(
@@ -517,14 +519,15 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
     update_working_from_repo(app_name).await?;
     debug!("Updated working dir for app {}", app_name);
 
-    let new_requirements_spec = {
+    let (new_requirements_spec, new_pip_args) = {
         let yml_path = working_dir_path.join(YML_FILE_NAME);
         let mut temp_app = read_embedded_app();
         temp_app.name = app_name.to_string();
         update_app_from_yml(&mut temp_app, &yml_path.to_string_lossy());
-        temp_app.get_profile("default")
-            .map(|p| p.requirements.clone())
-            .unwrap_or_default()
+        match temp_app.get_profile("default") {
+            Some(p) => (p.requirements.clone(), p.pip_args.clone()),
+            None => (String::new(), String::new()),
+        }
     };
     let new_content = get_relevant_content(&new_requirements_spec, &working_dir_path);
 
@@ -543,7 +546,6 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
             };
             emit_info!(app_name, "Content of '{}' changed. Syncing dependencies.", file_type);
         }
-
         let venv_python_exe = working_dir_path.join(".venv").join(if cfg!(windows) { "Scripts\\python.exe" } else { "bin/python" });
         if venv_python_exe.exists() {
             python_env::install_requirements(
@@ -551,6 +553,7 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
                 &venv_python_exe,
                 &new_requirements_spec,
                 &working_dir_path,
+                &new_pip_args,
             ).await?;
         } else {
             warn!("Venv python not found at {}. Skipping dependency sync.", venv_python_exe.display());
@@ -914,25 +917,4 @@ pub async fn periodically_update_all_apps_running_status(app_handle: AppHandle) 
             emit_apps().await;
         }
     }
-}
-
-fn find_main_script(
-    app_name: &str,
-    working_dir: &Path,
-    main_script_relative: &str,
-) -> Result<PathBuf, Error> {
-    let priority = [main_script_relative, "webui.py", "app.py"];
-    for script_name in priority.iter() {
-        let script_path = working_dir.join(script_name);
-        if script_path.exists() {
-            return Ok(script_path);
-        }
-    }
-    emit_error_finish!(app_name);
-    Err(err!(
-        "Main script '{}' not at '{}' for '{}'",
-        main_script_relative,
-        main_script_relative,
-        app_name
-    ))
 }

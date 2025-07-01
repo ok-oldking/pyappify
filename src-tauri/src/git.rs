@@ -5,7 +5,6 @@ use git2::{
     build::CheckoutBuilder, Cred, Error as GitError, ErrorClass, ErrorCode, FetchOptions,
     ObjectType, Oid, Progress, ProxyOptions, RemoteCallbacks, Repository, Sort,
 };
-use semver::Version;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
@@ -77,6 +76,64 @@ fn create_fetch_options(
     }
     fo.download_tags(git2::AutotagOption::All);
     fo
+}
+
+fn create_transfer_progress_callback(
+    app_name: String,
+    prefix: String,
+) -> impl FnMut(Progress<'_>) -> bool + 'static {
+    let mut last_percent = -1.0;
+    move |progress: Progress| {
+        let received_objects = progress.received_objects();
+        let total_objects = progress.total_objects();
+        if total_objects > 0 {
+            let current_percent = (received_objects as f64 * 100.0) / total_objects as f64;
+            let rounded_percent = (current_percent * 10.0).round() / 10.0;
+            if (rounded_percent - last_percent).abs() >= 0.1 || received_objects == total_objects {
+                emit_update_info!(
+                    app_name,
+                    "\r{}: {:.1}% ({} / {}) ",
+                    prefix,
+                    rounded_percent,
+                    received_objects,
+                    total_objects
+                );
+                last_percent = rounded_percent;
+            }
+        } else {
+            emit_update_info!(app_name, "\r{}: {} received... ", prefix, received_objects);
+        }
+        io::stdout().flush().unwrap_or_default();
+        true
+    }
+}
+
+fn get_sorted_tags_by_time(repo: &Repository) -> Result<Vec<String>> {
+    let tag_array = repo
+        .tag_names(None)
+        .with_context(|| format!("Failed to list tags from repository at {:?}", repo.path()))?;
+
+    let mut tags_with_time: Vec<(i64, String)> = Vec::new();
+
+    for tag_name_opt in tag_array.iter() {
+        if let Some(tag_name) = tag_name_opt {
+            let ref_name = format!("refs/tags/{}", tag_name);
+            if let Ok(obj) = repo.revparse_single(&ref_name) {
+                if let Ok(commit) = obj.peel_to_commit() {
+                    tags_with_time.push((commit.time().seconds(), tag_name.to_string()));
+                } else {
+                    warn!("Could not peel tag '{}' to a commit.", tag_name);
+                }
+            } else {
+                warn!("Could not resolve tag '{}' to an object.", tag_name);
+            }
+        }
+    }
+
+    tags_with_time.sort_by_key(|k| std::cmp::Reverse(k.0));
+
+    let sorted_tags = tags_with_time.into_iter().map(|(_, name)| name).collect();
+    Ok(sorted_tags)
 }
 
 pub fn open_repository(repo_path: &Path) -> Result<Repository> {
@@ -172,29 +229,13 @@ pub async fn get_tags_and_current_version(
             info!("Deleted local tag: {}", tag_name);
         }
 
-        let tag_array = repo.tag_names(None).with_context(|| {
-            format!(
-                "Failed to list tags from repository {}",
-                repo_path_for_task.display()
-            )
-        })?;
-
-        let mut semver_tags: Vec<(Version, String)> = Vec::new();
-        for tag_name_opt in tag_array.iter() {
-            if let Some(tag_name) = tag_name_opt {
-                let clean_tag = tag_name.trim_start_matches('v');
-                if let Ok(version) = Version::parse(clean_tag) {
-                    semver_tags.push((version, tag_name.to_string()));
-                }
-            }
-        }
-        semver_tags.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut sorted_tags = get_sorted_tags_by_time(&repo)?;
 
         let head_ref = repo.head().context("Failed to get repo HEAD")?;
         let head_oid = head_ref.target().context("HEAD has no target OID")?;
 
         let mut current_version_tag: Option<String> = None;
-        for (_version, tag_name) in &semver_tags {
+        for tag_name in &sorted_tags {
             let tag_ref_name = format!("refs/tags/{}", tag_name);
             if let Ok(reference) = repo.find_reference(&tag_ref_name) {
                 if let Ok(obj) = reference.peel(ObjectType::Commit) {
@@ -221,7 +262,7 @@ pub async fn get_tags_and_current_version(
             .map(|commit| commit.id());
 
         if let Some(lts_oid) = lts_commit_oid {
-            let lts_version_index = semver_tags.iter().position(|(_version, tag_name)| {
+            let lts_version_index = sorted_tags.iter().position(|tag_name| {
                 repo.revparse_single(&format!("refs/tags/{}", tag_name))
                     .ok()
                     .and_then(|obj| obj.peel_to_commit().ok())
@@ -229,13 +270,11 @@ pub async fn get_tags_and_current_version(
             });
 
             if let Some(index) = lts_version_index {
-                semver_tags.truncate(index + 1);
+                sorted_tags.truncate(index + 1);
             }
         }
 
-        let sorted_tag_names = semver_tags.into_iter().map(|(_, name)| name).collect();
-
-        Ok((sorted_tag_names, current_version))
+        Ok((sorted_tags, current_version))
     })
         .await
         .context("Task for get_tags_and_current_version panicked or was cancelled")??;
@@ -292,38 +331,10 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
                     configure_credentials(&mut callbacks, Some(&url_for_task));
 
                     let app_name_for_progress = app_name_for_task.clone();
-                    callbacks.transfer_progress({
-                        let mut last_percent = -1.0;
-                        move |progress: Progress| {
-                            let received_objects = progress.received_objects();
-                            let total_objects = progress.total_objects();
-                            if total_objects > 0 {
-                                let current_percent =
-                                    (received_objects as f64 * 100.0) / total_objects as f64;
-                                let rounded_percent = (current_percent * 10.0).round() / 10.0;
-                                if (rounded_percent - last_percent).abs() >= 0.1
-                                    || received_objects == total_objects
-                                {
-                                    emit_update_info!(
-                                        app_name_for_progress,
-                                        "\rFetching objects: {:.1}% ({} / {}) ",
-                                        rounded_percent,
-                                        received_objects,
-                                        total_objects
-                                    );
-                                    last_percent = rounded_percent;
-                                }
-                            } else {
-                                emit_update_info!(
-                                    app_name_for_progress,
-                                    "\rFetching objects: {} received... ",
-                                    received_objects
-                                );
-                            }
-                            io::stdout().flush().unwrap_or_default();
-                            true
-                        }
-                    });
+                    callbacks.transfer_progress(create_transfer_progress_callback(
+                        app_name_for_progress,
+                        "Fetching objects".to_string(),
+                    ));
 
                     let mut fetch_options = create_fetch_options(callbacks, None);
                     let fetch_result = remote
@@ -427,24 +438,12 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
             "Clone successful. Checking for latest version tag..."
         );
 
-        let tag_names = repo
-            .tag_names(None)
-            .context("Failed to list tags after clone")?;
+        let sorted_tags = get_sorted_tags_by_time(&repo)?;
 
-        let mut semver_tags: Vec<(Version, String)> = Vec::new();
-        for tag_name_opt in tag_names.iter() {
-            if let Some(tag_name) = tag_name_opt {
-                let clean_tag = tag_name.trim_start_matches('v');
-                if let Ok(version) = Version::parse(clean_tag) {
-                    semver_tags.push((version, tag_name.to_string()));
-                }
-            }
-        }
-
-        if semver_tags.is_empty() {
+        if sorted_tags.is_empty() {
             emit_info!(
                 app_name_for_messages,
-                "No semver tags found. Repository will remain on default branch."
+                "No tags found. Repository will remain on default branch."
             );
             submodule::update_repository_submodules(
                 &repo,
@@ -454,14 +453,12 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
             return Ok(());
         }
 
-        semver_tags.sort_by(|a, b| b.0.cmp(&a.0));
-        let (latest_version, latest_tag_name) = &semver_tags[0];
+        let latest_tag_name = &sorted_tags[0];
 
         emit_info!(
             app_name_for_messages,
-            "Latest version tag found: {} ({}). Attempting checkout.",
+            "Latest tag found: {}. Attempting checkout.",
             latest_tag_name,
-            latest_version
         );
 
         let obj = repo
@@ -528,38 +525,10 @@ pub async fn checkout_version_tag(
         let mut callbacks = RemoteCallbacks::new();
         configure_credentials(&mut callbacks, remote.url());
 
-        let app_name_for_progress = app_name_for_task.clone();
-        callbacks.transfer_progress({
-            let mut last_percent = -1.0;
-            move |progress: Progress| {
-                let received_objects = progress.received_objects();
-                let total_objects = progress.total_objects();
-                if total_objects > 0 {
-                    let current_percent = (received_objects as f64 * 100.0) / total_objects as f64;
-                    let rounded_percent = (current_percent * 10.0).round() / 10.0;
-                    if (rounded_percent - last_percent).abs() >= 0.1
-                        || received_objects == total_objects
-                    {
-                        emit_update_info!(
-                            app_name_for_progress,
-                            "\rFetching objects for tag: {:.1}% ({} / {}) ",
-                            rounded_percent,
-                            received_objects,
-                            total_objects
-                        );
-                        last_percent = rounded_percent;
-                    }
-                } else {
-                    emit_update_info!(
-                        app_name_for_progress,
-                        "\rFetching objects for tag: {} received... ",
-                        received_objects
-                    );
-                }
-                io::stdout().flush().unwrap_or_default();
-                true
-            }
-        });
+        callbacks.transfer_progress(create_transfer_progress_callback(
+            app_name_for_task.clone(),
+            "Fetching objects for tag".to_string(),
+        ));
 
         let mut fetch_options = create_fetch_options(callbacks, None);
 

@@ -414,7 +414,7 @@ fn compare_versions(v1: &str, v2: &str) -> Result<i8> {
 }
 
 fn get_user_agent() -> String {
-    let random_string: String = rand::rng()
+    let random_string: String = rand::thread_rng()
         .sample_iter(Alphanumeric)
         .take(32)
         .map(char::from)
@@ -605,6 +605,7 @@ pub async fn install_requirements(
     venv_python_exe: &Path,
     requirements: &str,
     project_dir: &Path,
+    pip_args: &str,
 ) -> Result<(), Error> {
     if !venv_python_exe.exists() {
         err!(
@@ -637,6 +638,17 @@ pub async fn install_requirements(
         .arg("pip")
         .arg("install");
 
+    let mut use_config_index_url = true;
+    if !pip_args.is_empty() {
+        if pip_args
+            .split_whitespace()
+            .any(|arg| arg == "--index-url" || arg == "-i")
+        {
+            use_config_index_url = false;
+        }
+        pip_install_cmd.args(pip_args.split_whitespace());
+    }
+
     let pip_install_desc;
     if requirements.ends_with(".txt") {
         let requirements_path = project_dir.join(requirements);
@@ -657,10 +669,12 @@ pub async fn install_requirements(
         pip_install_cmd.arg("--cache-dir").arg(cache_dir);
     }
 
-    emit_info!(app_name, "set --index-url {:?}", pip_index_url);
+    if use_config_index_url {
+        emit_info!(app_name, "set --index-url {:?}", pip_index_url);
 
-    if let Some(index_url) = pip_index_url {
-        pip_install_cmd.arg("--index-url").arg(index_url);
+        if let Some(index_url) = pip_index_url {
+            pip_install_cmd.arg("--index-url").arg(index_url);
+        }
     }
 
     command::run_command_and_stream_output(pip_install_cmd, app_name, &pip_install_desc).await?;
@@ -679,6 +693,7 @@ pub async fn install_requirements(
     _venv_python_exe: &Path,
     _requirements: &str,
     _project_dir: &Path,
+    _pip_args: &str,
 ) -> Result<(), Error> {
     err!("install_requirements is only implemented for Windows.")
 }

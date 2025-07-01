@@ -64,6 +64,8 @@ pub struct Profile {
     pub git_url: String,
     #[serde(default)]
     pub requires_python: String,
+    #[serde(default)]
+    pub pip_args: String,
 }
 
 impl Profile {
@@ -93,6 +95,9 @@ fn apply_profile_inheritance(config: &mut App) {
             if profile.admin.is_none() {
                 profile.admin = first_profile.admin;
             }
+            if profile.pip_args.is_empty() {
+                profile.pip_args = first_profile.pip_args.clone();
+            }
         }
     }
 }
@@ -117,9 +122,9 @@ pub fn update_app_from_yml(app: &mut App, file_path_str: &str) {
     if !file_path.exists() {
         return;
     }
-    
+
     info!("update_app_from_yml: {}", file_path.display());
-    
+
     let yaml_content = match fs::read_to_string(file_path) {
         Ok(content) => content,
         Err(e) => {

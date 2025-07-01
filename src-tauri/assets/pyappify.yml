@@ -1,16 +1,12 @@
-name: "pyappify-sample"
-# uac: true
+name: "pyappify-sample" # English only
 profiles:
-  - name: "release"
-    git_url: "https://github.com/ok-oldking/pyappify-action.git"
-    main_script: "main.py"
-    requires_python: "3.12"
-    requirements: "requirements.txt"
-    # PYTHONPATH: "your/default/path" # Optional, will be "" if missing
-  - name: "debug_with_admin"
-    main_script: "main_debug.py"
-    admin: true
-    # admin will default to false
-    # requirements will default to ""
-    # PYTHONPATH will default to ""
+  - name: "release_正式版" # can use Unicode chars
+    git_url: "https://github.com/ok-oldking/pyappify-action.git" # the repo url to clone, must have tags for the version management, semver is recommended
+    main_script: "main.py" # if ending with .py will use python venv to run, else will search in the working dir and the venv's Script/bin path
+    requires_python: "3.12" # supports python 3.7 - 3.13
+    requirements: "requirements.txt"  # support using a *.txt or pyproject.toml's .[dev,docs]
+    pip_args: "--index-url https://mirrors.cloud.tencent.com/pypi/simple" # optional
 
+  - name: "debug" # can use Unicode chars
+    main_script: "main_debug.py" # you can omit other properties, will use the first profile's as default
+    pip_args: "-i https://mirrors.aliyun.com/pypi/simple"

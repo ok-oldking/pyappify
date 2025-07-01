@@ -9,6 +9,7 @@ use runas;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -86,11 +87,16 @@ impl Drop for ProcessContextGuard {
 
 async fn run_python_script_as_admin_internal(
     app_name: &str,
-    executable: String,
-    args: &[String],
+    python_path: String,
+    script_path: String,
     working_dir: &Path,
     envs: &[(String, String)],
 ) -> Result<(), Error> {
+    let (executable, args) = if script_path.ends_with(".py") {
+        (python_path, vec![script_path])
+    } else {
+        (script_path, vec![])
+    };
     info!(app_name = app_name, executable = %executable, args = %args.join(" "), desired_cwd = %working_dir.display(), "Attempting to run script with admin privileges using runas.");
 
     let mut env_vars_to_set = HashMap::new();
@@ -111,7 +117,7 @@ async fn run_python_script_as_admin_internal(
         working_dir.display()
     );
     let mut runas_cmd_builder = runas::Command::new(&executable);
-    for arg in args {
+    for arg in &args {
         runas_cmd_builder.arg(arg);
     }
     runas_cmd_builder.show(false);
@@ -160,13 +166,19 @@ async fn run_python_script_as_admin_internal(
 
 async fn run_python_script_normal_internal(
     app_name: &str,
-    executable: String,
-    args: &[String],
+    python_path: String,
+    script_path: String,
     working_dir: &Path,
     envs: &[(String, String)],
 ) -> Result<(), Error> {
+    let (executable, args) = if script_path.ends_with(".py") {
+        (python_path, vec![script_path])
+    } else {
+        (script_path, vec![])
+    };
+
     let mut cmd = Command::new(executable);
-    cmd.args(args)
+    cmd.args(&args)
         .current_dir(working_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -263,6 +275,44 @@ async fn is_currently_admin() -> bool {
     false
 }
 
+fn find_script_or_executable(
+    script: &str,
+    working_dir: &Path,
+    venv_script_dir: &Path,
+) -> Result<PathBuf, Error> {
+    let script_in_cwd = working_dir.join(script);
+    if script_in_cwd.is_file() {
+        return Ok(script_in_cwd);
+    }
+
+    let script_in_venv_scripts = venv_script_dir.join(script);
+    if script_in_venv_scripts.is_file() {
+        return Ok(script_in_venv_scripts);
+    }
+
+    let extensions = if cfg!(windows) {
+        vec![".exe", ".bat", ".cmd", ".ps1", ""]
+    } else {
+        vec!["", ".sh"]
+    };
+
+    if let Some(exec_path) = extensions
+        .iter()
+        .map(|ext| venv_script_dir.join(format!("{}{}", script, ext)))
+        .find(|path| path.is_file())
+    {
+        return Ok(exec_path);
+    }
+
+    let err_msg = format!(
+        "Script '{}' not found in '{}' or as an executable in '{}'",
+        script,
+        working_dir.display(),
+        venv_script_dir.display()
+    );
+    Err(err!(err_msg))
+}
+
 pub async fn run_python_script(
     app_name: &str,
     venv_path: &Path,
@@ -295,57 +345,32 @@ pub async fn run_python_script(
         return Err(err!(err_msg));
     }
 
-    let script_in_cwd = working_dir.join(script);
-    let (executable_path, args) = if script_in_cwd.is_file() {
-        (python_executable.clone(), vec![script_in_cwd])
-    } else {
-        let script_in_venv_scripts = venv_script_dir.join(script);
-        if script_in_venv_scripts.is_file() {
-            (python_executable.clone(), vec![script_in_venv_scripts])
-        } else {
-            let extensions = if cfg!(windows) {
-                vec!["", ".exe", ".bat", ".cmd", ".ps1"]
-            } else {
-                vec!["", ".sh"]
-            };
-            let found_executable = extensions
-                .iter()
-                .map(|ext| venv_script_dir.join(format!("{}{}", script, ext)))
-                .find(|path| path.is_file());
-
-            if let Some(exec_path) = found_executable {
-                (exec_path, vec![])
-            } else {
-                let err_msg = format!(
-                    "Script '{}' not found in '{}' or as an executable in '{}'",
-                    script,
-                    working_dir.display(),
-                    venv_script_dir.display()
-                );
-                emit_error!(app_name, "{}", err_msg);
-                return Err(err!(err_msg));
-            }
+    let script_path = match find_script_or_executable(script, working_dir, &venv_script_dir) {
+        Ok(result) => result,
+        Err(e) => {
+            emit_error!(app_name, "{}", e);
+            return Err(e);
         }
     };
 
     ensure_venv_cfg(venv_path)?;
 
-    let executable_str = path_to_abs(&executable_path);
-    let args_str: Vec<String> = args.iter().map(|p| path_to_abs(p)).collect();
+    let python_path_str = path_to_abs(&python_executable);
+    let script_path_str = path_to_abs(&script_path);
 
     emit_info!(
         app_name,
-        "Executable: {} Args: [{}]",
-        executable_str,
-        args_str.join(", ")
+        "Python Path: {}, Script Path: {}",
+        python_path_str,
+        script_path_str,
     );
     for (key, value) in &envs {
         emit_info!(app_name, "Env: {}={}", key, value);
     }
 
     let app_name_owned = app_name.to_string();
-    let executable_str_owned = executable_str.clone();
-    let args_str_owned = args_str.clone();
+    let python_path_owned = python_path_str.clone();
+    let script_path_owned = script_path_str.clone();
     let working_dir_owned = working_dir.to_path_buf();
     let envs_owned = envs;
 
@@ -364,8 +389,8 @@ pub async fn run_python_script(
         let result = if needs_elevation {
             run_python_script_as_admin_internal(
                 app_name_owned.as_str(),
-                executable_str_owned,
-                &args_str_owned,
+                python_path_owned,
+                script_path_owned,
                 &working_dir_owned,
                 &envs_owned,
             )
@@ -373,8 +398,8 @@ pub async fn run_python_script(
         } else {
             run_python_script_normal_internal(
                 app_name_owned.as_str(),
-                executable_str_owned,
-                &args_str_owned,
+                python_path_owned,
+                script_path_owned,
                 &working_dir_owned,
                 &envs_owned,
             )
