@@ -5,6 +5,8 @@ use git2::{
     build::CheckoutBuilder, Cred, Error as GitError, ErrorClass, ErrorCode, FetchOptions,
     ObjectType, Oid, Progress, ProxyOptions, RemoteCallbacks, Repository, Sort,
 };
+use once_cell::sync::Lazy;
+use regex::Regex;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
@@ -109,30 +111,32 @@ fn create_transfer_progress_callback(
 }
 
 fn get_sorted_tags_by_time(repo: &Repository) -> Result<Vec<String>> {
+    static VERSION_REGEX: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^v?(\d+)\.(\d+)(?:\.(\d+))?([a-zA-Z0-9.-]*)$").unwrap());
+
     let tag_array = repo
         .tag_names(None)
         .with_context(|| format!("Failed to list tags from repository at {:?}", repo.path()))?;
 
-    let mut tags_with_time: Vec<(i64, String)> = Vec::new();
+    let mut version_tags = Vec::new();
 
     for tag_name_opt in tag_array.iter() {
         if let Some(tag_name) = tag_name_opt {
-            let ref_name = format!("refs/tags/{}", tag_name);
-            if let Ok(obj) = repo.revparse_single(&ref_name) {
-                if let Ok(commit) = obj.peel_to_commit() {
-                    tags_with_time.push((commit.time().seconds(), tag_name.to_string()));
-                } else {
-                    warn!("Could not peel tag '{}' to a commit.", tag_name);
-                }
-            } else {
-                warn!("Could not resolve tag '{}' to an object.", tag_name);
+            if let Some(caps) = VERSION_REGEX.captures(tag_name) {
+                let major = caps.get(1).unwrap().as_str().parse::<u32>().unwrap_or(0);
+                let minor = caps.get(2).unwrap().as_str().parse::<u32>().unwrap_or(0);
+                let patch = caps.get(3).map_or(0, |m| m.as_str().parse().unwrap_or(0));
+                let suffix = caps.get(4).map_or("", |m| m.as_str());
+
+                let sort_key = (major, minor, patch, suffix.is_empty(), suffix.to_string());
+                version_tags.push((sort_key, tag_name.to_string()));
             }
         }
     }
 
-    tags_with_time.sort_by_key(|k| std::cmp::Reverse(k.0));
+    version_tags.sort_by(|a, b| b.0.cmp(&a.0));
 
-    let sorted_tags = tags_with_time.into_iter().map(|(_, name)| name).collect();
+    let sorted_tags = version_tags.into_iter().map(|(_, tag)| tag).collect();
     Ok(sorted_tags)
 }
 
