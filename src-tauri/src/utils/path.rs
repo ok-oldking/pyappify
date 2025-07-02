@@ -34,7 +34,7 @@ pub fn get_app_working_dir_path(app_name: &str) -> PathBuf {
     get_app_base_path(app_name).join(WORKING_DIR_NAME)
 }
 pub fn get_pip_cache_dir() -> PathBuf {
-    get_base_dir().join("cache").join("pip")
+    CWD.join("cache").join("pip")
 }
 
 pub fn get_config_dir() -> PathBuf {
