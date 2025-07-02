@@ -1,3 +1,4 @@
+// src/pages/UpdateLogPage.tsx
 import React, {useEffect, useState} from 'react';
 import {invoke} from "@tauri-apps/api/core";
 import {Alert, Box, Button, CircularProgress, Container, Paper, Stack, Typography} from "@mui/material";
@@ -7,7 +8,7 @@ import {useTranslation} from 'react-i18next';
 interface UpdateLogPageProps {
     appName: string;
     version: string;
-    actionType: string; // "Update", "Downgrade", "Set"
+    actionType: string;
     onBack: () => void;
     onConfirm: (params: { appName: string, version: string, actionType: string }) => void;
 }
@@ -118,7 +119,7 @@ const UpdateLogPage: React.FC<UpdateLogPageProps> = ({
                     <Button
                         variant="contained"
                         onClick={handleConfirm}
-                        disabled={notesLoading || !!notesError || !notes || isConfirmingAction}
+                        disabled={notesLoading || !!notesError || isConfirmingAction}
                         startIcon={isConfirmingAction ? <CircularProgress size={20} color="inherit"/> : null}
                     >
                         {confirmButtonText}

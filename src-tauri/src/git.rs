@@ -651,66 +651,64 @@ pub async fn get_commit_messages_for_version_diff(
             .with_context(|| format!("Failed to peel tag '{}' to a commit object", target_tag))?
             .id();
 
-        let target_commit = repo.find_commit(target_commit_oid).with_context(|| {
-            format!(
-                "Failed to find commit for target_commit_oid {}",
-                target_commit_oid
-            )
-        })?;
-        let target_commit_summary = target_commit.summary().map(|s| s.to_string());        
+        let mut revwalk = repo.revwalk().context("Failed to create revwalk")?;
+        revwalk
+            .push(target_commit_oid)
+            .with_context(|| format!("Failed to push OID {} to revwalk", target_commit_oid))?;
+        revwalk
+            .hide(head_oid)
+            .with_context(|| format!("Failed to hide OID {} from revwalk", head_oid))?;
+        revwalk
+            .set_sorting(Sort::TIME)
+            .context("Failed to set revwalk sorting")?;
 
-        let is_target_ancestor_of_head = repo
-            .graph_descendant_of(head_oid, target_commit_oid)
-            .unwrap_or(false);
-        info!("get_commit_messages_for_version_diff is_target_ancestor_of_head {}", is_target_ancestor_of_head);
-        if is_target_ancestor_of_head {
-            if let Some(summary) = target_commit_summary {
-                info!(
-                    "HEAD is ahead of target {}. Returning target version's commit message: {}",
-                    target_tag, summary
-                );
-                return Ok(vec![summary]);
-            } else {
-                info!(
-                    "HEAD is ahead of target {}. Target version commit {} has no summary.",
-                    target_tag, target_commit_oid
-                );
-                return Ok(Vec::new());
+        let mut messages = Vec::new();
+        let mut seen_messages = HashSet::new();
+        for oid_result in revwalk {
+            let oid = oid_result.context("Error iterating revwalk")?;
+            let commit = repo
+                .find_commit(oid)
+                .with_context(|| format!("Failed to find commit for OID {}", oid))?;
+
+            if commit.parent_count() > 1 {
+                continue;
             }
-        } else {
-            let mut revwalk = repo.revwalk().context("Failed to create revwalk")?;
-            revwalk
-                .push(target_commit_oid)
-                .with_context(|| format!("Failed to push OID {} to revwalk", target_commit_oid))?;
-            revwalk
-                .hide(head_oid)
-                .with_context(|| format!("Failed to hide OID {} from revwalk", head_oid))?;
-            revwalk
-                .set_sorting(Sort::TIME)
-                .context("Failed to set revwalk sorting")?;
 
-            let mut messages = Vec::new();
-            for oid_result in revwalk {
-                let oid = oid_result.context("Error iterating revwalk")?;
-                let commit = repo
-                    .find_commit(oid)
-                    .with_context(|| format!("Failed to find commit for OID {}", oid))?;
-                if let Some(message) = commit.summary() {
-                    info!("Processing commit {}: {}", oid, message);
-                    messages.push(message.to_string());
+            if let Some(message) = commit.summary() {
+                let msg_str = message.to_string();
+                if seen_messages.insert(msg_str.clone()) {
+                    messages.push(msg_str);
                     if messages.len() >= 10 {
                         break;
                     }
                 }
             }
-            info!(
-                "Found {} commit messages leading up to target {} (not in HEAD {} history)",
-                messages.len(),
-                target_tag,
-                head_oid
-            );
-            Ok(messages)
         }
+        info!(
+            "Found {} commit messages in diff from HEAD ({}) to target {} ({})",
+            messages.len(),
+            head_oid,
+            target_tag,
+            target_commit_oid
+        );
+
+        if messages.is_empty() {
+            let target_commit = repo.find_commit(target_commit_oid).with_context(|| {
+                format!(
+                    "Failed to find target commit for OID {}",
+                    target_commit_oid
+                )
+            })?;
+            if let Some(summary) = target_commit.summary() {
+                info!(
+                    "Diff is empty, using target commit's message: {}",
+                    summary
+                );
+                messages.push(summary.to_string());
+            }
+        }
+
+        Ok(messages)
     })
         .await
         .context("Task for get_commit_messages panicked or was cancelled")??;
