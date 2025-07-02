@@ -657,16 +657,12 @@ pub async fn get_commit_messages_for_version_diff(
                 target_commit_oid
             )
         })?;
-        let target_commit_summary = target_commit.summary().map(|s| s.to_string());
-
-        if head_oid == target_commit_oid {
-            return Ok(Vec::new());
-        }
+        let target_commit_summary = target_commit.summary().map(|s| s.to_string());        
 
         let is_target_ancestor_of_head = repo
             .graph_descendant_of(head_oid, target_commit_oid)
             .unwrap_or(false);
-
+        info!("get_commit_messages_for_version_diff is_target_ancestor_of_head {}", is_target_ancestor_of_head);
         if is_target_ancestor_of_head {
             if let Some(summary) = target_commit_summary {
                 info!(

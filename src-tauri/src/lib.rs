@@ -14,7 +14,7 @@ use crate::config_manager::init_config_manager;
 use crate::utils::logger::LoggerBuilder;
 use crate::utils::window;
 use std::env;
-use tauri::{Manager, Window, WindowEvent};
+use tauri::{Manager};
 use tracing::info;
 use crate::utils::window::on_window_event;
 

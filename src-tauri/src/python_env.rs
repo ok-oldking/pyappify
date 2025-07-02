@@ -414,7 +414,7 @@ fn compare_versions(v1: &str, v2: &str) -> Result<i8> {
 }
 
 fn get_user_agent() -> String {
-    let random_string: String = rand::thread_rng()
+    let random_string: String = rand::rng()
         .sample_iter(Alphanumeric)
         .take(32)
         .map(char::from)

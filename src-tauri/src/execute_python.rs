@@ -9,7 +9,6 @@ use runas;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;

@@ -308,7 +308,9 @@ pub async fn get_update_notes(app_name: String, version: String) -> Result<Vec<S
     let app_lock = get_app_lock(&*app_name).await;
     let _guard = app_lock.lock().await;
     let app = get_app_by_name(&app_name).await?;
-    Ok(git::get_commit_messages_for_version_diff(&app.get_repo_path(), &version).await?)
+    let messages = git::get_commit_messages_for_version_diff(&app.get_repo_path(), &version).await?;
+    info!("get_update_notes for {} version {} messages: {:?}", app.name, version, messages);
+    Ok(messages)
 }
 
 async fn get_app_by_name(app_name: &str) -> Result<App, Error> {
@@ -609,7 +611,6 @@ fn build_python_execution_environment(
 async fn check_running_on_start(
     app_name: &str,
     working_dir: &Path,
-    app_handle: &AppHandle,
 ) -> Result<()> {
     let start_time = tokio::time::Instant::now();
     let timeout = Duration::from_secs(10);
@@ -661,7 +662,7 @@ async fn check_running_on_start(
 }
 
 #[tauri::command]
-pub async fn start_app(app_name: String, app_handle: AppHandle) -> Result<(), Error> {
+pub async fn start_app(app_name: String) -> Result<(), Error> {
     info!("Attempting to start app: {}", app_name);
     let app_dir_lock = get_app_lock(&app_name).await;
     let _guard = app_dir_lock.lock().await;
@@ -735,7 +736,7 @@ pub async fn start_app(app_name: String, app_handle: AppHandle) -> Result<(), Er
     )
         .await?;
 
-    check_running_on_start(&app_name, &working_dir, &app_handle).await?;
+    check_running_on_start(&app_name, &working_dir).await?;
 
     Ok(())
 }
