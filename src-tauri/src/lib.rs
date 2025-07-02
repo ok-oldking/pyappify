@@ -151,10 +151,11 @@ pub async fn run() {
         init_config_manager(app.handle());
         handle_command_line().await;
     } else {
+        let log_level = if cfg!(debug_assertions) { "debug" } else { "info" };
         let _ = LoggerBuilder::new()
             .log_dir("logs")
             .file_prefix("app")
-            .default_level("debug")
+            .default_level(log_level)
             .init();
         info!("Log initialized");
         tauri::Builder::default()
