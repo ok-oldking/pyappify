@@ -77,8 +77,9 @@ pub async fn create_startup_shortcut(app_handle: AppHandle, name: String) -> Res
     let shortcut_path = shortcut_dir.join(format!("{}.lnk", name));
     let exe_path = env::current_exe()?;
     let args = format!("-c start -n {}", name);
-
+    
     let link = shortcuts_rs::ShellLink::new(&exe_path, Some(args), None, None)?;
     link.create_lnk(&shortcut_path)?;
+    info!("created shortcut at {shortcut_path:?}");
     Ok(())
 }
