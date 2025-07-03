@@ -24,6 +24,7 @@ use crate::git::ensure_repository;
 use crate::utils::error::Error;
 use crate::utils::file;
 use crate::utils::path::{get_app_base_path, get_app_working_dir_path};
+use crate::utils::window::create_startup_shortcut;
 
 pub static APPS: Lazy<Mutex<HashMap<String, App>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 pub static APP_DIR_LOCKS: Lazy<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
@@ -662,7 +663,7 @@ async fn check_running_on_start(
 }
 
 #[tauri::command]
-pub async fn start_app(app_name: String) -> Result<(), Error> {
+pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Error> {
     info!("Attempting to start app: {}", app_name);
     let app_dir_lock = get_app_lock(&app_name).await;
     let _guard = app_dir_lock.lock().await;
@@ -737,7 +738,7 @@ pub async fn start_app(app_name: String) -> Result<(), Error> {
         .await?;
 
     check_running_on_start(&app_name, &working_dir).await?;
-
+    create_startup_shortcut(app_handle, app_name).await?;
     Ok(())
 }
 

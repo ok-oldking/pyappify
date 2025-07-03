@@ -1,6 +1,8 @@
 use lazy_static::lazy_static;
 use std::env;
 use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Manager};
+
 const BASE_DIR: &str = "data";
 const APPS_DIR: &str = "apps";
 pub const PYTHON_ROOT_DIR: &str = "env/python";
@@ -39,6 +41,11 @@ pub fn get_pip_cache_dir() -> PathBuf {
 
 pub fn get_config_dir() -> PathBuf {
     get_base_dir().join("config")
+}
+
+pub fn get_start_dir(app_handle: AppHandle) -> PathBuf {
+    app_handle.path().config_dir()
+    .map(|path| path.join("Microsoft\\Windows\\Start Menu\\Programs")).unwrap()
 }
 
 fn strip_extended_path_prefix(path_str: &str) -> String {

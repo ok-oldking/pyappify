@@ -3,7 +3,10 @@ use tauri::{App, AppHandle, Manager, WebviewWindow, Window, WindowEvent, Wry};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tracing::info;
-
+use std::env;
+use std::fs;
+use crate::utils::error::Error;
+use crate::utils::path::get_start_dir;
 
 pub fn on_window_event(window: &Window, _event: &WindowEvent) {
     if let WindowEvent::Resized(size) = _event {
@@ -63,4 +66,19 @@ fn show_window(window: WebviewWindow) {
     window.unminimize().unwrap();
     window.show().unwrap();
     window.set_focus().unwrap();
+}
+
+#[tauri::command]
+pub async fn create_startup_shortcut(app_handle: AppHandle, name: String) -> Result<(), Error> {
+    let shortcut_dir = get_start_dir(app_handle);
+
+    fs::create_dir_all(&shortcut_dir)?;
+
+    let shortcut_path = shortcut_dir.join(format!("{}.lnk", name));
+    let exe_path = env::current_exe()?;
+    let args = format!("-c start -n {}", name);
+
+    let link = shortcuts_rs::ShellLink::new(&exe_path, Some(args), None, None)?;
+    link.create_lnk(&shortcut_path)?;
+    Ok(())
 }

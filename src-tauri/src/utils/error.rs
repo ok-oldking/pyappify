@@ -1,5 +1,6 @@
 // src/utils/error.rs
 use anyhow::Error as AnyhowError;
+use shortcuts_rs::MSLinkError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -17,6 +18,8 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Join(#[from] tokio::task::JoinError),
+    #[error(transparent)]
+    MSLink(#[from] MSLinkError),
 }
 
 #[derive(serde::Serialize)]
@@ -30,6 +33,7 @@ enum ErrorKind {
     Anyhow(String),
     Json(String),
     Join(String),
+    MSLink(String),
 }
 
 impl serde::Serialize for Error {
@@ -46,6 +50,7 @@ impl serde::Serialize for Error {
             Self::Anyhow(_) => ErrorKind::Anyhow(error_message),
             Self::Json(_) => ErrorKind::Json(error_message),
             Self::Join(_) => ErrorKind::Join(error_message),
+            Self::MSLink(_) => ErrorKind::MSLink(error_message),
         };
         error_kind.serialize(serializer)
     }
