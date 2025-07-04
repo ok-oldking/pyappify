@@ -55,36 +55,4 @@ This method uses the PyAppify GitHub Action to bundle the launcher, your code, a
 
 ### Workflow Example
 
-Create a workflow file in your repository at `.github/workflows/release.yml`. This workflow will trigger on new tags, build your application using the PyAppify Action, and attach the packaged executables to a GitHub Release.
-
-```yaml
-# .github/workflows/release.yml
-name: Build Application
-
-on:
-  push:
-    tags:
-      - 'v*'
-
-jobs:
-  build:
-    strategy:
-      matrix:
-        platform: [windows-latest] # Support for ubuntu-latest and macos-latest is planned.
-    runs-on: ${{ matrix.platform }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Build with PyAppify Action
-        uses: ok-oldking/pyappify-action@main
-        with:
-          version: 'v0.1.0' # Optional: Pin a specific PyAppify version for consistent builds.
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: pyappify_dist/*
-```
+refer to the docs at [https://github.com/ok-oldking/pyappify-action](https://github.com/ok-oldking/pyappify-action)
