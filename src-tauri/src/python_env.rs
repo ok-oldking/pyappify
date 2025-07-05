@@ -17,11 +17,12 @@ use tar::Archive;
 use tokio::process::Command;
 use tracing::{error, info, warn};
 use crate::utils::locale::get_locale;
+use zip::ZipArchive;
 
 const KNOWN_PATCHES: [(&str, &str, &str, &str); 7] = [
-    ("3.13", "3.13.2", "https://github.com/astral-sh/python-build-standalone/releases/download/20250317/cpython-3.13.2+20250317-x86_64-pc-windows-msvc-install_only_stripped.tar.gz", "https://www.modelscope.cn/models/okoldking/ok/resolve/master/pythons/cpython-3.13.2+20250317-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"),
-    ("3.12", "3.12.10", "https://github.com/astral-sh/python-build-standalone/releases/download/20250517/cpython-3.12.10+20250517-x86_64-pc-windows-msvc-install_only_stripped.tar.gz", "https://www.modelscope.cn/models/okoldking/ok/resolve/master/pythons/cpython-3.12.10+20250517-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"),
-    ("3.11", "3.11.12", "https://github.com/astral-sh/python-build-standalone/releases/download/20250517/cpython-3.11.12+20250517-x86_64-pc-windows-msvc-install_only_stripped.tar.gz", "https://www.modelscope.cn/models/okoldking/ok/resolve/master/pythons/cpython-3.11.12+20250517-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"),
+    ("3.13", "3.13.5", "https://www.python.org/ftp/python/3.13.5/python-3.13.5-amd64.zip", "https://mirrors.huaweicloud.com/python/3.13.5/python-3.13.5-amd64.zip"),
+    ("3.12", "3.12.10", "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.zip", "https://mirrors.huaweicloud.com/python/3.12.10/python-3.12.10-amd64.zip"),
+    ("3.11", "3.11.9", "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.zip", "https://mirrors.huaweicloud.com/python/3.11.9/python-3.11.9-amd64.zip"),
     ("3.10", "3.10.16", "https://github.com/astral-sh/python-build-standalone/releases/download/20250317/cpython-3.10.16+20250317-x86_64-pc-windows-msvc-install_only_stripped.tar.gz", "https://www.modelscope.cn/models/okoldking/ok/resolve/master/pythons/cpython-3.10.16+20250317-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"),
     ("3.9", "3.9.21", "https://github.com/astral-sh/python-build-standalone/releases/download/20250317/cpython-3.9.21+20250317-x86_64-pc-windows-msvc-install_only_stripped.tar.gz", "https://www.modelscope.cn/models/okoldking/ok/resolve/master/pythons/cpython-3.9.21+20250317-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"),
     ("3.8", "3.8.20", "https://github.com/astral-sh/python-build-standalone/releases/download/20241002/cpython-3.8.20+20241002-x86_64-pc-windows-msvc-install_only_stripped.tar.gz", "https://www.modelscope.cn/models/okoldking/ok/resolve/master/pythons/cpython-3.8.20+20241002-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"),
@@ -167,7 +168,7 @@ fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(PathBuf, 
         archive_path.display(),
         install_dir.display()
     );
-    if let Err(extract_err) = extract_tar_gz(&archive_path, &install_dir) {
+    if let Err(extract_err) = extract_archive(&archive_path, &install_dir) {
         error!(
             "Extraction from {} to {} failed: {:#}",
             archive_path.display(),
@@ -238,17 +239,40 @@ fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(PathBuf, 
 }
 
 #[cfg(target_os = "windows")]
+fn extract_archive(archive_path: &Path, extract_to_dir: &Path) -> Result<()> {
+    let file_name = archive_path.file_name().and_then(|n| n.to_str()).ok_or_else(|| anyhow!("Could not get file name from path {}", archive_path.display()))?;
+
+    if file_name.ends_with(".zip") {
+        extract_zip(archive_path, extract_to_dir)
+    } else if file_name.ends_with(".tar.gz") {
+        extract_tar_gz(archive_path, extract_to_dir)
+    } else {
+        Err(anyhow!("Unsupported archive format: {}", file_name))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn extract_zip(archive_path: &Path, extract_to_dir: &Path) -> Result<()> {
+    let zip_file = fs::File::open(archive_path)
+        .with_context(|| format!("Failed to open zip archive: {}", archive_path.display()))?;
+    let mut archive = ZipArchive::new(zip_file)
+        .with_context(|| format!("Failed to read zip archive: {}", archive_path.display()))?;
+    archive.extract(extract_to_dir).with_context(|| {
+        format!(
+            "Failed to extract zip archive {} to {}",
+            archive_path.display(),
+            extract_to_dir.display()
+        )
+    })?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 fn extract_tar_gz(archive_path: &Path, extract_to_dir: &Path) -> Result<()> {
     let tar_gz_file = fs::File::open(archive_path)
         .with_context(|| format!("Failed to open tar.gz archive: {}", archive_path.display()))?;
     let tar_stream = GzDecoder::new(tar_gz_file);
     let mut archive = Archive::new(tar_stream);
-
-    info!(
-        "Extracting archive {} to {}",
-        archive_path.display(),
-        extract_to_dir.display()
-    );
 
     for entry_result in archive.entries()? {
         let mut entry = entry_result.context("Failed to read entry from tar archive")?;

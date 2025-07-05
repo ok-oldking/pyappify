@@ -1,6 +1,6 @@
 //src/app_service.rs
 use crate::{
-    app::{read_embedded_app, update_app_from_yml, Profile, YML_FILE_NAME},
+    app::{load_app_config_from_json, save_app_config_to_json, read_embedded_app, update_app_from_yml, Profile, YML_FILE_NAME},
     emit_error_finish, emit_info, emit_success_finish, emitter, err, execute_python, git,
     python_env,
     utils::path,
@@ -32,66 +32,6 @@ pub static APP_DIR_LOCKS: Lazy<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
 
 fn is_app_running(sys: &System, app_working_dir: &Path) -> bool {
     !process::get_pids_related_to_app_dir(sys, &PathBuf::from(app_working_dir)).is_empty()
-}
-
-fn get_app_config_json_path(app_name: &str) -> PathBuf {
-    get_app_base_path(app_name).join("app.json")
-}
-
-async fn save_app_config_to_json(app: &App) -> Result<()> {
-    let config_path = get_app_config_json_path(&app.name);
-    let json_data = serde_json::to_string_pretty(app)
-        .with_context(|| format!("Failed to serialize app config for {}", app.name))?;
-    if let Some(parent) = config_path.parent() {
-        tokio::fs::create_dir_all(parent).await.with_context(|| {
-            format!(
-                "Failed to create parent directory for app.json for {}",
-                app.name
-            )
-        })?;
-    }
-    tokio::fs::write(&config_path, json_data)
-        .await
-        .with_context(|| format!("Failed to write app.json for {}", app.name))?;
-    debug!(
-        "Saved app config for {} to {}",
-        app.name,
-        config_path.display()
-    );
-    Ok(())
-}
-
-async fn load_app_config_from_json(app_name: &str) -> Result<Option<App>> {
-    let config_path = get_app_config_json_path(app_name);
-    if !config_path.exists() {
-        return Ok(None);
-    }
-    let json_data = tokio::fs::read_to_string(&config_path)
-        .await
-        .with_context(|| format!("Failed to read app.json for {}", app_name))?;
-
-    match serde_json::from_str::<App>(&json_data) {
-        Ok(mut app) => {
-            if app.name != app_name {
-                warn!("App name mismatch in app.json ('{}') and directory ('{}'). Correcting to directory name: '{}'.", app.name, app_name, app_name);
-                app.name = app_name.to_string();
-            }
-            Ok(Some(app))
-        }
-        Err(e) => {
-            error!(
-                "Failed to deserialize app.json for {}: {}. Content sample: {}",
-                app_name,
-                e,
-                json_data.chars().take(200).collect::<String>()
-            );
-            Err(anyhow!(
-                "Failed to deserialize app.json for {}: {}",
-                app_name,
-                e
-            ))
-        }
-    }
 }
 
 pub(crate) async fn load_app_details(app: &mut App) -> Result<()> {
@@ -157,7 +97,7 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
     let app_name = &app_template.name;
     let mut app = match load_app_config_from_json(app_name).await {
         Ok(Some(mut app_from_disk)) => {
-            info!("Loaded app '{}' from app.json.", app_name);
+            info!("Loaded app '{}' from app.json. {:?}", app_name, app_from_disk);
             let mut sys = System::new();
             sys.refresh_processes(ProcessesToUpdate::All, true);
             let working_dir = get_app_working_dir_path(app_name);

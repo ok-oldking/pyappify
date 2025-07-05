@@ -1,5 +1,5 @@
 //src/execute_python.rs
-use crate::utils::command::{command_to_string, run_command_and_stream_output};
+use crate::utils::command::{command_to_string, is_currently_admin, run_command_and_stream_output};
 use crate::utils::error::Error;
 use crate::utils::path::{get_python_dir, path_to_abs};
 use crate::{emit_error, emit_error_finish, emit_info, emit_success_finish, err};
@@ -250,28 +250,6 @@ fn ensure_venv_cfg(env_dir: &Path) -> Result<(), Error> {
     }
 
     Ok(())
-}
-
-#[cfg(windows)]
-async fn is_currently_admin() -> bool {
-    Command::new("net")
-        .arg("session")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-#[cfg(not(windows))]
-async fn is_currently_admin() -> bool {
-    if let Ok(output) = Command::new("id").arg("-u").output().await {
-        if output.status.success() {
-            return String::from_utf8_lossy(&output.stdout).trim() == "0";
-        }
-    }
-    false
 }
 
 fn find_script_or_executable(

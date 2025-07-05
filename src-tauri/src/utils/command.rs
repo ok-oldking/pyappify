@@ -3,6 +3,7 @@ use crate::utils::error::Error;
 use crate::{emit_error, emit_info, ensure_some, err};
 use std::process::{ExitStatus, Stdio};
 use tokio::io::AsyncBufReadExt;
+use tokio::process::Command;
 use tracing::{debug, error, info};
 
 pub async fn run_command_and_stream_output(
@@ -121,4 +122,27 @@ pub fn command_to_string(command: &std::process::Command) -> String {
         }
     }
     command_string
+}
+
+
+#[cfg(windows)]
+pub async fn is_currently_admin() -> bool {
+    Command::new("net")
+        .arg("session")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+pub async fn is_currently_admin() -> bool {
+    if let Ok(output) = Command::new("id").arg("-u").output().await {
+        if output.status.success() {
+            return String::from_utf8_lossy(&output.stdout).trim() == "0";
+        }
+    }
+    false
 }
