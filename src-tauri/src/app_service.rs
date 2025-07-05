@@ -527,10 +527,17 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
 fn build_python_execution_environment(
     profile: &Profile,
     current_version: Option<String>,
-) -> Vec<(String, String)> {
+) -> (Vec<(String, String)>, Vec<String>) {
+    let mut envs_to_remove  = Vec::new();
+    envs_to_remove.push("PYTHONHOME".to_string());
+    envs_to_remove.push("PYTHONSTARTUP".to_string());
+    envs_to_remove.push("VIRTUAL_ENV".to_string());
+
     let mut envs = Vec::new();
     if !profile.python_path.is_empty() {
         envs.push(("PYTHONPATH".to_string(), profile.python_path.clone()));
+    } else {
+        envs_to_remove.push("PYTHONPATH".to_string());
     }
     if let Some(version) = current_version {
         envs.push(("PYAPPIFY_APP_VERSION".to_string(), version));
@@ -542,13 +549,16 @@ fn build_python_execution_environment(
         "PYAPPIFY_VERSION".to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
     ));
+    envs.push(("PYTHONIOENCODING".to_string(), "utf-8".to_string()));
+    envs.push(("PYTHONUNBUFFERED".to_string(), "1".to_string()));
     if let Ok(exe_path) = std::env::current_exe() {
         envs.push((
             "PYAPPIFY_EXECUTABLE".to_string(),
             exe_path.to_string_lossy().to_string(),
         ));
     }
-    envs
+
+    (envs, envs_to_remove)
 }
 
 async fn check_running_on_start(
@@ -665,7 +675,7 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         profile_to_run_with.main_script
     );
 
-    let envs = build_python_execution_environment(&profile_to_run_with, current_version);
+    let (envs, envs_to_remove) = build_python_execution_environment(&profile_to_run_with, current_version);
     execute_python::run_python_script(
         app_name.as_str(),
         profile_to_run_with.main_script.as_str(),
@@ -673,6 +683,7 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         profile_to_run_with.is_admin(),
         profile_to_run_with.use_pythonw(),
         envs,
+        envs_to_remove
     )
         .await?;
 

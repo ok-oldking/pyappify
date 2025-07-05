@@ -9,7 +9,7 @@ use rand::Rng;
 use reqwest::Client;
 use reqwest::Url;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Write};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use tar::Archive;

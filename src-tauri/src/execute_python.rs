@@ -88,6 +88,7 @@ async fn run_python_script_as_admin_internal(
     script_path: String,
     working_dir: &Path,
     envs: &[(String, String)],
+    envs_to_remove: &[String],
 ) -> Result<(), Error> {
     let (executable, args) = if script_path.ends_with(".py") {
         (python_path, vec![script_path])
@@ -97,15 +98,11 @@ async fn run_python_script_as_admin_internal(
     info!(app_name = app_name, executable = %executable, args = %args.join(" "), desired_cwd = %working_dir.display(), "Attempting to run script with admin privileges using runas.");
 
     let mut env_vars_to_set = HashMap::new();
-    env_vars_to_set.insert("PYTHONIOENCODING".to_string(), "utf-8".to_string());
-    env_vars_to_set.insert("PYTHONUNBUFFERED".to_string(), "1".to_string());
     for (key, value) in envs {
         env_vars_to_set.insert(key.clone(), value.clone());
     }
 
-    let env_vars_to_remove = vec!["PYTHONHOME".to_string()];
-
-    let _guard = ProcessContextGuard::new(working_dir, &env_vars_to_set, &env_vars_to_remove)?;
+    let _guard = ProcessContextGuard::new(working_dir, &env_vars_to_set, &envs_to_remove)?;
     emit_info!(
         app_name,
         "run as admin command: {} {}, cwd: {}",
@@ -167,6 +164,7 @@ async fn run_python_script_normal_internal(
     script_path: String,
     working_dir: &Path,
     envs: &[(String, String)],
+    envs_to_remove: &[String],
 ) -> Result<(), Error> {
     let (executable, args) = if script_path.ends_with(".py") {
         (python_path, vec![script_path])
@@ -181,13 +179,12 @@ async fn run_python_script_normal_internal(
         .stderr(Stdio::piped())
         .kill_on_drop(false);
 
-    cmd.env_remove("PYTHONHOME");
+    for key in envs_to_remove {
+        cmd.env_remove(key);
+    }
     for (key, value) in envs {
         cmd.env(key, value);
     }
-    cmd.env("PYTHONIOENCODING", "utf-8");
-    cmd.env("PYTHONUNBUFFERED", "1");
-
     #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -245,7 +242,9 @@ pub async fn run_python_script(
     script: &str,
     working_dir: &Path,
     as_admin: bool,
-    use_pythonw: bool, envs: Vec<(String, String)>,
+    use_pythonw: bool,
+    envs: Vec<(String, String)>,
+    envs_to_remove: Vec<String>,
 ) -> Result<(), Error> {
     let python_dir = get_python_dir(app_name);
     let python_executable = get_python_exe(app_name, use_pythonw);
@@ -293,6 +292,7 @@ pub async fn run_python_script(
     let script_path_owned = script_path_str.clone();
     let working_dir_owned = working_dir.to_path_buf();
     let envs_owned = envs;
+    let envs_to_remove_owned = envs_to_remove;
 
     tokio::spawn(async move {
         let needs_elevation = as_admin && !is_currently_admin().await;
@@ -313,6 +313,7 @@ pub async fn run_python_script(
                 script_path_owned,
                 &working_dir_owned,
                 &envs_owned,
+                &envs_to_remove_owned,
             )
                 .await
         } else {
@@ -322,6 +323,7 @@ pub async fn run_python_script(
                 script_path_owned,
                 &working_dir_owned,
                 &envs_owned,
+                &envs_to_remove_owned,
             )
                 .await
         };
