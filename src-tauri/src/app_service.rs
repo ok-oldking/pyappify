@@ -23,14 +23,25 @@ use crate::app::App;
 use crate::git::ensure_repository;
 use crate::utils::error::Error;
 use crate::utils::file;
-use crate::utils::path::{get_app_base_path, get_app_working_dir_path};
+use crate::utils::path::{get_app_base_path, get_app_working_dir_path, get_python_dir};
 use crate::utils::window::create_startup_shortcut;
 
 pub static APPS: Lazy<Mutex<HashMap<String, App>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 pub static APP_DIR_LOCKS: Lazy<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-fn is_app_running(sys: &System, app_working_dir: &Path) -> bool {
+fn check_python_env_exists(app_name: &str) -> bool {
+    let python_path = get_python_dir(app_name);
+    let python_exe_path = python_path.join(if cfg!(windows) {
+        "python.exe"
+    } else {
+        "bin/python"
+    });
+    python_path.exists() && python_exe_path.exists()
+}
+
+fn is_app_running(sys: &System, app_name: &str) -> bool {
+    let app_working_dir = get_app_base_path(app_name);
     !process::get_pids_related_to_app_dir(sys, &PathBuf::from(app_working_dir)).is_empty()
 }
 
@@ -100,8 +111,7 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
             info!("Loaded app '{}' from app.json. {:?}", app_name, app_from_disk);
             let mut sys = System::new();
             sys.refresh_processes(ProcessesToUpdate::All, true);
-            let working_dir = get_app_working_dir_path(app_name);
-            app_from_disk.running = is_app_running(&sys, &working_dir);
+            app_from_disk.running = is_app_running(&sys, app_name);
             let current_profile = app_from_disk.current_profile.clone();
             app_from_disk.profiles = app_template.profiles.clone();
             app_from_disk.current_profile = current_profile;
@@ -117,6 +127,24 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
         }
         Err(e) => return Err(e.into()),
     };
+
+    if app.installed && !check_python_env_exists(app_name) {
+        warn!(
+            "Python venv for app '{}' is missing. Deleting app artifacts and marking as not installed.",
+            app_name
+        );
+        let app_base_path = get_app_base_path(app_name);
+        if app_base_path.exists() {
+            if let Err(e) = tokio::fs::remove_dir_all(&app_base_path).await {
+                warn!(
+                    "Failed to delete app directory {} during cleanup: {}",
+                    app_base_path.display(),
+                    e
+                );
+            }
+        }
+        app.installed = false;
+    }
 
     info!(
         "Loading full app details (git info, yml) for {}...",
@@ -371,10 +399,9 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
     let pip_args = &profile_settings_for_setup.pip_args;
 
     let venv_python_exe = task::spawn_blocking({
-        let wd_path = working_dir_path.clone();
         let py_spec = python_version_spec.to_string();
         let app_name_clone = app_name.to_string();
-        move || python_env::setup_python_venv(app_name_clone, &wd_path, &py_spec).map_err(|e| anyhow!(e))
+        move || python_env::setup_python_env(app_name_clone, &py_spec).map_err(|e| anyhow!(e))
     })
         .await??;
 
@@ -441,7 +468,7 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
     let app_dir_lock = get_app_lock(app_name).await;
     let _lock_guard = app_dir_lock.lock().await;
 
-    let working_dir_path = path::get_app_working_dir_path(app_name);
+    let working_dir_path = get_app_working_dir_path(app_name);
 
     let old_requirements_spec = {
         let apps = APPS.lock().await;
@@ -589,7 +616,7 @@ async fn check_running_on_start(
         app_name
     );
     sys.refresh_processes(ProcessesToUpdate::All, true);
-    let is_running_after_timeout = is_app_running(&sys, working_dir);
+    let is_running_after_timeout = is_app_running(&sys, app_name);
     let mut apps_map = APPS.lock().await;
     if let Some(app) = apps_map.get_mut(app_name) {
         if app.running != is_running_after_timeout {
@@ -607,6 +634,19 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
     info!("Attempting to start app: {}", app_name);
     let app_dir_lock = get_app_lock(&app_name).await;
     let _guard = app_dir_lock.lock().await;
+
+    if !check_python_env_exists(&app_name) {
+        warn!(
+            "Python .venv not found for '{}'. Deleting app artifacts.",
+            &app_name
+        );
+        delete_app(&app_name).await?;
+        emit_error_finish!(&app_name);
+        err!(
+            "Python .venv was missing for '{}'. App has been reset. Please run setup.",
+            app_name
+        );
+    }
 
     let (profile_to_run_with, working_dir, current_version) = {
         let mut apps_map = APPS.lock().await;
@@ -642,22 +682,6 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
             .into());
     }
 
-    let venv_path = working_dir.join(".venv");
-    let python_exe_in_venv = venv_path.join(if cfg!(windows) {
-        "Scripts\\python.exe"
-    } else {
-        "bin/python"
-    });
-
-    if !venv_path.exists() || !python_exe_in_venv.exists() {
-        emit_error_finish!(app_name);
-        return Err(anyhow!(
-            "Python .venv not at '{}' for '{}'. Try setup.",
-            venv_path.display(),
-            app_name
-        )
-            .into());
-    }
     info!(
         "Starting app '{}' (profile '{}', admin: {}, script: '{}')",
         app_name,
@@ -669,7 +693,6 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
     let envs = build_python_execution_environment(&profile_to_run_with, current_version);
     execute_python::run_python_script(
         app_name.as_str(),
-        &venv_path,
         profile_to_run_with.main_script.as_str(),
         &working_dir,
         profile_to_run_with.is_admin(),
@@ -716,9 +739,9 @@ fn try_kill_with_elevation(pid: Pid, app_name: &str) -> Result<()> {
     }
 }
 
-async fn kill_app_processes(app_name: &str, working_dir: &Path) -> Result<bool> {
+async fn kill_app_processes(app_name: &str) -> Result<bool> {
     let app_name_clone = app_name.to_string();
-    let working_dir_clone = working_dir.to_path_buf();
+    let working_dir_clone = get_app_base_path(app_name);
 
     task::spawn_blocking(move || -> Result<bool> {
         let mut sys_task = System::new();
@@ -767,8 +790,7 @@ pub async fn stop_app(app_name: String) -> Result<(), Error> {
     let app_dir_lock = get_app_lock(&app_name).await;
     let _guard = app_dir_lock.lock().await;
 
-    let working_dir = get_app_working_dir_path(&app_name);
-    let any_pids_were_targeted = kill_app_processes(&app_name, &working_dir).await?;
+    let any_pids_were_targeted = kill_app_processes(&app_name).await?;
 
     if any_pids_were_targeted {
         info!("Processes targeted for '{}'. Waiting 1s.", app_name);
@@ -779,7 +801,7 @@ pub async fn stop_app(app_name: String) -> Result<(), Error> {
 
     let mut sys_final = System::new();
     sys_final.refresh_processes(ProcessesToUpdate::All, true);
-    let currently_running_final = is_app_running(&sys_final, &working_dir);
+    let currently_running_final = is_app_running(&sys_final, &*app_name);
     let mut status_changed = false;
 
     {
@@ -834,8 +856,8 @@ pub async fn periodically_update_all_apps_running_status(app_handle: AppHandle) 
         }
 
         let mut status_updates_list: Vec<(String, bool)> = Vec::new();
-        for (app_name, app_working_dir) in &apps_to_check_data {
-            status_updates_list.push((app_name.clone(), is_app_running(&sys, app_working_dir)));
+        for (app_name, _) in &apps_to_check_data {
+            status_updates_list.push((app_name.clone(), is_app_running(&sys, app_name)));
         }
 
         let mut changed_any_status = false;

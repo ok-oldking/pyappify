@@ -1,12 +1,11 @@
 // src/python_env.rs
 use crate::utils::error::Error;
 use crate::utils::path::get_python_dir;
-use crate::{config_manager::GLOBAL_CONFIG_STATE, emit_error, emit_info, emit_update_info, err, utils::command};
+use crate::{config_manager::GLOBAL_CONFIG_STATE, emit_info, emit_update_info, err, utils::command};
 use anyhow::{anyhow, Context, Result};
 use flate2::read::GzDecoder;
 use rand::distr::Alphanumeric;
 use rand::Rng;
-use regex::Regex;
 use reqwest::blocking::Client;
 use reqwest::Url;
 use std::fs;
@@ -59,41 +58,56 @@ fn get_filename_from_url(url_string: &str) -> Result<String> {
 
 #[cfg(target_os = "windows")]
 fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(PathBuf, String)> {
-    let base_install_path = PathBuf::from(get_python_dir());
-    fs::create_dir_all(&base_install_path).with_context(|| {
+    let install_dir = PathBuf::from(get_python_dir(app_name));
+    fs::create_dir_all(&install_dir).with_context(|| {
         format!(
-            "Failed to create base install directory at {}",
-            base_install_path.display()
+            "Failed to create install directory at {}",
+            install_dir.display()
         )
     })?;
 
-    let (major_minor_from_param, _original_exact_version_opt) = parse_version(version_str)?;
+    let python_exe_path = install_dir.join("python.exe");
+    let (major_minor_from_param, _) = parse_version(version_str)?;
 
-    let version_to_ensure = get_latest_known_patch_for_major_minor(&major_minor_from_param)?;
-
-    if let Some(installed_path) = find_installed_version(
-        &base_install_path,
-        &major_minor_from_param,
-        Some(&version_to_ensure),
-    )? {
-        info!(
-            "Found targeted version {} already installed at: {}",
-            version_to_ensure,
-            installed_path.display()
-        );
-        return Ok((installed_path, version_to_ensure.clone()));
+    if python_exe_path.exists() {
+        match get_python_version_from_exe(&python_exe_path) {
+            Ok(installed_version) => {
+                let (installed_major_minor, _) = parse_version(&installed_version)?;
+                if installed_major_minor == major_minor_from_param {
+                    info!(
+                        "Found compatible Python version {} at {}",
+                        installed_version,
+                        python_exe_path.display()
+                    );
+                    return Ok((python_exe_path, installed_version));
+                } else {
+                    info!(
+                        "Found incompatible Python version {} (required {}). Removing and reinstalling.",
+                        installed_version, major_minor_from_param
+                    );
+                    fs::remove_dir_all(&install_dir).with_context(|| format!("Failed to remove existing Python installation at {}", install_dir.display()))?;
+                    fs::create_dir_all(&install_dir).with_context(|| format!("Failed to recreate Python installation directory at {}", install_dir.display()))?;
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Existing python.exe at {} is corrupted or unusable ({}). Removing and reinstalling.",
+                    python_exe_path.display(), e
+                );
+                fs::remove_dir_all(&install_dir).with_context(|| format!("Failed to remove corrupted Python installation at {}", install_dir.display()))?;
+                fs::create_dir_all(&install_dir).with_context(|| format!("Failed to recreate Python installation directory at {}", install_dir.display()))?;
+            }
+        }
     }
 
+    let version_to_ensure = get_latest_known_patch_for_major_minor(&major_minor_from_param)?;
     info!(
-        "Targeted version {} not found installed. Proceeding to download and install.",
+        "Python {} not found or incompatible. Proceeding to download and install.",
         version_to_ensure
     );
 
-    let install_dir = base_install_path.join(&version_to_ensure);
-    let python_exe_path = install_dir.join("python.exe");
-
     let (primary_url, backup_url) = get_download_urls(&version_to_ensure)?;
-    let archive_path = base_install_path.join(get_filename_from_url(&primary_url)?);
+    let archive_path = std::env::temp_dir().join(get_filename_from_url(&primary_url)?);
 
     let download_result = download_file(&primary_url, &archive_path, app_name).or_else(|e| {
         warn!(
@@ -339,56 +353,6 @@ fn parse_version(version_str: &str) -> Result<(String, Option<String>)> {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn find_installed_version(
-    base_path: &Path,
-    major_minor: &str,
-    exact_version: Option<&str>,
-) -> Result<Option<PathBuf>> {
-    if !base_path.exists() {
-        return Ok(None);
-    }
-
-    let mut latest_found_for_major_minor: Option<(String, PathBuf)> = None;
-    let version_pattern = Regex::new(r"^\d+\.\d+\.\d+$").unwrap();
-
-    for entry_res in fs::read_dir(base_path).context("Failed to read base python install dir")? {
-        let entry = entry_res.context("Failed to read entry in python install dir")?;
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(dir_name_str) = path.file_name().and_then(|n| n.to_str()) {
-                if dir_name_str.starts_with(major_minor) && version_pattern.is_match(dir_name_str) {
-                    let current_python_exe = path.join("python.exe");
-                    if current_python_exe.exists() {
-                        if let Some(ex_ver) = exact_version {
-                            if ex_ver == dir_name_str {
-                                return Ok(Some(current_python_exe));
-                            }
-                        } else {
-                            let current_version_is_later = match &latest_found_for_major_minor {
-                                None => true,
-                                Some((latest_known_ver_str, _)) => {
-                                    compare_versions(dir_name_str, latest_known_ver_str)? > 0
-                                }
-                            };
-                            if current_version_is_later {
-                                latest_found_for_major_minor =
-                                    Some((dir_name_str.to_string(), current_python_exe));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if exact_version.is_some() {
-        Ok(None)
-    } else {
-        Ok(latest_found_for_major_minor.map(|(_, path_buf)| path_buf))
-    }
-}
-
 fn get_latest_known_patch_for_major_minor(major_minor: &str) -> Result<String> {
     info!(
         "Determining latest known patch for {} series from hardcoded list.",
@@ -410,31 +374,6 @@ pub fn get_supported_python_versions() -> Vec<String> {
         .iter()
         .map(|(patch, _, _, _)| patch.to_string())
         .collect()
-}
-
-fn compare_versions(v1: &str, v2: &str) -> Result<i8> {
-    let parts1: Vec<u32> = v1
-        .split('.')
-        .map(|s| s.parse::<u32>())
-        .collect::<std::result::Result<Vec<u32>, _>>()
-        .with_context(|| format!("Failed to parse version string v1: {}", v1))?;
-    let parts2: Vec<u32> = v2
-        .split('.')
-        .map(|s| s.parse::<u32>())
-        .collect::<std::result::Result<Vec<u32>, _>>()
-        .with_context(|| format!("Failed to parse version string v2: {}", v2))?;
-
-    for i in 0..std::cmp::max(parts1.len(), parts2.len()) {
-        let p1 = *parts1.get(i).unwrap_or(&0);
-        let p2 = *parts2.get(i).unwrap_or(&0);
-        if p1 > p2 {
-            return Ok(1);
-        }
-        if p1 < p2 {
-            return Ok(-1);
-        }
-    }
-    Ok(0)
 }
 
 fn get_user_agent() -> String {
@@ -515,126 +454,50 @@ fn download_file(url: &str, dest_path: &Path, app_name: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-pub fn setup_python_venv(
+pub fn setup_python_env(
     app_name: String,
-    venv_creation_dir: &Path,
     python_version_spec: &str,
 ) -> Result<PathBuf> {
-    emit_info!(app_name,
-        "Setting up Python venv in {} using Python version spec '{}'",
-        venv_creation_dir.display(),
+    emit_info!(
+        app_name,
+        "Ensuring Python installation for version spec '{}'",
         python_version_spec
     );
-    let venv_path = venv_creation_dir.join(".venv");
-    let venv_python_exe_path = venv_path.join("Scripts").join("python.exe");
+
     let (managed_python_exe, managed_python_actual_version) =
         ensure_python_version(&app_name, python_version_spec)?;
-    emit_info!(app_name,
-        "Using managed Python {} (version {}) for venv setup.",
+
+    emit_info!(
+        app_name,
+        "Using managed Python {} (version {})",
         managed_python_exe.display(),
         managed_python_actual_version
     );
-    let mut recreate_venv = true;
-    if venv_path.is_dir() && venv_python_exe_path.exists() {
-        info!("Found existing venv at {}", venv_path.display());
-        match get_python_version_from_exe(&venv_python_exe_path) {
-            Ok(venv_python_version) => {
-                if venv_python_version == managed_python_actual_version {
-                    info!(
-                        "Venv Python version ({}) matches required ({}). Reusing existing venv.",
-                        venv_python_version, managed_python_actual_version
-                    );
-                    recreate_venv = false;
-                } else {
-                    warn!("Venv Python version mismatch (found: {}, required: {}). Will recreate venv.", venv_python_version, managed_python_actual_version);
-                }
-            }
-            Err(e) => warn!(
-                "Failed to get version from existing venv Python at {}: {:#}. Will recreate venv.",
-                venv_python_exe_path.display(),
-                e
-            ),
-        }
-    } else {
-        emit_info!(app_name,
-            "No existing venv or venv python {} is missing. Will create/recreate venv.",
-            venv_python_exe_path.display()
-        );
-    }
 
-    if recreate_venv {
-        if venv_path.exists() {
-            info!("Removing existing venv at {}", venv_path.display());
-            fs::remove_dir_all(&venv_path).with_context(|| {
-                format!("Failed to remove existing venv at {}", venv_path.display())
-            })?;
-        }
-        let venv_creation_cmd_output = std::process::Command::new(&managed_python_exe)
-            .creation_flags(0x08000000)
-            .arg("-m")
-            .arg("venv")
-            .arg(&venv_path)
-            .output()
-            .with_context(|| {
-                format!(
-                    "Failed to execute venv creation for {} using {}",
-                    venv_path.display(),
-                    managed_python_exe.display()
-                )
-            })?;
-
-        let stdout_str = String::from_utf8_lossy(&venv_creation_cmd_output.stdout);
-        let trimmed_stdout = stdout_str.trim();
-        if !trimmed_stdout.is_empty() {
-            emit_info!(app_name, "{}", trimmed_stdout);
-        }
-
-        let stderr_str = String::from_utf8_lossy(&venv_creation_cmd_output.stderr);
-        let trimmed_stderr = stderr_str.trim();
-        if !trimmed_stderr.is_empty() {
-            emit_error!(app_name, "{}", trimmed_stderr);
-        }
-
-        if !venv_creation_cmd_output.status.success() {
-            error!("Venv creation stdout: {}", stdout_str);
-            error!("Venv creation stderr: {}", stderr_str);
-            return Err(anyhow!(
-                "Failed to create venv at {}. Exit code: {:?}. Stderr: {}",
-                venv_path.display(),
-                venv_creation_cmd_output.status.code(),
-                stderr_str
-            ));
-        }
-        info!("Venv created successfully at {}", venv_path.display());
-    }
-    if !venv_python_exe_path.exists() {
-        return Err(anyhow!(
-            "Venv python.exe not found at {} after setup.",
-            venv_python_exe_path.display()
-        ));
-    }
-
-    Ok(venv_python_exe_path)
+    Ok(managed_python_exe)
 }
 #[cfg(not(target_os = "windows"))]
-pub fn setup_python_venv(_venv_creation_dir: &Path, _python_version_spec: &str) -> Result<PathBuf> {
+pub fn setup_python_env(
+    _app_name: String,
+    _python_version_spec: &str,
+) -> Result<PathBuf> {
     Err(anyhow!(
-        "setup_python_venv is only implemented for Windows."
+        "setup_python_env is only implemented for Windows."
     ))
 }
 
 #[cfg(target_os = "windows")]
 pub async fn install_requirements(
     app_name: &str,
-    venv_python_exe: &Path,
+    python_exe: &Path,
     requirements: &str,
     project_dir: &Path,
     pip_args: &str,
 ) -> Result<(), Error> {
-    if !venv_python_exe.exists() {
+    if !python_exe.exists() {
         err!(
-            "Venv Python executable not found at {}",
-            venv_python_exe.display()
+            "Python executable not found at {}",
+            python_exe.display()
         );
     }
     if !project_dir.is_dir() {
@@ -655,12 +518,13 @@ pub async fn install_requirements(
         (cache_dir, index_url)
     };
 
-    let mut pip_install_cmd = Command::new(venv_python_exe);
+    let mut pip_install_cmd = Command::new(python_exe);
     pip_install_cmd
         .current_dir(project_dir)
         .arg("-m")
         .arg("pip")
-        .arg("install");
+        .arg("install")
+        .arg("--no-warn-script-location");
 
     let mut use_config_index_url = true;
     if !pip_args.is_empty() {
@@ -714,7 +578,7 @@ pub async fn install_requirements(
 #[cfg(not(target_os = "windows"))]
 pub async fn install_requirements(
     _app_name: &str,
-    _venv_python_exe: &Path,
+    _python_exe: &Path,
     _requirements: &str,
     _project_dir: &Path,
     _pip_args: &str,

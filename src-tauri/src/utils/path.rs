@@ -5,7 +5,7 @@ use tauri::{AppHandle, Manager};
 
 const BASE_DIR: &str = "data";
 const APPS_DIR: &str = "apps";
-pub const PYTHON_ROOT_DIR: &str = "env/python";
+pub const PYTHON_ROOT_DIR: &str = "python";
 const WORKING_DIR_NAME: &str = "working";
 
 lazy_static! {
@@ -17,8 +17,8 @@ pub fn get_log_dir() -> PathBuf {
 fn get_base_dir() -> PathBuf {
     CWD.join(BASE_DIR)
 }
-pub fn get_python_dir() -> PathBuf {
-    get_base_dir().join(PYTHON_ROOT_DIR)
+pub fn get_python_dir(app_name: &str) -> PathBuf {
+    get_app_base_path(app_name).join(PYTHON_ROOT_DIR)
 }
 
 pub fn get_apps_dir() -> PathBuf {
