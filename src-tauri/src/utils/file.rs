@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::{fs, io};
-use tracing::debug;
+use tracing::{debug, info};
 use walkdir::WalkDir;
+use anyhow::{Context, Result};
+use tokio::process::Command;
 
 pub fn copy_dir_recursive_excluding_sync(
     src: &Path,
@@ -98,4 +100,39 @@ pub fn sync_delete_extra_files(working_dir: &Path, repo_dir: &Path) -> io::Resul
         }
     }
     Ok(())
+}
+
+pub async fn delete_dir_if_exist(working_dir_path: &Path) -> Result<()> {
+    let result = fs::remove_dir_all(working_dir_path);
+
+    info!("Delete dir if exist: {} {:?}", working_dir_path.display(), result);
+
+    if let Err(e) = &result {
+        if e.kind() == io::ErrorKind::NotFound {
+            return Ok(());
+        }
+
+        #[cfg(windows)]
+        {
+            let status = Command::new("cmd")
+                .args([
+                    "/C",
+                    "rd",
+                    "/S",
+                    "/Q",
+                    working_dir_path
+                        .to_str()
+                        .context("Path contains non-UTF8 characters")?,
+                ])
+                .status()
+                .await
+                .context("Failed to spawn 'rd' command")?;
+            if status.success() {
+                info!("Delete dir using rd success {}", working_dir_path.display());
+                return Ok(());
+            }
+        }
+    }
+
+    result.with_context(|| format!("Failed to remove dir {}", working_dir_path.display()))
 }

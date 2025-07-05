@@ -63,6 +63,8 @@ pub struct Profile {
     #[serde(default)]
     pub admin: Option<bool>,
     #[serde(default)]
+    pub use_pythonw: Option<bool>,
+    #[serde(default)]
     pub requires_defender_whitelist: Option<bool>,
     #[serde(default)]
     pub requirements: String,
@@ -79,6 +81,10 @@ pub struct Profile {
 impl Profile {
     pub fn is_admin(&self) -> bool {
         self.admin.unwrap_or(false)
+    }
+
+    pub fn use_pythonw(&self) -> bool {
+        self.use_pythonw.unwrap_or(false)
     }
 
     pub fn requires_defender_whitelist(&self) -> bool {
@@ -106,6 +112,9 @@ fn apply_profile_inheritance(config: &mut App) {
             }
             if profile.admin.is_none() {
                 profile.admin = first_profile.admin;
+            }
+            if profile.use_pythonw.is_none() {
+                profile.use_pythonw = first_profile.use_pythonw;
             }
             if profile.requires_defender_whitelist.is_none() {
                 profile.requires_defender_whitelist = first_profile.requires_defender_whitelist;

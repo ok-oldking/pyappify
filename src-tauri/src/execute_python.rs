@@ -1,7 +1,7 @@
 //src/execute_python.rs
 use crate::utils::command::{command_to_string, is_currently_admin, run_command_and_stream_output};
 use crate::utils::error::Error;
-use crate::utils::path::{get_python_dir, path_to_abs};
+use crate::utils::path::{get_python_dir, get_python_exe, path_to_abs};
 use crate::{emit_error, emit_error_finish, emit_info, emit_success_finish, err};
 use anyhow::anyhow;
 use runas;
@@ -117,7 +117,7 @@ async fn run_python_script_as_admin_internal(
     for arg in &args {
         runas_cmd_builder.arg(arg);
     }
-    runas_cmd_builder.show(false);
+    runas_cmd_builder.show(true);
 
     let app_name_clone = app_name.to_string();
 
@@ -245,10 +245,10 @@ pub async fn run_python_script(
     script: &str,
     working_dir: &Path,
     as_admin: bool,
-    envs: Vec<(String, String)>,
+    use_pythonw: bool, envs: Vec<(String, String)>,
 ) -> Result<(), Error> {
     let python_dir = get_python_dir(app_name);
-    let python_executable = python_dir.join(if cfg!(windows) { "python.exe" } else { "python" });
+    let python_executable = get_python_exe(app_name, use_pythonw);
 
     if !python_executable.exists() {
         let err_msg = format!(

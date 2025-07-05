@@ -23,6 +23,7 @@ use crate::app::App;
 use crate::git::ensure_repository;
 use crate::utils::error::Error;
 use crate::utils::file;
+use crate::utils::file::delete_dir_if_exist;
 use crate::utils::path::{get_app_base_path, get_app_working_dir_path, get_python_dir};
 use crate::utils::window::create_startup_shortcut;
 
@@ -89,7 +90,7 @@ async fn cleanup_stale_app_directories(app_name: &str) -> Result<()> {
                             "Removing stale application directory: {}",
                             full_path.display()
                         );
-                        if let Err(e) = tokio::fs::remove_dir_all(&full_path).await {
+                        if let Err(e) = delete_dir_if_exist(&full_path).await {
                             warn!(
                                 "Failed to remove stale app directory {}: {}",
                                 full_path.display(),
@@ -134,14 +135,12 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
             app_name
         );
         let app_base_path = get_app_base_path(app_name);
-        if app_base_path.exists() {
-            if let Err(e) = tokio::fs::remove_dir_all(&app_base_path).await {
-                warn!(
-                    "Failed to delete app directory {} during cleanup: {}",
-                    app_base_path.display(),
-                    e
-                );
-            }
+        if let Err(e) = delete_dir_if_exist(&app_base_path).await {
+            warn!(
+                "Failed to delete app directory {} during cleanup: {}",
+                app_base_path.display(),
+                e
+            );
         }
         app.installed = false;
     }
@@ -251,14 +250,10 @@ pub async fn delete_app(app_name: &str) -> Result<(), Error> {
     let _guard = app_dir_lock.lock().await;
 
     let app_base_path = get_app_base_path(app_name);
-    if app_base_path.exists() {
-        info!("Deleting dir: {}", app_base_path.display());
-        tokio::fs::remove_dir_all(&app_base_path)
-            .await
-            .with_context(|| format!("Failed to delete dir {}", app_base_path.display()))?;
-        info!("Deleted dir: {}", app_base_path.display());
+    if let Err(e) = delete_dir_if_exist(&app_base_path).await {
+        error!("Failed to delete dir {}: {}", app_base_path.display(), e);
     } else {
-        info!("App dir {} not on disk.", app_base_path.display());
+        info!("Deleted dir: {}", app_base_path.display());
     }
     let mut app: App = get_app_by_name(app_name).await?;
     app.installed = false;
@@ -355,7 +350,7 @@ fn get_profile_for_setup<'a>(
 }
 
 #[tauri::command]
-pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Error> {
+pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<(), Error> {
     let app_dir_lock = get_app_lock(app_name).await;
     let _guard = app_dir_lock.lock().await;
 
@@ -369,15 +364,8 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
         err!("Repo for {} not at {}", app_name, repo_path.display());
     }
 
-    if working_dir_path.exists() {
-        info!(
-            "Removing existing working dir: {}",
-            working_dir_path.display()
-        );
-        tokio::fs::remove_dir_all(&working_dir_path)
-            .await
-            .with_context(|| format!("Failed to remove dir {}", working_dir_path.display()))?;
-    }
+    delete_dir_if_exist(&working_dir_path).await?;
+
     tokio::fs::create_dir_all(&working_dir_path)
         .await
         .with_context(|| format!("Failed to create dir {}", working_dir_path.display()))?;
@@ -397,18 +385,11 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
     let requirements = &profile_settings_for_setup.requirements;
     let python_version_spec = &profile_settings_for_setup.requires_python;
     let pip_args = &profile_settings_for_setup.pip_args;
-
-    let venv_python_exe = task::spawn_blocking({
-        let py_spec = python_version_spec.to_string();
-        let app_name_clone = app_name.to_string();
-        move || python_env::setup_python_env(app_name_clone, &py_spec).map_err(|e| anyhow!(e))
-    })
-        .await??;
+    python_env::setup_python_env(app_name.to_string(), &python_version_spec).await?;
 
     if !requirements.is_empty() {
         python_env::install_requirements(
             app_name,
-            &venv_python_exe,
             requirements,
             &working_dir_path,
             pip_args,
@@ -447,7 +428,7 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<PathBuf, Er
     }
 
     emit_success_finish!(app_name);
-    Ok(venv_python_exe)
+    Ok(())
 }
 
 fn get_relevant_content(spec: &str, dir: &Path) -> Option<String> {
@@ -516,18 +497,12 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
             };
             emit_info!(app_name, "Content of '{}' changed. Syncing dependencies.", file_type);
         }
-        let venv_python_exe = working_dir_path.join(".venv").join(if cfg!(windows) { "Scripts\\python.exe" } else { "bin/python" });
-        if venv_python_exe.exists() {
-            python_env::install_requirements(
-                app_name,
-                &venv_python_exe,
-                &new_requirements_spec,
-                &working_dir_path,
-                &new_pip_args,
-            ).await?;
-        } else {
-            warn!("Venv python not found at {}. Skipping dependency sync.", venv_python_exe.display());
-        }
+        python_env::install_requirements(
+            app_name,
+            &new_requirements_spec,
+            &working_dir_path,
+            &new_pip_args,
+        ).await?;
     } else {
         emit_info!(app_name, "Requirements are up to date. Skipping dependency sync.");
     }
@@ -696,6 +671,7 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         profile_to_run_with.main_script.as_str(),
         &working_dir,
         profile_to_run_with.is_admin(),
+        profile_to_run_with.use_pythonw(),
         envs,
     )
         .await?;

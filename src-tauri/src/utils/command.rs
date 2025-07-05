@@ -7,7 +7,7 @@ use tokio::process::Command;
 use tracing::{debug, error, info};
 
 pub async fn run_command_and_stream_output(
-    mut command: tokio::process::Command,
+    mut command: Command,
     app_name: &str,
     command_description: &str,
 ) -> Result<ExitStatus, Error> {

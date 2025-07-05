@@ -64,7 +64,7 @@ async fn handle_command_line() {
                 println!("Command-line mode: Setting up app '{}' with profile '{}'.", a_name, p_name);
                 match setup_app(a_name, &p_name).await {
                     Ok(path) => {
-                        println!("Setup successful. Path: {}", path.display());
+                        println!("Setup successful.");
                         std::process::exit(0);
                     }
                     Err(e) => {

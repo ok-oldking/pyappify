@@ -21,6 +21,15 @@ pub fn get_python_dir(app_name: &str) -> PathBuf {
     get_app_base_path(app_name).join(PYTHON_ROOT_DIR)
 }
 
+pub fn get_python_exe(app_name: &str, use_pythonw: bool) -> PathBuf {
+    let python_dir = get_python_dir(app_name);
+    if use_pythonw {
+        python_dir.join("pythonw.exe")
+    } else {
+        python_dir.join("python.exe")
+    }
+}
+
 pub fn get_apps_dir() -> PathBuf {
     get_base_dir().join(APPS_DIR)
 }

@@ -1,12 +1,12 @@
 // src/python_env.rs
 use crate::utils::error::Error;
-use crate::utils::path::get_python_dir;
+use crate::utils::path::{get_python_dir, get_python_exe};
 use crate::{config_manager::GLOBAL_CONFIG_STATE, emit_info, emit_update_info, err, utils::command};
 use anyhow::{anyhow, Context, Result};
 use flate2::read::GzDecoder;
 use rand::distr::Alphanumeric;
 use rand::Rng;
-use reqwest::blocking::Client;
+use reqwest::Client;
 use reqwest::Url;
 use std::fs;
 use std::io::{Read, Write};
@@ -57,7 +57,7 @@ fn get_filename_from_url(url_string: &str) -> Result<String> {
 }
 
 #[cfg(target_os = "windows")]
-fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(PathBuf, String)> {
+async fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(PathBuf, String)> {
     let install_dir = PathBuf::from(get_python_dir(app_name));
     fs::create_dir_all(&install_dir).with_context(|| {
         format!(
@@ -109,16 +109,19 @@ fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(PathBuf, 
     let (primary_url, backup_url) = get_download_urls(&version_to_ensure)?;
     let archive_path = std::env::temp_dir().join(get_filename_from_url(&primary_url)?);
 
-    let download_result = download_file(&primary_url, &archive_path, app_name).or_else(|e| {
-        warn!(
-            "Download from primary URL {} failed: {:#}. Trying backup URL: {}",
-            primary_url, e, backup_url
-        );
-        if archive_path.exists() {
-            fs::remove_file(&archive_path).ok();
+    let download_result = match download_file(&primary_url, &archive_path, app_name).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            warn!(
+                "Download from primary URL {} failed: {:#}. Trying backup URL: {}",
+                primary_url, e, backup_url
+            );
+            if archive_path.exists() {
+                fs::remove_file(&archive_path).ok();
+            }
+            download_file(&backup_url, &archive_path, app_name).await
         }
-        download_file(&backup_url, &archive_path, app_name)
-    });
+    };
 
     if let Err(download_err) = download_result {
         error!(
@@ -394,20 +397,21 @@ fn get_user_agent() -> String {
     )
 }
 
-fn download_file(url: &str, dest_path: &Path, app_name: &str) -> Result<()> {
+async fn download_file(url: &str, dest_path: &Path, app_name: &str) -> Result<()> {
     let mut client_builder = Client::builder();
     if url.starts_with("https://www.modelscope.cn") {
         client_builder = client_builder.user_agent(get_user_agent());
     }
     let client = client_builder.build()?;
-    let mut response = client
+    let response = client
         .get(url)
         .send()
+        .await
         .with_context(|| format!("Failed to initiate download from {}", url))?;
 
     let status = response.status();
     if !status.is_success() {
-        let error_body = response.text().unwrap_or_else(|_| {
+        let error_body = response.text().await.unwrap_or_else(|_| {
             String::from("(could not retrieve error body from non-success response)")
         });
         return Err(anyhow!(
@@ -429,18 +433,13 @@ fn download_file(url: &str, dest_path: &Path, app_name: &str) -> Result<()> {
     emit_info!(app_name, "Python Download Progress: 0%");
     let mut downloaded: u64 = 0;
     let mut last_reported_percent: i64 = -1;
-    let mut buffer = [0; 8192];
 
-    loop {
-        let bytes_read = response
-            .read(&mut buffer)
-            .with_context(|| format!("Failed to read chunk from download stream of {}", url))?;
-        if bytes_read == 0 {
-            break;
-        }
-        file.write_all(&buffer[..bytes_read])
+    let mut stream = response.bytes_stream();
+    while let Some(item) = futures_util::StreamExt::next(&mut stream).await {
+        let chunk = item.with_context(|| format!("Failed to read chunk from download stream of {}", url))?;
+        file.write_all(&chunk)
             .with_context(|| format!("Failed to write chunk to file {}", dest_path.display()))?;
-        downloaded += bytes_read as u64;
+        downloaded += chunk.len() as u64;
 
         if total_size > 0 {
             let percent = (100 * downloaded / total_size) as i64;
@@ -454,7 +453,7 @@ fn download_file(url: &str, dest_path: &Path, app_name: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-pub fn setup_python_env(
+pub async fn setup_python_env(
     app_name: String,
     python_version_spec: &str,
 ) -> Result<PathBuf> {
@@ -465,7 +464,7 @@ pub fn setup_python_env(
     );
 
     let (managed_python_exe, managed_python_actual_version) =
-        ensure_python_version(&app_name, python_version_spec)?;
+        ensure_python_version(&app_name, python_version_spec).await?;
 
     emit_info!(
         app_name,
@@ -489,11 +488,11 @@ pub fn setup_python_env(
 #[cfg(target_os = "windows")]
 pub async fn install_requirements(
     app_name: &str,
-    python_exe: &Path,
     requirements: &str,
     project_dir: &Path,
     pip_args: &str,
 ) -> Result<(), Error> {
+    let python_exe = get_python_exe(app_name, false);
     if !python_exe.exists() {
         err!(
             "Python executable not found at {}",
@@ -578,7 +577,6 @@ pub async fn install_requirements(
 #[cfg(not(target_os = "windows"))]
 pub async fn install_requirements(
     _app_name: &str,
-    _python_exe: &Path,
     _requirements: &str,
     _project_dir: &Path,
     _pip_args: &str,
