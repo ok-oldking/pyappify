@@ -1,20 +1,25 @@
+use std::path::Path;
 // filename: src/defender.rs
 use tracing::{debug, error, info};
 use tokio::process::Command;
 use crate::utils::command::is_currently_admin;
+use crate::utils::path::{get_cwd, path_to_abs};
 
-pub async fn is_defender_excluded(folder_path: &str) -> Result<bool, String> {
+pub async fn is_defender_excluded() -> Result<bool, String> {
     #[cfg(not(windows))]
     {
         info!("Not on Windows, skipping Defender check.");
-        let _ = folder_path;
         return Ok(true);
     }
-
+    let cwd_string = path_to_abs(get_cwd().as_ref());
     #[cfg(windows)]
     {
+        let cwd = Path::new(&cwd_string);
         let is_admin = is_currently_admin().await;
-        info!("Checking Windows Defender exclusion for '{}' is_admin {}", folder_path, is_admin);
+        info!(
+            "Checking Windows Defender exclusion for '{}' is_admin {}",
+            cwd_string, is_admin
+        );
         if !is_admin {
             return Ok(true);
         }
@@ -44,25 +49,24 @@ pub async fn is_defender_excluded(folder_path: &str) -> Result<bool, String> {
                 return Err(err_msg);
             }
         };
-        debug!("defender exclusions {}", exclusions);
-        Ok(exclusions
+        let excluded = exclusions
             .lines()
-            .any(|line| line.eq_ignore_ascii_case(folder_path)))
+            .any(|excluded_line| cwd.ancestors().any(|p| p.as_os_str().eq_ignore_ascii_case(excluded_line)));
+
+        debug!("defender exclusions {} \nexcluded:{}", exclusions, excluded);
+        Ok(excluded)
     }
 }
 
-pub async fn ensure_defender_exclusion(folder_path: &str) -> Result<(), String> {
-    if is_defender_excluded(folder_path).await? {
-        info!(
-            "'{}' is already excluded or check is not applicable.",
-            folder_path
-        );
-        return Ok(());
-    }
 
-    info!("'{}' not found in exclusion list. Adding it...", folder_path);
+#[tauri::command]
+pub async fn add_defender_exclusion() -> Result<(), String> {
+    let cwd_string = path_to_abs(get_cwd().as_ref());
+    let cwd = cwd_string.as_str();
+
+    info!("'{}' not found in exclusion list. Adding it...", cwd);
     let add_output = Command::new("powershell")
-        .args(["-Command", "Add-MpPreference", "-ExclusionPath", folder_path])
+        .args(["-Command", "Add-MpPreference", "-ExclusionPath", cwd])
         .output()
         .await;
 
@@ -71,7 +75,7 @@ pub async fn ensure_defender_exclusion(folder_path: &str) -> Result<(), String> 
             if output.status.success() {
                 info!(
                     "Successfully added '{}' to the exclusion list.",
-                    folder_path
+                    cwd
                 );
                 Ok(())
             } else {

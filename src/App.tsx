@@ -70,6 +70,7 @@ interface App {
     installed: boolean;
     profiles: Profile[];
     current_profile: string;
+    show_add_defender: boolean;
 }
 
 interface ConfigItemFromRust {
@@ -191,6 +192,8 @@ function App() {
     const [appToDelete, setAppToDelete] = useState<string | null>(null);
     const [checkingUpdateForApp, setCheckingUpdateForApp] = useState<string | null>(null);
     const [appVersion, setAppVersion] = useState('');
+    const [hiddenDefenderButtons, setHiddenDefenderButtons] = useState<Set<string>>(new Set());
+    const [addingDefenderExclusionForApp, setAddingDefenderExclusionForApp] = useState<string | null>(null);
 
 
     useEffect(() => {
@@ -755,6 +758,28 @@ function App() {
         setCheckingUpdateForApp(null);
     };
 
+    const handleAddDefenderExclusion = async (appName: string) => {
+        clearMessages();
+        setAppActionLoading(prev => ({...prev, [appName]: true}));
+        setAddingDefenderExclusionForApp(appName);
+
+        await invokeTauriCommandWrapper<void>(
+            "add_defender_exclusion",
+            {appName},
+            () => {
+                updateStatus({info: t('defenderExclusionAdded', {appName})});
+                setHiddenDefenderButtons(prev => new Set(prev).add(appName));
+            },
+            (errorMessage, rawError) => {
+                console.error(`Failed to add defender exclusion for ${appName}:`, rawError);
+                updateStatus({error: t('failedToAddExclusion', {errorMessage})});
+            }
+        );
+
+        setAddingDefenderExclusionForApp(null);
+        setAppActionLoading(prev => ({...prev, [appName]: false}));
+    };
+
 
     let pageContent;
 
@@ -1070,6 +1095,7 @@ function App() {
 
                             const isVersionChangeLoading = isThisAppLoadingAction && startingAppName === app.name && isVersionChangeProcessRunning;
                             const isProfileChangeLoading = isThisAppLoadingAction && startingAppName === app.name && isProfileChangeProcessRunning;
+                            const isAddingExclusion = isThisAppLoadingAction && addingDefenderExclusionForApp === app.name;
 
 
                             return (
@@ -1170,6 +1196,21 @@ function App() {
                                                         disabled={disableRowActions || (isThisAppLoadingAction && startingAppName === app.name && isInstallProcessRunning)}
                                                     >
                                                         {(isThisAppLoadingAction && startingAppName === app.name && isInstallProcessRunning) ? t("Installing...") : t("Install")}
+                                                    </Button>
+                                                )}
+
+                                                {app.show_add_defender && !hiddenDefenderButtons.has(app.name) && (
+                                                    <Button
+                                                        variant="outlined"
+                                                        color="secondary"
+                                                        size="small"
+                                                        startIcon={isAddingExclusion ? <CircularProgress size={16}
+                                                                                                         color="inherit"/> :
+                                                            <Build/>}
+                                                        onClick={() => handleAddDefenderExclusion(app.name)}
+                                                        disabled={disableRowActions}
+                                                    >
+                                                        {isAddingExclusion ? t("Adding...") : t("Add Defender Exclusion")}
                                                     </Button>
                                                 )}
 

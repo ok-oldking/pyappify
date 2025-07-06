@@ -29,7 +29,6 @@ pub struct App {
     pub installed: bool,
     #[serde(default)]
     pub profiles: Vec<Profile>,
-    #[serde(skip)]
     #[serde(default)]
     pub show_add_defender: bool,
 }
@@ -65,7 +64,7 @@ pub struct Profile {
     #[serde(default)]
     pub use_pythonw: Option<bool>,
     #[serde(default)]
-    pub requires_defender_whitelist: Option<bool>,
+    pub show_add_defender: Option<bool>,
     #[serde(default)]
     pub requirements: String,
     #[serde(default, rename = "PYTHONPATH")]
@@ -87,8 +86,8 @@ impl Profile {
         self.use_pythonw.unwrap_or(false)
     }
 
-    pub fn requires_defender_whitelist(&self) -> bool {
-        self.requires_defender_whitelist.unwrap_or(false)
+    pub fn show_add_defender(&self) -> bool {
+        self.show_add_defender.unwrap_or(false)
     }
 }
 
@@ -116,8 +115,8 @@ fn apply_profile_inheritance(config: &mut App) {
             if profile.use_pythonw.is_none() {
                 profile.use_pythonw = first_profile.use_pythonw;
             }
-            if profile.requires_defender_whitelist.is_none() {
-                profile.requires_defender_whitelist = first_profile.requires_defender_whitelist;
+            if profile.show_add_defender.is_none() {
+                profile.show_add_defender = first_profile.show_add_defender;
             }
             if profile.pip_args.is_empty() {
                 profile.pip_args = first_profile.pip_args.clone();
@@ -240,16 +239,14 @@ pub(crate) async fn load_app_config_from_json(app_name: &str) -> anyhow::Result<
             }
 
             let profile = app.get_current_profile_settings();
-            if profile.requires_defender_whitelist() {
-                let app_base_path = get_app_base_path(&app.name);
-                let app_base_path_str = app_base_path.display().to_string();
-                match is_defender_excluded(&app_base_path_str).await {
+            debug!("app {} current profile: {:?}", app.name, profile);
+            if profile.show_add_defender() {
+                match is_defender_excluded().await {
                     Ok(excluded) => {
-                        if !excluded {
-                            app.show_add_defender = true;
-                        }
+                        app.show_add_defender = !excluded;
                     }
                     Err(e) => {
+                        app.show_add_defender = false;
                         warn!("Could not check defender exclusion for {}: {}", app.name, e);
                     }
                 }

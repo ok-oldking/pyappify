@@ -6,8 +6,9 @@ import LanguageDetector from "i18next-browser-languagedetector";
 const resources = {
     en: {
         translation: {
-            // English uses keys as-is, no translations needed here.
             "appMadeWith": "App made with {{name}}",
+            "defenderExclusionAdded": "Defender exclusion for '{{appName}}' added successfully.",
+            "failedToAddExclusion": "Failed to add exclusion: {{errorMessage}}",
         },
     },
     zh: {
@@ -32,6 +33,7 @@ const resources = {
             "Stopping...": "正在停止...",
             "Console": "控制台",
             "Start App": "启动应用",
+            "Add Defender Exclusion": "添加Defender白名单",
             "Starting...": "正在启动...",
             "Install": "安装",
             "Installing...": "正在安装...",
@@ -98,6 +100,7 @@ const resources = {
             "Profile": "配置",
             "Confirm & Install": "确认并安装",
             "Starting Install...": "开始安装...",
+            "Adding...": "添加中...",
             "No profiles available or configured for this app. Please check the app's configuration (ok.yml).": "此应用没有可用或配置的档案。请检查应用的配置 (ok.yml)。",
             "Back": "返回",
             "Please select a profile.": "请选择一个配置。",
@@ -109,7 +112,11 @@ const resources = {
             " (Current)": " (当前)",
             "Initiating...": "正在初始化...",
             "Please select a different profile.": "请选择一个不同的配置。",
-            "No profiles available for this app. This view should not be reachable in this state.": "此应用没有可用的配置。此视图不应在此状态下可达。"
+            "No profiles available for this app. This view should not be reachable in this state.": "此应用没有可用的配置。此视图不应在此状态下可达。",
+
+            // Defender Exclusion
+            "defenderExclusionAdded": "已成功为 '{{appName}}' 添加 Defender 白名单。",
+            "failedToAddExclusion": "添加白名单失败: {{errorMessage}}",
         }
     }
 };
@@ -121,7 +128,7 @@ i18n
         resources,
         fallbackLng: "en",
         interpolation: {
-            escapeValue: false, // not needed for react as it escapes by default
+            escapeValue: false,
         },
         detection: {
             order: ['localStorage', 'navigator'],

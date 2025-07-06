@@ -9,10 +9,11 @@ mod submodule;
 mod utils;
 mod app;
 
-use crate::app_service::{load_apps, setup_app, start_app, stop_app};
-use crate::config_manager::init_config_manager;
+use crate::app_service::{delete_app, get_update_notes, load_apps, setup_app, start_app, stop_app, update_to_version};
+use crate::config_manager::{get_config_payload, init_config_manager, save_configuration, update_config_item};
 use crate::utils::logger::LoggerBuilder;
 use crate::utils::window;
+use crate::utils::defender::add_defender_exclusion;
 use std::env;
 use tauri::{Manager};
 use tracing::info;
@@ -179,12 +180,13 @@ pub async fn run() {
                 stop_app,
                 load_apps,
                 setup_app,
-                app_service::delete_app,
-                app_service::get_update_notes,
-                app_service::update_to_version,
-                config_manager::update_config_item,
-                config_manager::save_configuration,
-                config_manager::get_config_payload,
+                delete_app,
+                get_update_notes,
+                update_to_version,
+                update_config_item,
+                save_configuration,
+                get_config_payload,
+                add_defender_exclusion,
             ])
             .run(tauri::generate_context!())
             .expect("error while running tauri application");
