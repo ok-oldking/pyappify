@@ -47,6 +47,7 @@ chrono = { version = "0.4", features = ["serde"] }
 sys-locale = "0.3.2"
 zip = "4.2.0"
 futures-util = "0.3.31"
+windows = "0.61.3"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"

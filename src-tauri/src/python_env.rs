@@ -13,7 +13,6 @@ use std::io::{Write};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use tar::Archive;
-use tokio::process::Command;
 use tracing::{error, info, warn};
 use walkdir::WalkDir;
 use crate::utils::locale::get_locale;

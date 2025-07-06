@@ -1,12 +1,12 @@
-use std::ffi::OsStr;
-use std::path::Path;
 // src/command.rs
+use std::ffi::OsStr;
 use crate::utils::error::Error;
 use crate::{emit_error, emit_info, ensure_some, err};
 use std::process::{ExitStatus, Stdio};
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 use tracing::{debug, error, info};
+use windows::Win32::UI::Shell::IsUserAnAdmin;
 
 pub async fn run_command_and_stream_output(
     mut command: Command,
@@ -128,14 +128,8 @@ pub fn command_to_string(command: &std::process::Command) -> String {
 
 
 #[cfg(windows)]
-pub async fn is_currently_admin() -> bool {
-    let mut cmd = new_cmd("net");
-    cmd.stdout(Stdio::null())
-    .stderr(Stdio::null())
-    .status()
-    .await
-    .map(|s| s.success())
-    .unwrap_or(false)
+pub fn is_admin() -> bool {
+    unsafe { IsUserAnAdmin().as_bool() }
 }
 
 
@@ -149,7 +143,7 @@ pub fn new_cmd<S: AsRef<OsStr>>(executable: S) -> Command{
 }
 
 #[cfg(not(windows))]
-pub async fn is_currently_admin() -> bool {
+pub async fn is_admin() -> bool {
     if let Ok(output) = Command::new("id").arg("-u").output().await {
         if output.status.success() {
             return String::from_utf8_lossy(&output.stdout).trim() == "0";

@@ -1,8 +1,7 @@
 use std::path::Path;
 // filename: src/defender.rs
 use tracing::{debug, error, info};
-use tokio::process::Command;
-use crate::utils::command::{is_currently_admin, new_cmd};
+use crate::utils::command::{is_admin, new_cmd};
 use crate::utils::path::{get_cwd, path_to_abs};
 
 pub async fn is_defender_excluded() -> Result<bool, String> {
@@ -15,7 +14,7 @@ pub async fn is_defender_excluded() -> Result<bool, String> {
     #[cfg(windows)]
     {
         let cwd = Path::new(&cwd_string);
-        let is_admin = is_currently_admin().await;
+        let is_admin = is_admin();
         info!(
             "Checking Windows Defender exclusion for '{}' is_admin {}",
             cwd_string, is_admin

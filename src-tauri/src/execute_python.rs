@@ -1,5 +1,5 @@
 //src/execute_python.rs
-use crate::utils::command::{command_to_string, is_currently_admin, run_command_and_stream_output};
+use crate::utils::command::{command_to_string, is_admin, run_command_and_stream_output};
 use crate::utils::error::Error;
 use crate::utils::path::{get_python_dir, get_python_exe, path_to_abs};
 use crate::{emit_error, emit_error_finish, emit_info, emit_success_finish, err};
@@ -295,7 +295,7 @@ pub async fn run_python_script(
     let envs_to_remove_owned = envs_to_remove;
 
     tokio::spawn(async move {
-        let needs_elevation = as_admin && !is_currently_admin().await;
+        let needs_elevation = as_admin && !is_admin();
 
         if needs_elevation {
             emit_info!(app_name_owned, "Elevation required, using admin execution.");

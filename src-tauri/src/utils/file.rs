@@ -3,7 +3,6 @@ use std::{fs, io};
 use tracing::{debug, info};
 use walkdir::WalkDir;
 use anyhow::{Context, Result};
-use tokio::process::Command;
 use crate::utils::command::new_cmd;
 
 pub fn copy_dir_recursive_excluding_sync(
