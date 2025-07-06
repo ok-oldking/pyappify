@@ -18,6 +18,7 @@ use tracing::{error, info, warn};
 use walkdir::WalkDir;
 use crate::utils::locale::get_locale;
 use zip::ZipArchive;
+use crate::utils::command::new_cmd;
 
 const KNOWN_PATCHES: [(&str, &str, &str, &str); 7] = [
     ("3.13", "3.13.5", "https://www.python.org/ftp/python/3.13.5/python-3.13.5-amd64.zip", "https://mirrors.huaweicloud.com/python/3.13.5/python-3.13.5-amd64.zip"),
@@ -518,7 +519,7 @@ pub async fn install_requirements(
         (cache_dir, index_url)
     };
 
-    let mut pip_install_cmd = Command::new(python_exe);
+    let mut pip_install_cmd = new_cmd(python_exe);
     pip_install_cmd
         .current_dir(project_dir)
         .arg("-m")

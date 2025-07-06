@@ -1,3 +1,5 @@
+use std::ffi::OsStr;
+use std::path::Path;
 // src/command.rs
 use crate::utils::error::Error;
 use crate::{emit_error, emit_info, ensure_some, err};
@@ -127,14 +129,23 @@ pub fn command_to_string(command: &std::process::Command) -> String {
 
 #[cfg(windows)]
 pub async fn is_currently_admin() -> bool {
-    Command::new("net")
-        .arg("session")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
+    let mut cmd = new_cmd("net");
+    cmd.stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .await
+    .map(|s| s.success())
+    .unwrap_or(false)
+}
+
+
+pub fn new_cmd<S: AsRef<OsStr>>(executable: S) -> Command{
+    let mut command = Command::new(executable);
+    #[cfg(windows)]
+    {
+        command.creation_flags(0x08000000);
+    }
+    command
 }
 
 #[cfg(not(windows))]

@@ -4,6 +4,7 @@ use tracing::{debug, info};
 use walkdir::WalkDir;
 use anyhow::{Context, Result};
 use tokio::process::Command;
+use crate::utils::command::new_cmd;
 
 pub fn copy_dir_recursive_excluding_sync(
     src: &Path,
@@ -114,7 +115,7 @@ pub async fn delete_dir_if_exist(working_dir_path: &Path) -> Result<()> {
 
         #[cfg(windows)]
         {
-            let status = Command::new("cmd")
+            let status = new_cmd("cmd")
                 .args([
                     "/C",
                     "rd",

@@ -2,7 +2,7 @@ use std::path::Path;
 // filename: src/defender.rs
 use tracing::{debug, error, info};
 use tokio::process::Command;
-use crate::utils::command::is_currently_admin;
+use crate::utils::command::{is_currently_admin, new_cmd};
 use crate::utils::path::{get_cwd, path_to_abs};
 
 pub async fn is_defender_excluded() -> Result<bool, String> {
@@ -23,7 +23,7 @@ pub async fn is_defender_excluded() -> Result<bool, String> {
         if !is_admin {
             return Ok(true);
         }
-        let get_output = Command::new("powershell")
+        let get_output = new_cmd("powershell")
             .args([
                 "-Command",
                 "Get-MpPreference | Select-Object -ExpandProperty ExclusionPath",
@@ -65,7 +65,7 @@ pub async fn add_defender_exclusion() -> Result<(), String> {
     let cwd = cwd_string.as_str();
 
     info!("'{}' not found in exclusion list. Adding it...", cwd);
-    let add_output = Command::new("powershell")
+    let add_output = new_cmd("powershell")
         .args(["-Command", "Add-MpPreference", "-ExclusionPath", cwd])
         .output()
         .await;
