@@ -664,7 +664,7 @@ pub async fn get_commit_messages_for_version_diff(
 
         let mut messages = Vec::new();
         let mut seen_messages = HashSet::new();
-        for oid_result in revwalk {
+        'revwalk: for oid_result in revwalk {
             let oid = oid_result.context("Error iterating revwalk")?;
             let commit = repo
                 .find_commit(oid)
@@ -674,12 +674,17 @@ pub async fn get_commit_messages_for_version_diff(
                 continue;
             }
 
-            if let Some(message) = commit.summary() {
-                let msg_str = message.to_string();
-                if seen_messages.insert(msg_str.clone()) {
-                    messages.push(msg_str);
-                    if messages.len() >= 10 {
-                        break;
+            if let Some(full_message) = commit.message() {
+                for line in full_message.lines() {
+                    let trimmed_line = line.trim();
+                    if !trimmed_line.is_empty() {
+                        let msg_str = trimmed_line.to_string();
+                        if seen_messages.insert(msg_str.clone()) {
+                            messages.push(msg_str);
+                            if messages.len() >= 10 {
+                                break 'revwalk;
+                            }
+                        }
                     }
                 }
             }
@@ -699,12 +704,17 @@ pub async fn get_commit_messages_for_version_diff(
                     target_commit_oid
                 )
             })?;
-            if let Some(summary) = target_commit.summary() {
+            if let Some(full_message) = target_commit.message() {
                 info!(
                     "Diff is empty, using target commit's message: {}",
-                    summary
+                    full_message.lines().next().unwrap_or("")
                 );
-                messages.push(summary.to_string());
+                for line in full_message.lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        messages.push(trimmed.to_string());
+                    }
+                }
             }
         }
 
