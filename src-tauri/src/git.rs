@@ -1,21 +1,20 @@
 //git.rs
 use crate::{emit_info, emit_update_info};
 use anyhow::{Context, Result};
-use git2::{
-    build::CheckoutBuilder, Cred, Error as GitError, ErrorClass, ErrorCode, FetchOptions,
-    ObjectType, Oid, Progress, ProxyOptions, RemoteCallbacks, Repository, Sort,
-};
+use git2::{build::CheckoutBuilder, opts, Cred, Error as GitError, ErrorClass, ErrorCode, FetchOptions, ObjectType, Oid, Progress, ProxyOptions, RemoteCallbacks, Repository, Sort};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokio::task;
 use tracing::{debug, info, warn};
-
 use crate::app::App;
 use crate::submodule;
+
+static GIT_CONFIG_INITIALIZED: OnceLock<()> = OnceLock::new();
 
 fn configure_credentials(callbacks: &mut RemoteCallbacks<'static>, url: Option<&str>) {
     if let Some(url_str) = url {
@@ -141,6 +140,14 @@ fn get_sorted_tags_by_time(repo: &Repository) -> Result<Vec<String>> {
 }
 
 pub fn open_repository(repo_path: &Path) -> Result<Repository> {
+    GIT_CONFIG_INITIALIZED.get_or_init(|| {
+        // This block is now guaranteed to run exactly once.
+        unsafe {
+            // We call the function and ignore the Result, so it won't panic.
+            let _ = opts::set_verify_owner_validation(false);
+        }
+        debug!("git2 owner validation disabled for this process.");
+    });
     Repository::open(repo_path)
         .with_context(|| format!("Failed to open local repo at {}", repo_path.display()))
 }

@@ -160,6 +160,7 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
                 app.current_version = Some(current);
             }
             Err(e) => {
+                app.installed = false;
                 warn!(
                     "Failed to get repository versions for {}: {}",
                     app.name, e
