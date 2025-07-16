@@ -150,18 +150,23 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
         app.name
     );
     let repo_path = path::get_app_repo_path(&app.name);
-    match git::get_tags_and_current_version(&app.name, repo_path.clone()).await {
-        Ok((versions, current)) => {
-            app.available_versions = versions;
-            app.current_version = Some(current);
-        }
-        Err(e) => {
-            warn!(
-                "Failed to get repository versions for {}: {}",
-                app.name, e
-            );
-        }
-    };
+    if app.installed && !repo_path.exists() {
+        warn!("Repository for app '{}' is missing. Marking as not installed.", app_name);
+        app.installed = false;
+    } else {
+        match git::get_tags_and_current_version(&app.name, repo_path.clone()).await {
+            Ok((versions, current)) => {
+                app.available_versions = versions;
+                app.current_version = Some(current);
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to get repository versions for {}: {}",
+                    app.name, e
+                );
+            }
+        };
+    }
 
     load_app_details(&mut app).await?;
     save_app_config_to_json(&app).await?;

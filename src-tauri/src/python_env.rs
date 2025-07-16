@@ -566,10 +566,7 @@ pub async fn install_requirements(
     }
 
     command::run_command_and_stream_output(pip_install_cmd, app_name, &pip_install_desc).await?;
-    let mut keep_scripts:Vec<String> = Vec::new();
-    keep_scripts.push("adb.exe".to_string());
-    keep_scripts.push("git.exe".to_string());
-    clean_python_install(app_name, get_python_dir(app_name).as_ref(), keep_scripts)?;
+    clean_python_install(app_name, get_python_dir(app_name).as_ref())?;
     emit_info!(
         app_name,
         "Successfully installed requirements from '{}'.",
@@ -652,45 +649,14 @@ fn get_python_version_from_exe(python_exe_path: &Path) -> Result<String> {
 
 pub fn clean_python_install(
     app_name: &str,
-    path: &Path,
-    keep_scripts: Vec<String>,
+    path: &Path
 ) -> io::Result<()> {
-    let folders_to_delete = ["Doc", "libs", "tcl", "include", "share"];
+    let folders_to_delete = ["Doc", "libs", "include", "share"];
     for folder_name in folders_to_delete {
         let folder_path = path.join(folder_name);
         if folder_path.is_dir() {
             fs::remove_dir_all(&folder_path)?;
             emit_info!(app_name, "Cleaned up folder {}", folder_path.display());
-        }
-    }
-
-    let should_keep = |file_name: &str| -> bool {
-        keep_scripts.iter().any(|pattern| {
-            if let Some((prefix, suffix)) = pattern.split_once('*') {
-                file_name.starts_with(prefix) && file_name.ends_with(suffix)
-            } else {
-                file_name == pattern.as_str()
-            }
-        })
-    };
-
-    let scripts_path = path.join("Scripts");
-    if scripts_path.is_dir() {
-        for entry in fs::read_dir(&scripts_path)? {
-            let entry = entry?;
-            let file_path = entry.path();
-
-            if file_path.is_file() {
-                let file_name = entry.file_name().to_string_lossy().to_string();
-                if !should_keep(&file_name) {
-                    fs::remove_file(&file_path)?;
-                    emit_info!(
-                        app_name,
-                        "clean_python_install deleting {:?}",
-                        file_path
-                    );
-                }
-            }
         }
     }
 
@@ -709,17 +675,6 @@ pub fn clean_python_install(
                         app_name,
                         "Cleaned up temp directory {}",
                         file_path.display()
-                    );
-                }
-            } else if file_path.is_file() && file_path.extension().map_or(false, |ext| ext == "exe")
-            {
-                let file_name = entry.file_name().to_string_lossy().to_string();
-                if !should_keep(&file_name) {
-                    fs::remove_file(file_path)?;
-                    emit_info!(
-                        app_name,
-                        "clean_python_install deleting {:?}",
-                        file_path
                     );
                 }
             }
