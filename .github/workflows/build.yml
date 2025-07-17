@@ -57,10 +57,6 @@ jobs:
           $manifest | ConvertTo-Json -Depth 100 | Set-Content $manifestPath
         shell: pwsh
 
-      - name: Install 7-Zip
-        run: choco install 7zip
-        if: matrix.platform == 'windows-latest'
-
       - name: build-tauri
         run: pnpm tauri build
 
