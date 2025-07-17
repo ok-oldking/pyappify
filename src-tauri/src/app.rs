@@ -1,4 +1,4 @@
-// app.rs
+// src/app.rs
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ use crate::utils::defender::is_defender_excluded;
 
 pub const YML_FILE_NAME: &str = "pyappify.yml";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct App {
     pub name: String,
     #[serde(default)]

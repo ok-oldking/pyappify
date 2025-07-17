@@ -8,7 +8,6 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
-use futures::future::join_all;
 use once_cell::sync::Lazy;
 use crate::runas;
 use std::{collections::HashMap, fs, path::{Path, PathBuf}, sync::Arc};
@@ -16,7 +15,6 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 use tokio::task;
-use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 use crate::app::App;
@@ -153,20 +151,6 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
     if app.installed && !repo_path.exists() {
         warn!("Repository for app '{}' is missing. Marking as not installed.", app_name);
         app.installed = false;
-    } else {
-        match git::get_tags_and_current_version(&app.name, repo_path.clone()).await {
-            Ok((versions, current)) => {
-                app.available_versions = versions;
-                app.current_version = Some(current);
-            }
-            Err(e) => {
-                app.installed = false;
-                warn!(
-                    "Failed to get repository versions for {}: {}",
-                    app.name, e
-                );
-            }
-        };
     }
 
     load_app_details(&mut app).await?;
@@ -181,7 +165,7 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
         if !apps_map.is_empty() {
             info!("App already loaded. Triggering update from disk.");
             drop(apps_map);
-            update_apps_from_disk().await?;
+            emit_apps().await;
             return Ok(get_apps_as_vec().await);
         }
     }
@@ -197,56 +181,66 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
     info!("Finished loading app details. {} {}", app.name, app.installed);
 
     APPS.lock().await.insert(app.name.clone(), app);
-    update_apps_from_disk().await?;
     emit_apps().await;
+
+    if update_apps_from_disk().await? {
+        emit_apps().await;
+    } else {
+        info!("Not emitting apps from disk because no changes detected from git.");
+    }
+
     Ok(get_apps_as_vec().await)
 }
 
-async fn update_apps_from_disk() -> Result<(), Error> {
-    let app_names_for_details: Vec<String> = APPS.lock().await.keys().cloned().collect();
+async fn update_apps_from_disk() -> Result<bool, Error> {
+    let app_names: Vec<String> = APPS.lock().await.keys().cloned().collect();
     info!(
-        "Phase 2: Loading full app details (git info, yml) for {} apps...",
-        app_names_for_details.len()
+        "Updating full app details (git info, yml) for {} app(s)...",
+        app_names.len()
     );
+    let mut was_modified = false;
 
-    let mut load_detail_tasks: Vec<JoinHandle<Result<(), Error>>> = Vec::new();
-    for app_name_for_detail_load in app_names_for_details {
-        let task_app_name = app_name_for_detail_load.clone();
-        load_detail_tasks.push(tokio::spawn(async move {
-            let app_dir_lock = get_app_lock(&task_app_name).await;
-            let _guard = app_dir_lock.lock().await;
-            let full_load_logic = async {
-                let mut app = get_app_by_name(&task_app_name).await?;
-                let repo_path = path::get_app_repo_path(&app.name);
+    for app_name in app_names {
+        let app_dir_lock = get_app_lock(&app_name).await;
+        let _guard = app_dir_lock.lock().await;
+
+        let result: Result<_, Error> = async {
+            let mut app = get_app_by_name(&app_name).await?;
+            let original_app = app.clone();
+
+            let repo_path = path::get_app_repo_path(&app.name);
+            if app.installed && repo_path.exists() {
                 let (versions, current) =
-                    git::get_tags_and_current_version(&app.name, repo_path.clone()).await?;
+                    git::get_tags_and_current_version(&app.name, repo_path).await?;
                 app.available_versions = versions;
                 app.current_version = Some(current);
-                load_app_details(&mut app).await?;
-                save_app_config_to_json(&app).await?;
-                let mut apps = APPS.lock().await;
-                apps.insert(task_app_name.clone(), app);
-                Ok(())
-            };
-            full_load_logic.await
-        }));
-    }
-
-    let results = join_all(load_detail_tasks).await;
-    for result in results {
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                error!("App detail load task resulted in an error: {:?}", e);
             }
-            Err(join_error) => {
-                error!("App detail load task panicked: {:?}", join_error);
+
+            load_app_details(&mut app).await?;
+
+            if app != original_app {
+                save_app_config_to_json(&app).await?;
+                APPS.lock().await.insert(app_name.clone(), app);
+                return Ok(true);
+            }
+
+            Ok(false)
+        }
+            .await;
+
+        match result {
+            Ok(modified) => {
+                if modified {
+                    was_modified = true;
+                }
+            }
+            Err(e) => {
+                error!("Failed to update details for app '{}': {:?}", app_name, e);
             }
         }
     }
 
-    emit_apps().await;
-    Ok(())
+    Ok(was_modified)
 }
 
 #[tauri::command]

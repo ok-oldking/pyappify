@@ -63,6 +63,5 @@ jobs:
       - name: Update Release Assets
         uses: softprops/action-gh-release@v2.0.5
         with:
-          files: |
-            src-tauri\target\release\bundle\nsis\*.exe
+          files: pyappify_dist/*
         if: matrix.platform == 'windows-latest'
