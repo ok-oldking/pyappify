@@ -27,4 +27,3 @@ src-tauri/dev_cwd/data
 *.njsproj
 *.sln
 *.sw?
-/src-tauri/data

@@ -24,10 +24,21 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": "nsis",
     "icon": [
       "icons/icon.ico",
       "icons/icon.png"
-    ]
+    ],
+    "resources": [
+      "data"
+    ],
+    "windows": {
+      "nsis": {
+        "template": "nsis/installer.nsi",
+        "displayLanguageSelector": true,
+        "installerIcon": "icons/icon.ico",
+        "languages": ["SimpChinese", "TradChinese", "English", "Korean", "Japanese"]
+      }
+    }
   }
 }

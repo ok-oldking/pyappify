@@ -10,7 +10,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use futures::future::join_all;
 use once_cell::sync::Lazy;
-use runas;
+use crate::runas;
 use std::{collections::HashMap, fs, path::{Path, PathBuf}, sync::Arc};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::{AppHandle, Manager};

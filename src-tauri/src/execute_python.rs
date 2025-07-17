@@ -4,7 +4,7 @@ use crate::utils::error::Error;
 use crate::utils::path::{get_python_dir, get_python_exe, path_to_abs};
 use crate::{emit_error, emit_error_finish, emit_info, emit_success_finish, err};
 use anyhow::anyhow;
-use runas;
+use crate::runas;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

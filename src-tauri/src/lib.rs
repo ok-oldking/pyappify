@@ -8,6 +8,7 @@ mod python_env;
 mod submodule;
 mod utils;
 mod app;
+mod runas;
 
 use crate::app_service::{delete_app, get_update_notes, load_apps, setup_app, start_app, stop_app, update_to_version};
 use crate::config_manager::{get_config_payload, init_config_manager, save_configuration, update_config_item};
@@ -144,7 +145,20 @@ pub async fn run() {
         }
     }
 
+    // This must be set before the tauri::Builder is created.
+    if let Ok(cwd) = std::env::current_dir() {
+        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", cwd);
+    }
+
+    let log_level = if cfg!(debug_assertions) { "debug" } else { "info" };
+    let _ = LoggerBuilder::new()
+        .log_dir("logs")
+        .file_prefix("app")
+        .default_level(log_level)
+        .init();
+    info!("Log initialized");
     if has_cli_command() {
+        info!("running in cli");
         let context = tauri::generate_context!();
         let app = tauri::Builder::default()
             .build(context)
@@ -152,13 +166,7 @@ pub async fn run() {
         init_config_manager(app.handle());
         handle_command_line().await;
     } else {
-        let log_level = if cfg!(debug_assertions) { "debug" } else { "info" };
-        let _ = LoggerBuilder::new()
-            .log_dir("logs")
-            .file_prefix("app")
-            .default_level(log_level)
-            .init();
-        info!("Log initialized");
+        info!("running with tauri ui");
         tauri::Builder::default()
             .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
                 info!("tauri_plugin_single_instance args:{:?} cwd:{}", args, cwd);

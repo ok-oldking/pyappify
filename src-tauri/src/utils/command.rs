@@ -6,7 +6,7 @@ use std::process::{ExitStatus, Stdio};
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 use tracing::{debug, error, info};
-use windows::Win32::UI::Shell::IsUserAnAdmin;
+use windows_sys::Win32::UI::Shell::IsUserAnAdmin;
 
 pub async fn run_command_and_stream_output(
     mut command: Command,
@@ -129,7 +129,7 @@ pub fn command_to_string(command: &std::process::Command) -> String {
 
 #[cfg(windows)]
 pub fn is_admin() -> bool {
-    unsafe { IsUserAnAdmin().as_bool() }
+    unsafe { IsUserAnAdmin().is_positive() }
 }
 
 
