@@ -165,7 +165,9 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
         if !apps_map.is_empty() {
             info!("App already loaded. Triggering update from disk.");
             drop(apps_map);
-            emit_apps().await;
+            if update_apps_from_disk().await? {
+                emit_apps().await;
+            }
             return Ok(get_apps_as_vec().await);
         }
     }
@@ -419,6 +421,7 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<(), Error> 
             "App config json saved successfully after setup {} installed {}",
             app_to_save.name, app_to_save.installed
         );
+        update_apps_from_disk().await?; 
         emit_apps().await;
     } else {
         warn!(
