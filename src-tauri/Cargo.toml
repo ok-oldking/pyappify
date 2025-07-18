@@ -54,6 +54,7 @@ windows-sys = { version="0.60.2" ,features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+dashmap = "7.0.0-rc2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"

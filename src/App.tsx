@@ -186,7 +186,6 @@ function App() {
     const [selectedNewProfileName, setSelectedNewProfileName] = useState<string>("");
     const [isProfileChangeProcessRunning, setIsProfileChangeProcessRunning] = useState<boolean>(false);
     const [profileChangeData, setProfileChangeData] = useState<{ appName: string; newProfile: string } | null>(null);
-    const initialAutoStartDoneRef = useRef(false);
 
     const [isConfirmDeleteDialogOpen, setConfirmDeleteDialogOpen] = useState(false);
     const [appToDelete, setAppToDelete] = useState<string | null>(null);
@@ -294,21 +293,6 @@ function App() {
             console.log("Received apps event:", event);
             const newApps = event.payload;
             setApps(newApps);
-
-            if (!initialAutoStartDoneRef.current && newApps && newApps.length > 0) {
-                initialAutoStartDoneRef.current = true;
-                const appToAutoStart = newApps.find(app => {
-                    if (!app.installed || app.running || !app.current_version) {
-                        return false;
-                    }
-                    const hasUpdate = app.available_versions.some(v => compareVersions(v, app.current_version!) > 0);
-                    return !hasUpdate;
-                });
-
-                if (appToAutoStart) {
-                    handleStartApp(appToAutoStart.name);
-                }
-            }
 
             const newSelectedTargets: Record<string, string> = {};
             newApps.forEach(app => {

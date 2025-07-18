@@ -1,19 +1,22 @@
 //git.rs
-use crate::{emit_info, emit_update_info};
+use crate::{app::App, emit_info, emit_update_info, submodule};
 use anyhow::{Context, Result};
-use git2::{build::CheckoutBuilder, opts, Cred, Error as GitError, ErrorClass, ErrorCode, FetchOptions, ObjectType, Oid, Progress, ProxyOptions, RemoteCallbacks, Repository, Sort};
+use dashmap::DashMap;
+use git2::{
+    build::CheckoutBuilder, opts, Cred, Error as GitError, ErrorClass, ErrorCode, FetchOptions,
+    ObjectType, Oid, Progress, ProxyOptions, RemoteCallbacks, Repository, Sort,
+};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use tokio::task;
+use std::sync::{Arc, OnceLock};
+use tokio::{sync::Mutex, task};
 use tracing::{debug, info, warn};
-use crate::app::App;
-use crate::submodule;
 
+static REPO_LOCKS: Lazy<DashMap<PathBuf, Arc<Mutex<()>>>> = Lazy::new(DashMap::new);
 static GIT_CONFIG_INITIALIZED: OnceLock<()> = OnceLock::new();
 
 fn configure_credentials(callbacks: &mut RemoteCallbacks<'static>, url: Option<&str>) {
@@ -168,6 +171,12 @@ pub async fn get_tags_and_current_version(
     app_name: &str,
     repo_path: PathBuf,
 ) -> Result<(Vec<String>, String)> {
+    let lock_arc = REPO_LOCKS
+        .entry(repo_path.clone())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone();
+    let _guard = lock_arc.lock().await;
+
     let app_name_for_task = app_name.to_string();
     let repo_path_for_task = repo_path.clone();
 
@@ -275,6 +284,13 @@ fn format_bytes(bytes: usize) -> String {
 
 pub async fn ensure_repository(app: &App) -> Result<()> {
     let repo_path = app.get_repo_path();
+
+    let lock_arc = REPO_LOCKS
+        .entry(repo_path.clone())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone();
+    let _guard = lock_arc.lock().await;
+
     let profile = app.get_current_profile_settings();
     let url = profile.git_url.clone();
     let app_name = app.name.clone();
@@ -317,7 +333,8 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
 
                     let mut fetch_options = create_fetch_options(callbacks, None);
                     fetch_options.prune(git2::FetchPrune::On);
-                    let refspecs = ["+refs/heads/*:refs/remotes/origin/*", "+refs/tags/*:refs/tags/*"];
+                    let refspecs =
+                        ["+refs/heads/*:refs/remotes/origin/*", "+refs/tags/*:refs/tags/*"];
                     let fetch_result = remote
                         .fetch(&refspecs, Some(&mut fetch_options), None)
                         .with_context(|| {
@@ -492,6 +509,12 @@ pub async fn checkout_version_tag(
     repo_path: &Path,
     version_tag_name: &str,
 ) -> Result<Oid> {
+    let lock_arc = REPO_LOCKS
+        .entry(repo_path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone();
+    let _guard = lock_arc.lock().await;
+
     let task_repo_path = repo_path.to_path_buf();
     let tag_to_checkout = version_tag_name.to_string();
     let app_name_for_task = app_name.to_string();
@@ -588,6 +611,12 @@ pub async fn get_commit_messages_for_version_diff(
     repo_path: &Path,
     target_version_tag_name: &str,
 ) -> Result<Vec<String>> {
+    let lock_arc = REPO_LOCKS
+        .entry(repo_path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone();
+    let _guard = lock_arc.lock().await;
+
     let repo_path_clone = repo_path.to_path_buf();
     let target_tag = target_version_tag_name.to_string();
 
@@ -617,12 +646,14 @@ pub async fn get_commit_messages_for_version_diff(
                 .with_context(|| format!("Failed to fetch target version tag {}", target_tag))?;
         }
 
-        let target_obj = repo.revparse_single(&target_tag_ref_str).with_context(|| {
-            format!(
-                "Target version tag '{}' not found locally after potential fetch",
-                target_tag
-            )
-        })?;
+        let target_obj = repo
+            .revparse_single(&target_tag_ref_str)
+            .with_context(|| {
+                format!(
+                    "Target version tag '{}' not found locally after potential fetch",
+                    target_tag
+                )
+            })?;
 
         let target_commit_oid = target_obj
             .peel_to_commit()

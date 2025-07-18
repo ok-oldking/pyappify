@@ -161,13 +161,10 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
 #[tauri::command]
 pub async fn load_apps() -> Result<Vec<App>, Error> {
     {
-        let apps_map = APPS.lock().await;
+        let apps_map = APPS.lock().await.clone();
         if !apps_map.is_empty() {
             info!("App already loaded. Triggering update from disk.");
-            drop(apps_map);
-            if update_apps_from_disk().await? {
-                emit_apps().await;
-            }
+            emit_apps().await;
             return Ok(get_apps_as_vec().await);
         }
     }
@@ -203,9 +200,6 @@ async fn update_apps_from_disk() -> Result<bool, Error> {
     let mut was_modified = false;
 
     for app_name in app_names {
-        let app_dir_lock = get_app_lock(&app_name).await;
-        let _guard = app_dir_lock.lock().await;
-
         let result: Result<_, Error> = async {
             let mut app = get_app_by_name(&app_name).await?;
             let original_app = app.clone();
@@ -216,11 +210,11 @@ async fn update_apps_from_disk() -> Result<bool, Error> {
                     git::get_tags_and_current_version(&app.name, repo_path).await?;
                 app.available_versions = versions;
                 app.current_version = Some(current);
+                info!("get_tags_and_current_version done for {}: {:?}", app.name, app.current_version);
             }
 
-            load_app_details(&mut app).await?;
-
             if app != original_app {
+                info!("App details modified for {}. Saving to disk.", app.name);
                 save_app_config_to_json(&app).await?;
                 APPS.lock().await.insert(app_name.clone(), app);
                 return Ok(true);
@@ -241,7 +235,7 @@ async fn update_apps_from_disk() -> Result<bool, Error> {
             }
         }
     }
-
+    debug!("Finished updating app details from disk. {}", was_modified);
     Ok(was_modified)
 }
 
