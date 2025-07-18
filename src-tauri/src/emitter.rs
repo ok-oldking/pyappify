@@ -24,7 +24,7 @@ struct MessagePayload<'a> {
     error: bool,
 }
 
-fn get_app_handle() -> Option<&'static AppHandle<Wry>> {
+pub fn get_app_handle() -> Option<&'static AppHandle<Wry>> {
     GLOBAL_APP_HANDLE.get()
 }
 

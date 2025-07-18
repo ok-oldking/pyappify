@@ -18,6 +18,7 @@ use tokio::task;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 use crate::app::App;
+use crate::emitter::get_app_handle;
 use crate::git::ensure_repository;
 use crate::utils::error::Error;
 use crate::utils::file;
@@ -28,6 +29,7 @@ use crate::utils::window::create_startup_shortcut;
 pub static APPS: Lazy<Mutex<HashMap<String, App>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 pub static APP_DIR_LOCKS: Lazy<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+pub static AUTO_START_CHECKED: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
 
 fn check_python_env_exists(app_name: &str) -> bool {
     let python_path = get_python_dir(app_name);
@@ -186,6 +188,37 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
         emit_apps().await;
     } else {
         info!("Not emitting apps from disk because no changes detected from git.");
+    }
+
+    let mut auto_start_guard = AUTO_START_CHECKED.lock().await;
+    if !*auto_start_guard {
+        *auto_start_guard = true;
+        info!("First load, checking for auto-start conditions.");
+
+        let apps_map = APPS.lock().await;
+        if apps_map.len() == 1 {
+            if let Some(app) = apps_map.values().next() {
+                let is_latest = !app.available_versions.is_empty()
+                    && app.current_version.as_ref() == Some(&app.available_versions[0]);
+
+                if app.installed && is_latest {
+                    info!("Auto-starting app '{}' as it's installed and the latest version.", app.name);
+                    let app_name_clone = app.name.clone();
+                    drop(apps_map);
+                    drop(auto_start_guard);
+                    if let Some(app_handle) = get_app_handle() {
+                        let app_handle_clone = app_handle.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = start_app(app_handle_clone, app_name_clone.clone()).await {
+                                error!("Auto-start for app '{}' failed: {:?}", app_name_clone, e);
+                            }
+                        });
+                    }
+                } else {
+                    info!("Auto-start conditions not met for app '{}' (installed: {}, is_latest: {}).", app.name, app.installed, is_latest);
+                }
+            }
+        }
     }
 
     Ok(get_apps_as_vec().await)
@@ -415,7 +448,7 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<(), Error> 
             "App config json saved successfully after setup {} installed {}",
             app_to_save.name, app_to_save.installed
         );
-        update_apps_from_disk().await?; 
+        update_apps_from_disk().await?;
         emit_apps().await;
     } else {
         warn!(
@@ -613,6 +646,7 @@ async fn check_running_on_start(
 
 #[tauri::command]
 pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Error> {
+    *AUTO_START_CHECKED.lock().await = true;
     info!("Attempting to start app: {}", app_name);
     let app_dir_lock = get_app_lock(&app_name).await;
     let _guard = app_dir_lock.lock().await;
