@@ -141,9 +141,7 @@ fn get_sorted_tags_by_time(repo: &Repository) -> Result<Vec<String>> {
 
 pub fn open_repository(repo_path: &Path) -> Result<Repository> {
     GIT_CONFIG_INITIALIZED.get_or_init(|| {
-        // This block is now guaranteed to run exactly once.
         unsafe {
-            // We call the function and ignore the Result, so it won't panic.
             let _ = opts::set_verify_owner_validation(false);
         }
         debug!("git2 owner validation disabled for this process.");
@@ -195,6 +193,7 @@ pub async fn get_tags_and_current_version(
         configure_credentials(&mut remote_callbacks, remote_url.as_deref());
 
         let mut fetch_options = create_fetch_options(remote_callbacks, None);
+        fetch_options.prune(git2::FetchPrune::On);
 
         remote
             .fetch(
@@ -208,37 +207,6 @@ pub async fn get_tags_and_current_version(
                     repo_path_for_task.display()
                 )
             })?;
-
-        let remote_tags: HashSet<String> = remote
-            .list()
-            .context("Failed to list remote references")?
-            .iter()
-            .filter_map(|reference| {
-                let name = reference.name();
-                if name.starts_with("refs/tags/") {
-                    Some(name.trim_start_matches("refs/tags/").to_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let mut local_tags_to_delete = Vec::new();
-        repo.tag_names(None)
-            .context("Failed to list local tag names")?
-            .iter()
-            .filter_map(|name| name)
-            .for_each(|local_tag_name| {
-                if !remote_tags.contains(local_tag_name) {
-                    local_tags_to_delete.push(local_tag_name.to_string());
-                }
-            });
-
-        for tag_name in local_tags_to_delete {
-            repo.tag_delete(&tag_name)
-                .with_context(|| format!("Failed to delete local tag '{}'", tag_name))?;
-            info!("Deleted local tag: {}", tag_name);
-        }
 
         let mut sorted_tags = get_sorted_tags_by_time(&repo)?;
 
@@ -348,8 +316,10 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
                     ));
 
                     let mut fetch_options = create_fetch_options(callbacks, None);
+                    fetch_options.prune(git2::FetchPrune::On);
+                    let refspecs = ["+refs/heads/*:refs/remotes/origin/*", "+refs/tags/*:refs/tags/*"];
                     let fetch_result = remote
-                        .fetch(&["+refs/tags/*:refs/tags/*"], Some(&mut fetch_options), None)
+                        .fetch(&refspecs, Some(&mut fetch_options), None)
                         .with_context(|| {
                             format!(
                                 "Failed to fetch updates for {}",
@@ -542,6 +512,7 @@ pub async fn checkout_version_tag(
         ));
 
         let mut fetch_options = create_fetch_options(callbacks, None);
+        fetch_options.prune(git2::FetchPrune::On);
 
         let refspec = format!("+refs/tags/{0}:refs/tags/{0}", tag_to_checkout);
         emit_info!(
