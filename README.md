@@ -23,7 +23,7 @@ This method distributes the lightweight `PyAppify` launcher. The launcher will t
 # pyappify.yml
 name: "pyappify-sample" # English only
 profiles:
-  - name: "release_正式版" # can use Unicode chars
+  - name: "release" 
     git_url: "https://github.com/ok-oldking/pyappify-action.git" # The repo url to clone. Must have tags for version management; semver is recommended.
     main_script: "main.py" # If ending with .py, will use python venv to run. Otherwise, will search in the working dir and the venv's Script/bin path.
     requires_python: "3.12" # Supports python 3.7 - 3.13.
