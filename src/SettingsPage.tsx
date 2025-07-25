@@ -32,6 +32,16 @@ interface SettingsPageProps {
     onBack: () => void;
 }
 
+const lang = i18n.language;
+const supportedLangs = ['en', 'zh-CN', 'zh-TW', 'es', 'ja', 'kr'];
+if (lang.startsWith('zh') && lang !== 'zh-TW' && lang !== 'zh-HK') {
+    i18n.changeLanguage('zh-CN');
+} else if (lang === 'zh-HK') {
+    i18n.changeLanguage('zh-TW');
+} else if (!supportedLangs.includes(lang)) {
+    i18n.changeLanguage('en');
+}
+
 const SettingsPage: React.FC<SettingsPageProps> = ({
                                                        currentTheme,
                                                        onChangeTheme,
@@ -85,12 +95,16 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                         <Select
                             labelId="language-select-label"
                             id="language-select"
-                            value={i18n.language.startsWith('zh') ? 'zh' : 'en'}
+                            value={i18n.language}
                             label={t('Language')}
                             onChange={handleLanguageChange}
                         >
-                            <MenuItem value="en">{t('English')}</MenuItem>
-                            <MenuItem value="zh">{t('Chinese')}</MenuItem>
+                            <MenuItem value="en">English</MenuItem>
+                            <MenuItem value="zh-CN">简体中文</MenuItem>
+                            <MenuItem value="zh-TW">繁體中文</MenuItem>
+                            <MenuItem value="es">Español</MenuItem>
+                            <MenuItem value="ja">日本語</MenuItem>
+                            <MenuItem value="kr">한국인</MenuItem>
                         </Select>
                     </FormControl>
                 </Box>
