@@ -5,7 +5,7 @@ use crate::utils::path::{get_python_dir, get_python_exe, path_to_abs};
 use crate::{emit_error, emit_error_finish, emit_info, emit_success_finish, err};
 use anyhow::anyhow;
 use crate::runas;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -243,9 +243,18 @@ pub async fn run_python_script(
     working_dir: &Path,
     as_admin: bool,
     use_pythonw: bool,
-    envs: Vec<(String, String)>,
+    mut envs: Vec<(String, String)>,
     envs_to_remove: Vec<String>,
 ) -> Result<(), Error> {
+    let envs_keys: HashSet<String> = envs.iter().map(|(k, _)| k.clone()).collect();
+    let envs_to_remove_keys: HashSet<String> = envs_to_remove.iter().cloned().collect();
+
+    for (key, value) in std::env::vars() {
+        if !envs_keys.contains(&key) && !envs_to_remove_keys.contains(&key) {
+            envs.push((key, value));
+        }
+    }
+
     let python_dir = get_python_dir(app_name);
     let python_executable = get_python_exe(app_name, use_pythonw);
 
