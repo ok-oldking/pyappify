@@ -90,11 +90,12 @@ async fn run_python_script_as_admin_internal(
     envs: &[(String, String)],
     envs_to_remove: &[String],
 ) -> Result<(), Error> {
-    let (executable, args) = if script_path.ends_with(".py") {
+    let (executable, mut args) = if script_path.ends_with(".py") {
         (python_path, vec![script_path])
     } else {
         (script_path, vec![])
     };
+    args.extend(std::env::args().skip(1));
     info!(app_name = app_name, executable = %executable, args = %args.join(" "), desired_cwd = %working_dir.display(), "Attempting to run script with admin privileges using runas.");
 
     let mut env_vars_to_set = HashMap::new();
@@ -166,11 +167,12 @@ async fn run_python_script_normal_internal(
     envs: &[(String, String)],
     envs_to_remove: &[String],
 ) -> Result<(), Error> {
-    let (executable, args) = if script_path.ends_with(".py") {
+    let (executable, mut args) = if script_path.ends_with(".py") {
         (python_path, vec![script_path])
     } else {
         (script_path, vec![])
     };
+    args.extend(std::env::args().skip(1));
 
     let mut cmd = Command::new(executable);
     cmd.args(&args)
