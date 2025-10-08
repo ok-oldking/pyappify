@@ -29,11 +29,15 @@ interface SettingsPageProps {
     pipIndexUrlOptions: string[];
     onChangePipIndexUrl: (value: string) => void;
 
+    currentUpdateMethod: string;
+    updateMethodOptions: string[];
+    onChangeUpdateMethod: (value: string) => void;
+
     onBack: () => void;
 }
 
 const lang = i18n.language;
-const supportedLangs = ['en', 'zh-CN', 'zh-TW', 'es', 'ja', 'kr'];
+const supportedLangs = ['en', 'zh-CN', 'zh-TW', 'es', 'ja', 'ko'];
 if (lang.startsWith('zh') && lang !== 'zh-TW' && lang !== 'zh-HK') {
     i18n.changeLanguage('zh-CN');
 } else if (lang === 'zh-HK') {
@@ -51,6 +55,9 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                                                        currentIndexUrl = '',
                                                        pipIndexUrlOptions = [],
                                                        onChangePipIndexUrl,
+                                                       currentUpdateMethod = 'MANUAL_UPDATE',
+                                                       updateMethodOptions = [],
+                                                       onChangeUpdateMethod,
                                                        onBack
                                                    }) => {
     const {t} = useTranslation();
@@ -69,6 +76,10 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
 
     const handlePipIndexUrlChange = (event: SelectChangeEvent<string>) => {
         onChangePipIndexUrl(event.target.value as string);
+    };
+
+    const handleUpdateMethodChange = (event: SelectChangeEvent<string>) => {
+        onChangeUpdateMethod(event.target.value as string);
     };
 
     const getPipIndexUrlName = (url: string) => {
@@ -104,7 +115,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                             <MenuItem value="zh-TW">繁體中文</MenuItem>
                             <MenuItem value="es">Español</MenuItem>
                             <MenuItem value="ja">日本語</MenuItem>
-                            <MenuItem value="kr">한국인</MenuItem>
+                            <MenuItem value="ko">한국인</MenuItem>
                         </Select>
                     </FormControl>
                 </Box>
@@ -158,6 +169,25 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                             {pipIndexUrlOptions.map((option) => (
                                 <MenuItem key={option} value={option}>
                                     {t(getPipIndexUrlName(option))}
+                                </MenuItem>
+                            ))}
+                        </Select>
+                    </FormControl>
+                </Box>
+
+                <Box sx={{ my: 2 }}>
+                    <FormControl fullWidth variant="outlined">
+                        <InputLabel id="update-method-select-label">{t('Update Method')}</InputLabel>
+                        <Select
+                            labelId="update-method-select-label"
+                            id="update-method-select"
+                            value={currentUpdateMethod}
+                            label={t('Update Method')}
+                            onChange={handleUpdateMethodChange}
+                        >
+                            {updateMethodOptions.map((option) => (
+                                <MenuItem key={option} value={option}>
+                                    {t(option)}
                                 </MenuItem>
                             ))}
                         </Select>

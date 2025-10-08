@@ -1,6 +1,7 @@
 // src/config_manager.rs
 use crate::python_env::get_supported_python_versions;
 use crate::utils::error::Error;
+use crate::utils::locale::get_locale;
 use crate::utils::path::get_config_dir;
 use crate::utils::path::get_pip_cache_dir;
 use once_cell::sync::OnceCell;
@@ -12,7 +13,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tracing::{error, info, warn};
-use crate::utils::locale::get_locale;
 
 const PIP_CACHE_DIR_CONFIG_KEY: &str = "Pip Cache Directory";
 const PIP_CACHE_DIR_OPTION_APP_INSTALL: &str = "App Install Directory";
@@ -27,6 +27,11 @@ const PIP_INDEX_URL_OPTION_ALIYUN: &str = "https://mirrors.aliyun.com/pypi/simpl
 const PIP_INDEX_URL_OPTION_USTC: &str = "https://mirrors.ustc.edu.cn/pypi/simple/";
 const PIP_INDEX_URL_OPTION_HUAWEI: &str = "https://repo.huaweicloud.com/repository/pypi/simple/";
 const PIP_INDEX_URL_OPTION_TENCENT: &str = "https://mirrors.cloud.tencent.com/pypi/simple/";
+
+const UPDATE_METHOD_CONFIG_KEY: &str = "Update Method";
+pub const UPDATE_METHOD_OPTION_MANUAL: &str = "MANUAL_UPDATE";
+pub const UPDATE_METHOD_OPTION_AUTO: &str = "AUTO_UPDATE";
+pub const UPDATE_METHOD_OPTION_IGNORE: &str = "IGNORE_UPDATE";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(untagged)]
@@ -169,6 +174,22 @@ impl AppConfig {
                 ]),
             },
         );
+
+        items.insert(
+            UPDATE_METHOD_CONFIG_KEY.to_string(),
+            ConfigItem {
+                name: UPDATE_METHOD_CONFIG_KEY.to_string(),
+                description: "Controls the app's update behavior. 'MANUAL_UPDATE' requires user action, 'AUTO_UPDATE' updates automatically, and 'IGNORE_UPDATE' disables update checks.".to_string(),
+                value: ConfigValue::String(UPDATE_METHOD_OPTION_MANUAL.to_string()),
+                default_value: ConfigValue::String(UPDATE_METHOD_OPTION_MANUAL.to_string()),
+                options: Some(vec![
+                    ConfigValue::String(UPDATE_METHOD_OPTION_MANUAL.to_string()),
+                    ConfigValue::String(UPDATE_METHOD_OPTION_AUTO.to_string()),
+                    ConfigValue::String(UPDATE_METHOD_OPTION_IGNORE.to_string()),
+                ]),
+            },
+        );
+
         items
     }
 
@@ -440,6 +461,17 @@ impl AppConfig {
                 );
                 None
             }
+        }
+    }
+
+    pub fn get_effective_update_method(&self) -> &str {
+        match self.get_item_value(UPDATE_METHOD_CONFIG_KEY) {
+            Some(ConfigValue::String(value)) => match value.as_str() {
+                UPDATE_METHOD_OPTION_AUTO => UPDATE_METHOD_OPTION_AUTO,
+                UPDATE_METHOD_OPTION_IGNORE => UPDATE_METHOD_OPTION_IGNORE,
+                _ => UPDATE_METHOD_OPTION_MANUAL,
+            },
+            _ => UPDATE_METHOD_OPTION_MANUAL,
         }
     }
 }

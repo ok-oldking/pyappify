@@ -18,6 +18,7 @@ use tokio::task;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 use crate::app::App;
+use crate::config_manager::{GLOBAL_CONFIG_STATE, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_IGNORE, UPDATE_METHOD_OPTION_MANUAL};
 use crate::emitter::get_app_handle;
 use crate::git::ensure_repository;
 use crate::utils::error::Error;
@@ -193,36 +194,71 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
     let mut auto_start_guard = AUTO_START_CHECKED.lock().await;
     if !*auto_start_guard {
         *auto_start_guard = true;
-        info!("First load, checking for auto-start conditions.");
 
-        let apps_map = APPS.lock().await;
-        if apps_map.len() == 1 {
-            if let Some(app) = apps_map.values().next() {
-                let is_latest = !app.available_versions.is_empty()
-                    && app.current_version.as_ref() == Some(&app.available_versions[0]);
-
-                if app.installed && is_latest {
-                    info!("Auto-starting app '{}' as it's installed and the latest version.", app.name);
-                    let app_name_clone = app.name.clone();
-                    drop(apps_map);
-                    drop(auto_start_guard);
-                    if let Some(app_handle) = get_app_handle() {
-                        let app_handle_clone = app_handle.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = start_app(app_handle_clone, app_name_clone.clone()).await {
-                                error!("Auto-start for app '{}' failed: {:?}", app_name_clone, e);
-                            }
-                        });
-                    }
-                } else {
-                    info!("Auto-start conditions not met for app '{}' (installed: {}, is_latest: {}).", app.name, app.installed, is_latest);
+        let mut app_clone_for_checks: Option<App> = None;
+        {
+            let apps_map = APPS.lock().await;
+            if apps_map.len() == 1 {
+                if let Some(app) = apps_map.values().next() {
+                    app_clone_for_checks = Some(app.clone());
                 }
+            }
+        }
+
+        if let Some(app) = app_clone_for_checks {
+            let update_method = {
+                let config_state = GLOBAL_CONFIG_STATE.get().ok_or_else(|| {
+                    anyhow!("GLOBAL_CONFIG_STATE not initialized. Call init_config_manager first.")
+                })?;
+                let config_guard = config_state.lock().unwrap();
+                config_guard.get_effective_update_method().to_string()
+            };
+
+            let is_latest = !app.available_versions.is_empty()
+                && app.current_version.as_ref() == Some(&app.available_versions[0]);
+
+            info!("First load, checking for auto-start conditions. update_method:{}, is_latest:{}", update_method, is_latest);
+
+            let mut needs_autostart = false;
+            if !is_latest {
+                info!("App is not the latest version.");
+                if update_method == UPDATE_METHOD_OPTION_AUTO {
+                    info!("Auto-update is UPDATE_METHOD_OPTION_AUTO. Updating app.");
+                    let app_name_clone = app.name.clone();
+                    let latest_version = app.available_versions[0].clone();
+                    update_to_version(&app_name_clone, &latest_version).await?;
+                    info!("Auto Update to version {} success.", &latest_version);
+                    needs_autostart = true;
+                } else if update_method == UPDATE_METHOD_OPTION_IGNORE {
+                    info!("Auto-update is UPDATE_METHOD_OPTION_IGNORE set auto_start to true.");
+                    needs_autostart = true;
+                }
+            } else if app.installed {
+                needs_autostart = true;
+                info!("App is the latest version and installed. set auto start to true");
+            }
+
+            if needs_autostart {
+                info!("Auto-starting app '{}'.", app.name);
+                let app_name_clone = app.name.clone();
+                drop(auto_start_guard);
+                if let Some(app_handle) = get_app_handle() {
+                    let app_handle_clone = app_handle.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = start_app(app_handle_clone, app_name_clone.clone()).await {
+                            error!("Auto-start for app '{}' failed: {:?}", app_name_clone, e);
+                        }
+                    });
+                }
+            } else {
+                info!("Auto-start conditions not met for app '{}' (installed: {}, is_latest: {}).", app.name, app.installed, is_latest);
             }
         }
     }
 
     Ok(get_apps_as_vec().await)
 }
+
 
 async fn update_apps_from_disk() -> Result<bool, Error> {
     let app_names: Vec<String> = APPS.lock().await.keys().cloned().collect();

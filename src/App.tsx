@@ -108,6 +108,7 @@ type ThemeModeSetting = 'light' | 'dark' | 'system';
 
 const PIP_CACHE_DIR_CONFIG_KEY = "Pip Cache Directory";
 const PIP_INDEX_URL_CONFIG_KEY = "Pip Index URL";
+const UPDATE_METHOD_CONFIG_KEY = "Update Method";
 
 
 async function invokeTauriCommandWrapper<T>(
@@ -721,6 +722,10 @@ function App() {
         handleSettingChange(PIP_INDEX_URL_CONFIG_KEY, newValue);
     };
 
+    const handleChangeUpdateMethod = (newValue: string) => {
+        handleSettingChange(UPDATE_METHOD_CONFIG_KEY, newValue);
+    };
+
     const handleCheckForUpdates = async (appName: string) => {
         clearMessages();
         setAppActionLoading(prev => ({...prev, [appName]: true}));
@@ -975,13 +980,17 @@ function App() {
                 </Container>
             );
         } else {
-            const pipCacheConfig = allConfigs.find(c => c.name === PIP_CACHE_DIR_CONFIG_KEY);
+            const pipCacheConfig = allConfigs.find(c => c.name === "Pip Cache Directory");
             const currentPipCacheDir = (pipCacheConfig?.value as string) ?? '';
             const pipCacheDirOptions = (pipCacheConfig?.options as string[] | undefined) ?? [];
 
-            const pipIndexUrlConfig = allConfigs.find(c => c.name === PIP_INDEX_URL_CONFIG_KEY);
+            const pipIndexUrlConfig = allConfigs.find(c => c.name === "Pip Index URL");
             const currentIndexUrl = (pipIndexUrlConfig?.value as string) ?? '';
             const pipIndexUrlOptions = (pipIndexUrlConfig?.options as string[] | undefined) ?? [];
+
+            const updateMethodConfig = allConfigs.find(c => c.name === "Update Method");
+            const currentUpdateMethod = (updateMethodConfig?.value as string) ?? 'MANUAL_UPDATE';
+            const updateMethodOptions = (updateMethodConfig?.options as string[] | undefined) ?? [];
 
             pageContent = (
                 <SettingsPage
@@ -994,6 +1003,9 @@ function App() {
                     currentIndexUrl={currentIndexUrl}
                     pipIndexUrlOptions={pipIndexUrlOptions}
                     onChangePipIndexUrl={handleChangePipIndexUrl}
+                    currentUpdateMethod={currentUpdateMethod}
+                    updateMethodOptions={updateMethodOptions}
+                    onChangeUpdateMethod={handleChangeUpdateMethod}
                 />
             );
         }

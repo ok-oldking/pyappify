@@ -93,7 +93,11 @@ const resources = {
             " (Current)": " (Current)",
             "Initiating...": "Initiating...",
             "Please select a different profile.": "Please select a different profile.",
-            "No profiles available for this app. This view should not be reachable in this state.": "No profiles available for this app. This view should not be reachable in this state."
+            "No profiles available for this app. This view should not be reachable in this state.": "No profiles available for this app. This view should not be reachable in this state.",
+            "Update Method": "Update Method",
+            "MANUAL_UPDATE": "Manual Update",
+            "AUTO_UPDATE": "Auto Update",
+            "IGNORE_UPDATE": "Ignore Updates"
         }
     },
     'zh-CN': {
@@ -188,6 +192,10 @@ const resources = {
             "No profiles available for this app. This view should not be reachable in this state.": "此应用没有可用的配置。此视图不应在此状态下可达。",
             "defenderExclusionAdded": "已成功为 '{{appName}}' 添加 Defender 白名单。",
             "failedToAddExclusion": "添加白名单失败: {{errorMessage}}",
+            "Update Method": "更新方式",
+            "MANUAL_UPDATE": "手动更新",
+            "AUTO_UPDATE": "自动更新",
+            "IGNORE_UPDATE": "忽略更新"
         }
     },
     'zh-TW': {
@@ -282,6 +290,10 @@ const resources = {
             "No profiles available for this app. This view should not be reachable in this state.": "此應用程式沒有可用的設定檔。此畫面不應在此狀態下可存取。",
             "defenderExclusionAdded": "已成功為 '{{appName}}' 新增 Defender 排除項目。",
             "failedToAddExclusion": "新增排除項目失敗: {{errorMessage}}",
+            "Update Method": "更新方式",
+            "MANUAL_UPDATE": "手動更新",
+            "AUTO_UPDATE": "自動更新",
+            "IGNORE_UPDATE": "忽略更新"
         }
     },
     ja: {
@@ -376,6 +388,10 @@ const resources = {
             "No profiles available for this app. This view should not be reachable in this state.": "このアプリには利用可能なプロファイルがありません。この状態ではこのビューに到達できないはずです。",
             "defenderExclusionAdded": "'{{appName}}' のDefender除外設定が正常に追加されました。",
             "failedToAddExclusion": "除外設定の追加に失敗しました: {{errorMessage}}",
+            "Update Method": "更新方法",
+            "MANUAL_UPDATE": "手動更新",
+            "AUTO_UPDATE": "自動更新",
+            "IGNORE_UPDATE": "更新を無視"
         }
     },
     ko: {
@@ -470,6 +486,10 @@ const resources = {
             "No profiles available for this app. This view should not be reachable in this state.": "이 앱에 사용 가능한 프로필이 없습니다. 이 상태에서는 이 보기에 접근할 수 없습니다.",
             "defenderExclusionAdded": "'{{appName}}'에 대한 Defender 제외가 성공적으로 추가되었습니다.",
             "failedToAddExclusion": "제외 추가 실패: {{errorMessage}}",
+            "Update Method": "업데이트 방법",
+            "MANUAL_UPDATE": "수동 업데이트",
+            "AUTO_UPDATE": "자동 업데이트",
+            "IGNORE_UPDATE": "업데이트 무시"
         }
     },
     es: {
@@ -515,24 +535,24 @@ const resources = {
             "No other versions or profiles available for modification.": "No hay otras versiones o perfiles disponibles para modificar.",
             "No other versions available. You can change the profile.": "No hay otras versiones disponibles. Puede cambiar el perfil.",
             "Back to App": "Volver a la Aplicación",
-            "Update Notes for {{appName}} (Version: {{version}})": "Notas de actualización para {{appName}} (Versión: {{version}})",
-            "Downgrade Notes for {{appName}} (Version: {{version}})": "Notas de degradación para {{appName}} (Versión: {{version}})",
-            "Set Notes for {{appName}} (Version: {{version}})": "Notas de establecimiento de versión para {{appName}} (Versión: {{version}})",
+            "Update Notes for `{{appName}}` (Version: `{{version}}`)": "Notas de actualización para `{{appName}}` (Versión: `{{version}}`)",
+            "Downgrade Notes for `{{appName}}` (Version: `{{version}}`)": "Notas de degradación para `{{appName}}` (Versión: `{{version}}`)",
+            "Set Notes for `{{appName}}` (Version: `{{version}}`)": "Notas de establecimiento de versión para `{{appName}}` (Versión: `{{version}}`)",
             "Loading notes...": "Cargando notas...",
-            "Failed to load notes: {{error}}": "Error al cargar las notas: {{error}}",
+            "Failed to load notes: `{{error}}`": "Error al cargar las notas: `{{error}}`",
             "Cancel": "Cancelar",
-            "Confirm {{actionType}}": "Confirmar {{actionType}}",
+            "Confirm `{{actionType}}`": "Confirmar `{{actionType}}`",
             "Process in progress...": "Proceso en curso...",
-            "Process finished.{{errorText}} Review logs and click Done.": "Proceso finalizado.{{errorText}} Revise los registros y haga clic en Hecho.",
+            "Process finished.`{{errorText}}` Review logs and click Done.": "Proceso finalizado.`{{errorText}}` Revise los registros y haga clic en Hecho.",
             " There were errors.": " Hubo errores.",
             "Back (Process Running)": "Atrás (Proceso en ejecución)",
             "Done": "Hecho",
-            "No logs received yet for {{appName}}.": "Aún no se han recibido registros para {{appName}}.",
-            "Installing App: {{appName}}": "Instalando Aplicación: {{appName}}",
-            "Starting App: {{appName}}": "Iniciando Aplicación: {{appName}}",
-            "{{actionType}} App: {{appName}}": "{{actionType}} Aplicación: {{appName}}",
-            "Console: {{appName}}": "Consola: {{appName}}",
-            "Changing Profile: {{appName}} to '{{newProfile}}'": "Cambiando Perfil: {{appName}} a '{{newProfile}}'",
+            "No logs received yet for `{{appName}}`.": "Aún no se han recibido registros para `{{appName}}`.",
+            "Installing App: `{{appName}}`": "Instalando Aplicación: `{{appName}}`",
+            "Starting App: `{{appName}}`": "Iniciando Aplicación: `{{appName}}`",
+            "`{{actionType}}` App: `{{appName}}`": "`{{actionType}}` Aplicación: `{{appName}}`",
+            "Console: `{{appName}}`": "Consola: `{{appName}}`",
+            "Changing Profile: `{{appName}}` to '`{{newProfile}}`'": "Cambiando Perfil: `{{appName}}` a '`{{newProfile}}`'",
             "Language": "Idioma",
             "Theme": "Tema",
             "System Default": "Predeterminado del Sistema",
@@ -547,7 +567,7 @@ const resources = {
             "USTC": "USTC",
             "Huawei Cloud": "Huawei Cloud",
             "Tencent Cloud": "Tencent Cloud",
-            "Choose Profile for {{appName}}": "Elegir Perfil para {{appName}}",
+            "Choose Profile for `{{appName}}`": "Elegir Perfil para `{{appName}}`",
             "Profile": "Perfil",
             "Confirm & Install": "Confirmar e Instalar",
             "Starting Install...": "Iniciando instalación...",
@@ -555,15 +575,19 @@ const resources = {
             "No profiles available or configured for this app. Please check the app's configuration (ok.yml).": "No hay perfiles disponibles o configurados para esta aplicación. Por favor, verifique la configuración de la aplicación (ok.yml).",
             "Back": "Atrás",
             "Please select a profile.": "Por favor, seleccione un perfil.",
-            "Change Profile for {{appName}}": "Cambiar Perfil para {{appName}}",
-            "Current Profile: {{profile}}": "Perfil Actual: {{profile}}",
+            "Change Profile for `{{appName}}`": "Cambiar Perfil para `{{appName}}`",
+            "Current Profile: `{{profile}}`": "Perfil Actual: `{{profile}}`",
             "New Profile": "Nuevo Perfil",
             " (Current)": " (Actual)",
             "Initiating...": "Iniciando...",
             "Please select a different profile.": "Por favor, seleccione un perfil diferente.",
             "No profiles available for this app. This view should not be reachable in this state.": "No hay perfiles disponibles para esta aplicación. Esta vista no debería ser accesible en este estado.",
-            "defenderExclusionAdded": "La exclusión de Defender para '{{appName}}' se agregó correctamente.",
-            "failedToAddExclusion": "Error al agregar la exclusión: {{errorMessage}}",
+            "defenderExclusionAdded": "La exclusión de Defender para '`{{appName}}`' se agregó correctamente.",
+            "failedToAddExclusion": "Error al agregar la exclusión: `{{errorMessage}}`",
+            "Update Method": "Método de Actualización",
+            "MANUAL_UPDATE": "Actualización Manual",
+            "AUTO_UPDATE": "Actualización Automática",
+            "IGNORE_UPDATE": "Ignorar Actualizaciones"
         }
     },
 };
