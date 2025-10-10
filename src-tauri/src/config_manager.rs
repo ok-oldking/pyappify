@@ -128,7 +128,7 @@ impl AppConfig {
         instance.merge_and_validate_defaults();
         instance.save_to_file();
         instance.update_pip_cache_env_var_from_config();
-        instance.update_pip_index_url_env_var_from_config();        
+        instance.update_pip_index_url_env_var_from_config();
         instance
     }
 
@@ -224,8 +224,8 @@ impl AppConfig {
             ConfigItem {
                 name: UPDATE_METHOD_CONFIG_KEY.to_string(),
                 description: "Controls the app's update behavior. 'MANUAL_UPDATE' requires user action, 'AUTO_UPDATE' updates automatically, and 'IGNORE_UPDATE' disables update checks.".to_string(),
-                value: ConfigValue::String(UPDATE_METHOD_OPTION_MANUAL.to_string()),
-                default_value: ConfigValue::String(UPDATE_METHOD_OPTION_MANUAL.to_string()),
+                value: ConfigValue::String(UPDATE_METHOD_OPTION_AUTO.to_string()),
+                default_value: ConfigValue::String(UPDATE_METHOD_OPTION_AUTO.to_string()),
                 options: Some(vec![
                     ConfigValue::String(UPDATE_METHOD_OPTION_MANUAL.to_string()),
                     ConfigValue::String(UPDATE_METHOD_OPTION_AUTO.to_string()),
@@ -578,7 +578,7 @@ pub fn init_config_manager(app_handle: &tauri::AppHandle) {
     let config = AppConfig::new();
     rust_i18n::set_locale(config.get_effective_lang());
     let config_state_arc = Arc::new(Mutex::new(config));
-    app_handle.manage(config_state_arc.clone());    
+    app_handle.manage(config_state_arc.clone());
 
     if GLOBAL_CONFIG_STATE.set(config_state_arc).is_err() {
         warn!("GLOBAL_CONFIG_STATE was already initialized. This should not happen if init_config_manager is called only once.");

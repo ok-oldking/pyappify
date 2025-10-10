@@ -250,14 +250,14 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                 let app_name_clone = app.name.clone();
                 let latest_version = app.available_versions[0].clone();
                 if update_method == UPDATE_METHOD_OPTION_AUTO {
-                    info!("{}", t!("message.new_version_update", locale=get_locale(), version=latest_version.clone()));
-                    send_notification(app_name_clone.clone(), t!("messages.new_version_update", locale=get_locale(), version=latest_version));
-                    // update_to_version(&app_name_clone, &latest_version).await?;
+                    info!("{}", t!("message.new_version_update", version=latest_version.clone()));
+                    send_notification(app_name_clone.clone(), t!("message.new_version_update", version=latest_version));
+                    update_to_version(&app_name_clone, &latest_version).await?;
                     info!("Auto Update to version {} success.", &latest_version);
-                    send_notification(app_name_clone, t!("messages.version_update_success", locale=get_locale(), version=latest_version));
+                    send_notification(app_name_clone, t!("message.version_update_success", version=latest_version));
                     needs_autostart = true;
                 } else {
-                    send_notification(app_name_clone.clone(), t!("message.new_version", locale=get_locale(), version=latest_version));
+                    send_notification(app_name_clone.clone(), t!("message.new_version", version=latest_version));
                     if update_method == UPDATE_METHOD_OPTION_IGNORE {
                         info!("Auto-update is UPDATE_METHOD_OPTION_IGNORE set auto_start to true.");
                         needs_autostart = true;
