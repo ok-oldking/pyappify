@@ -1,14 +1,14 @@
 // src/app.rs
+use crate::utils::defender::is_defender_excluded;
+use crate::utils::path;
+use crate::utils::path::{get_app_base_path, get_app_working_dir_path};
+use anyhow::{anyhow, Context};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::vec::Vec;
-use anyhow::{anyhow, Context};
-use chrono::{DateTime, Utc};
 use tracing::{debug, error, info, warn};
-use crate::utils::path;
-use crate::utils::path::{get_app_base_path, get_app_working_dir_path};
-use crate::utils::defender::is_defender_excluded;
 
 pub const YML_FILE_NAME: &str = "pyappify.yml";
 
@@ -43,13 +43,19 @@ impl App {
     }
 
     pub fn get_current_profile_settings(&self) -> &Profile {
-        debug!("get_current_profile_settings {} {}", self.current_profile, self.profiles.len());
+        debug!(
+            "get_current_profile_settings {} {}",
+            self.current_profile,
+            self.profiles.len()
+        );
         self.get_profile(&self.current_profile)
             .expect("Critical: Default profile missing in AppConfig.")
     }
 
     pub fn get_profile(&self, profile_name: &str) -> Option<&Profile> {
-        self.profiles.iter().find(|p| p.name == profile_name)
+        self.profiles
+            .iter()
+            .find(|p| p.name == profile_name)
             .or_else(|| self.profiles.first())
     }
 }

@@ -264,8 +264,8 @@ pub async fn get_tags_and_current_version(
 
         Ok((sorted_tags, current_version))
     })
-        .await
-        .context("Task for get_tags_and_current_version panicked or was cancelled")??;
+    .await
+    .context("Task for get_tags_and_current_version panicked or was cancelled")??;
 
     Ok(result)
 }
@@ -298,7 +298,11 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
     emit_info!(app_name, "Clone {} from {}", app_name, &url);
 
     if repo_path.exists() {
-        emit_info!(app.name, "Repository already exists {}", repo_path.display());
+        emit_info!(
+            app.name,
+            "Repository already exists {}",
+            repo_path.display()
+        );
         match open_repository(&repo_path) {
             Ok(repo) => {
                 let current_url = get_repository_origin_url(&repo)?;
@@ -333,8 +337,10 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
 
                     let mut fetch_options = create_fetch_options(callbacks, None);
                     fetch_options.prune(git2::FetchPrune::On);
-                    let refspecs =
-                        ["+refs/heads/*:refs/remotes/origin/*", "+refs/tags/*:refs/tags/*"];
+                    let refspecs = [
+                        "+refs/heads/*:refs/remotes/origin/*",
+                        "+refs/tags/*:refs/tags/*",
+                    ];
                     let fetch_result = remote
                         .fetch(&refspecs, Some(&mut fetch_options), None)
                         .with_context(|| {
@@ -350,8 +356,8 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
                     emit_info!(app_name_for_task, "Fetch complete.");
                     Ok(())
                 })
-                    .await
-                    .context("Task for fetching updates panicked")??;
+                .await
+                .context("Task for fetching updates panicked")??;
                 return Ok(());
             }
             Err(e) => {
@@ -499,8 +505,8 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
         )?;
         Ok(())
     })
-        .await
-        .context("Task for ensure_repository panicked or was cancelled")??;
+    .await
+    .context("Task for ensure_repository panicked or was cancelled")??;
     Ok(())
 }
 
@@ -602,8 +608,8 @@ pub async fn checkout_version_tag(
 
         Ok(commit_oid)
     })
-        .await
-        .context("Task for checkout_version_tag panicked or was cancelled")??;
+    .await
+    .context("Task for checkout_version_tag panicked or was cancelled")??;
     Ok(oid)
 }
 
@@ -646,14 +652,12 @@ pub async fn get_commit_messages_for_version_diff(
                 .with_context(|| format!("Failed to fetch target version tag {}", target_tag))?;
         }
 
-        let target_obj = repo
-            .revparse_single(&target_tag_ref_str)
-            .with_context(|| {
-                format!(
-                    "Target version tag '{}' not found locally after potential fetch",
-                    target_tag
-                )
-            })?;
+        let target_obj = repo.revparse_single(&target_tag_ref_str).with_context(|| {
+            format!(
+                "Target version tag '{}' not found locally after potential fetch",
+                target_tag
+            )
+        })?;
 
         let target_commit_oid = target_obj
             .peel_to_commit()
@@ -708,10 +712,7 @@ pub async fn get_commit_messages_for_version_diff(
 
         if messages.is_empty() {
             let target_commit = repo.find_commit(target_commit_oid).with_context(|| {
-                format!(
-                    "Failed to find target commit for OID {}",
-                    target_commit_oid
-                )
+                format!("Failed to find target commit for OID {}", target_commit_oid)
             })?;
             if let Some(full_message) = target_commit.message() {
                 info!(
@@ -729,7 +730,7 @@ pub async fn get_commit_messages_for_version_diff(
 
         Ok(messages)
     })
-        .await
-        .context("Task for get_commit_messages panicked or was cancelled")??;
+    .await
+    .context("Task for get_commit_messages panicked or was cancelled")??;
     Ok(messages)
 }

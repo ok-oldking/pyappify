@@ -1,23 +1,25 @@
 // src/python_env.rs
+use crate::utils::command::new_cmd;
 use crate::utils::error::Error;
 use crate::utils::path::{get_python_dir, get_python_exe};
-use crate::{config_manager::GLOBAL_CONFIG_STATE, emit_info, emit_update_info, err, utils::command};
+use crate::{
+    config_manager::GLOBAL_CONFIG_STATE, emit_info, emit_update_info, err, utils::command,
+};
 use anyhow::{anyhow, Context, Result};
 use flate2::read::GzDecoder;
 use rand::distr::Alphanumeric;
 use rand::Rng;
 use reqwest::Client;
 use reqwest::Url;
-use std::{fs, io};
-use std::io::{Write};
+use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::{fs, io};
 use tar::Archive;
 use tracing::{error, info, warn};
 use walkdir::WalkDir;
-use crate::utils::locale::get_locale;
 use zip::ZipArchive;
-use crate::utils::command::new_cmd;
+use crate::config_manager::get_default_locale;
 
 const KNOWN_PATCHES: [(&str, &str, &str, &str); 7] = [
     ("3.13", "3.13.5", "https://www.python.org/ftp/python/3.13.5/python-3.13.5-amd64.zip", "https://mirrors.huaweicloud.com/python/3.13.5/python-3.13.5-amd64.zip"),
@@ -30,7 +32,7 @@ const KNOWN_PATCHES: [(&str, &str, &str, &str); 7] = [
 ];
 
 fn get_download_urls(patch_version: &str) -> Result<(String, String)> {
-    let locale = get_locale();
+    let locale = get_default_locale();
     for patch in KNOWN_PATCHES.iter() {
         if patch.0 == patch_version || patch.1 == patch_version {
             return if locale == "zh_CN" {
@@ -86,8 +88,18 @@ async fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(Pat
                         "Found incompatible Python version {} (required {}). Removing and reinstalling.",
                         installed_version, major_minor_from_param
                     );
-                    fs::remove_dir_all(&install_dir).with_context(|| format!("Failed to remove existing Python installation at {}", install_dir.display()))?;
-                    fs::create_dir_all(&install_dir).with_context(|| format!("Failed to recreate Python installation directory at {}", install_dir.display()))?;
+                    fs::remove_dir_all(&install_dir).with_context(|| {
+                        format!(
+                            "Failed to remove existing Python installation at {}",
+                            install_dir.display()
+                        )
+                    })?;
+                    fs::create_dir_all(&install_dir).with_context(|| {
+                        format!(
+                            "Failed to recreate Python installation directory at {}",
+                            install_dir.display()
+                        )
+                    })?;
                 }
             }
             Err(e) => {
@@ -95,8 +107,18 @@ async fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(Pat
                     "Existing python.exe at {} is corrupted or unusable ({}). Removing and reinstalling.",
                     python_exe_path.display(), e
                 );
-                fs::remove_dir_all(&install_dir).with_context(|| format!("Failed to remove corrupted Python installation at {}", install_dir.display()))?;
-                fs::create_dir_all(&install_dir).with_context(|| format!("Failed to recreate Python installation directory at {}", install_dir.display()))?;
+                fs::remove_dir_all(&install_dir).with_context(|| {
+                    format!(
+                        "Failed to remove corrupted Python installation at {}",
+                        install_dir.display()
+                    )
+                })?;
+                fs::create_dir_all(&install_dir).with_context(|| {
+                    format!(
+                        "Failed to recreate Python installation directory at {}",
+                        install_dir.display()
+                    )
+                })?;
             }
         }
     }
@@ -258,7 +280,15 @@ async fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(Pat
 
 #[cfg(target_os = "windows")]
 fn extract_archive(archive_path: &Path, extract_to_dir: &Path) -> Result<()> {
-    let file_name = archive_path.file_name().and_then(|n| n.to_str()).ok_or_else(|| anyhow!("Could not get file name from path {}", archive_path.display()))?;
+    let file_name = archive_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            anyhow!(
+                "Could not get file name from path {}",
+                archive_path.display()
+            )
+        })?;
 
     if file_name.ends_with(".zip") {
         extract_zip(archive_path, extract_to_dir)
@@ -437,7 +467,8 @@ async fn download_file(url: &str, dest_path: &Path, app_name: &str) -> Result<()
 
     let mut stream = response.bytes_stream();
     while let Some(item) = futures_util::StreamExt::next(&mut stream).await {
-        let chunk = item.with_context(|| format!("Failed to read chunk from download stream of {}", url))?;
+        let chunk =
+            item.with_context(|| format!("Failed to read chunk from download stream of {}", url))?;
         file.write_all(&chunk)
             .with_context(|| format!("Failed to write chunk to file {}", dest_path.display()))?;
         downloaded += chunk.len() as u64;
@@ -454,10 +485,7 @@ async fn download_file(url: &str, dest_path: &Path, app_name: &str) -> Result<()
 }
 
 #[cfg(target_os = "windows")]
-pub async fn setup_python_env(
-    app_name: String,
-    python_version_spec: &str,
-) -> Result<PathBuf> {
+pub async fn setup_python_env(app_name: String, python_version_spec: &str) -> Result<PathBuf> {
     emit_info!(
         app_name,
         "Ensuring Python installation for version spec '{}'",
@@ -477,13 +505,8 @@ pub async fn setup_python_env(
     Ok(managed_python_exe)
 }
 #[cfg(not(target_os = "windows"))]
-pub fn setup_python_env(
-    _app_name: String,
-    _python_version_spec: &str,
-) -> Result<PathBuf> {
-    Err(anyhow!(
-        "setup_python_env is only implemented for Windows."
-    ))
+pub fn setup_python_env(_app_name: String, _python_version_spec: &str) -> Result<PathBuf> {
+    Err(anyhow!("setup_python_env is only implemented for Windows."))
 }
 
 #[cfg(target_os = "windows")]
@@ -495,10 +518,7 @@ pub async fn install_requirements(
 ) -> Result<(), Error> {
     let python_exe = get_python_exe(app_name, false);
     if !python_exe.exists() {
-        err!(
-            "Python executable not found at {}",
-            python_exe.display()
-        );
+        err!("Python executable not found at {}", python_exe.display());
     }
     if !project_dir.is_dir() {
         err!(
@@ -647,10 +667,7 @@ fn get_python_version_from_exe(python_exe_path: &Path) -> Result<String> {
     }
 }
 
-pub fn clean_python_install(
-    app_name: &str,
-    path: &Path
-) -> io::Result<()> {
+pub fn clean_python_install(app_name: &str, path: &Path) -> io::Result<()> {
     let folders_to_delete = ["Doc", "libs", "include", "share"];
     for folder_name in folders_to_delete {
         let folder_path = path.join(folder_name);

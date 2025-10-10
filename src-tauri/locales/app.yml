@@ -1,0 +1,22 @@
+_version: 2
+message.new_version:
+  en: "New version available %{version}, please choose whether to update, or enable auto update in settings."
+  zh-CN: "发现新版本 %{version}, 请选择是否更新, 或在设置中打开自动更新."
+  zh-TW: "發現新版本 %{version}，請選擇是否更新，或在設定中啟用自動更新。"
+  es: "Nueva versión %{version} disponible, elija si desea actualizar o active la actualización automática en la configuración."
+  ja: "新バージョン %{version} が利用可能です。更新するか、設定で自動更新を有効にするかを選択してください。"
+  ko: "새 버전 %{version}이 있습니다. 업데이트하거나 설정에서 자동 업데이트를 활성화하세요."
+message.new_version_update:
+  en: "New version available %{version}, starting to auto update."
+  zh-CN: "发现新版本 %{version}, 开始自动更新."
+  zh-TW: "發現新版本 %{version}，開始自動更新。"
+  es: "Nueva versión %{version} disponible, iniciando actualización automática."
+  ja: "新バージョン %{version} が利用可能です。自動更新を開始します。"
+  ko: "새 버전 %{version}이 있습니다. 자동 업데이트를 시작합니다."
+message.version_update_success:
+  en: "Successfully updated to %{version}."
+  zh-CN: "成功更新到 %{version}."
+  zh-TW: "成功更新至 %{version}。"
+  es: "Se actualizó correctamente a %{version}."
+  ja: "%{version} への更新に成功しました。"
+  ko: "%{version}(으)로 성공적으로 업데이트되었습니다."

@@ -1,7 +1,7 @@
 // src/command.rs
-use std::ffi::OsStr;
 use crate::utils::error::Error;
 use crate::{emit_error, emit_info, ensure_some, err};
+use std::ffi::OsStr;
 use std::process::{ExitStatus, Stdio};
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
@@ -14,7 +14,7 @@ pub async fn run_command_and_stream_output(
     command_description: &str,
 ) -> Result<ExitStatus, Error> {
     emit_info!(app_name, "executing command: {}", command_description);
-    
+
     command.creation_flags(0x08000000);
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -81,7 +81,10 @@ pub async fn run_command_and_stream_output(
                 Ok(_) => {
                     let err_string = buffer.to_string();
                     buffer.clear();
-                    if !err_string.trim().is_empty() && !err_string.contains("A new release of pip is available") && !err_string.contains("[notice] To update, run") {
+                    if !err_string.trim().is_empty()
+                        && !err_string.contains("A new release of pip is available")
+                        && !err_string.contains("[notice] To update, run")
+                    {
                         emit_error!(app_name_for_stderr, "{}", err_string);
                     } else {
                         debug!("not emitting black listed stderr {}", err_string);
@@ -126,14 +129,12 @@ pub fn command_to_string(command: &std::process::Command) -> String {
     command_string
 }
 
-
 #[cfg(windows)]
 pub fn is_admin() -> bool {
     unsafe { IsUserAnAdmin().is_positive() }
 }
 
-
-pub fn new_cmd<S: AsRef<OsStr>>(executable: S) -> Command{
+pub fn new_cmd<S: AsRef<OsStr>>(executable: S) -> Command {
     let mut command = Command::new(executable);
     #[cfg(windows)]
     {

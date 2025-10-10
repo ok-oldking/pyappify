@@ -108,6 +108,7 @@ type ThemeModeSetting = 'light' | 'dark' | 'system';
 
 const PIP_CACHE_DIR_CONFIG_KEY = "Pip Cache Directory";
 const PIP_INDEX_URL_CONFIG_KEY = "Pip Index URL";
+const LANGUAGE_CONFIG_KEY = "Language";
 const UPDATE_METHOD_CONFIG_KEY = "Update Method";
 
 
@@ -722,6 +723,10 @@ function App() {
         handleSettingChange(PIP_INDEX_URL_CONFIG_KEY, newValue);
     };
 
+    const handleChangeLanguage = (newValue: string) => {
+        handleSettingChange(LANGUAGE_CONFIG_KEY, newValue);
+    };
+
     const handleChangeUpdateMethod = (newValue: string) => {
         handleSettingChange(UPDATE_METHOD_CONFIG_KEY, newValue);
     };
@@ -992,11 +997,18 @@ function App() {
             const currentUpdateMethod = (updateMethodConfig?.value as string) ?? 'MANUAL_UPDATE';
             const updateMethodOptions = (updateMethodConfig?.options as string[] | undefined) ?? [];
 
+            const languageConfig = allConfigs.find(c => c.name === LANGUAGE_CONFIG_KEY);
+            const currentLanguage = (languageConfig?.value as string) ?? 'en';
+            const languageOptions = (languageConfig?.options as string[] | undefined) ?? [];
+
             pageContent = (
                 <SettingsPage
                     currentTheme={themeMode}
                     onChangeTheme={setThemeMode}
                     onBack={handleBackFromSettings}
+                    languageOptions={languageOptions}
+                    currentLanguage={currentLanguage}
+                    onChangeLanguage={handleChangeLanguage}
                     currentPipCacheDir={currentPipCacheDir}
                     pipCacheDirOptions={pipCacheDirOptions}
                     onChangePipCacheDir={handleChangePipCacheDir}

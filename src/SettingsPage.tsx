@@ -18,6 +18,10 @@ import {useTranslation} from 'react-i18next';
 type ThemeModeSetting = 'light' | 'dark' | 'system';
 
 interface SettingsPageProps {
+    currentLanguage?: string;
+    languageOptions?: string[];
+    onChangeLanguage?: (value: string) => void;
+
     currentTheme: ThemeModeSetting;
     onChangeTheme: (theme: ThemeModeSetting) => void;
 
@@ -36,17 +40,20 @@ interface SettingsPageProps {
     onBack: () => void;
 }
 
-const lang = i18n.language;
-const supportedLangs = ['en', 'zh-CN', 'zh-TW', 'es', 'ja', 'ko'];
-if (lang.startsWith('zh') && lang !== 'zh-TW' && lang !== 'zh-HK') {
-    i18n.changeLanguage('zh-CN');
-} else if (lang === 'zh-HK') {
-    i18n.changeLanguage('zh-TW');
-} else if (!supportedLangs.includes(lang)) {
-    i18n.changeLanguage('en');
-}
+const languageNames: { [key: string]: string } = {
+    'en': 'English',
+    'zh-CN': '简体中文',
+    'zh-TW': '繁體中文',
+    'es': 'Español',
+    'ja': '日本語',
+    'ko': '한국인',
+};
+
 
 const SettingsPage: React.FC<SettingsPageProps> = ({
+                                                       currentLanguage = '',
+                                                       languageOptions = [],
+                                                       onChangeLanguage,
                                                        currentTheme,
                                                        onChangeTheme,
                                                        currentPipCacheDir = '',
@@ -63,7 +70,11 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
     const {t} = useTranslation();
 
     const handleLanguageChange = (event: SelectChangeEvent<string>) => {
-        i18n.changeLanguage(event.target.value);
+        const lang = event.target.value;
+        i18n.changeLanguage(lang);
+        if (onChangeLanguage) {
+            onChangeLanguage(lang);
+        }
     };
 
     const handleThemeChange = (event: SelectChangeEvent<ThemeModeSetting>) => {
@@ -93,6 +104,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
         return url;
     };
 
+
     return (
         <Container maxWidth="sm" sx={{py: 4}}>
             <Paper elevation={3} sx={{p: 3}}>
@@ -106,16 +118,15 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                         <Select
                             labelId="language-select-label"
                             id="language-select"
-                            value={i18n.language}
+                            value={currentLanguage}
                             label={t('Language')}
                             onChange={handleLanguageChange}
                         >
-                            <MenuItem value="en">English</MenuItem>
-                            <MenuItem value="zh-CN">简体中文</MenuItem>
-                            <MenuItem value="zh-TW">繁體中文</MenuItem>
-                            <MenuItem value="es">Español</MenuItem>
-                            <MenuItem value="ja">日本語</MenuItem>
-                            <MenuItem value="ko">한국인</MenuItem>
+                            {languageOptions.map((option) => (
+                                <MenuItem key={option} value={option}>
+                                    {languageNames[option] || option}
+                                </MenuItem>
+                            ))}
                         </Select>
                     </FormControl>
                 </Box>

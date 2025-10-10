@@ -1,9 +1,9 @@
+use crate::utils::command::new_cmd;
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 use tracing::{debug, info};
 use walkdir::WalkDir;
-use anyhow::{Context, Result};
-use crate::utils::command::new_cmd;
 
 pub fn copy_dir_recursive_excluding_sync(
     src: &Path,
@@ -105,7 +105,11 @@ pub fn sync_delete_extra_files(working_dir: &Path, repo_dir: &Path) -> io::Resul
 pub async fn delete_dir_if_exist(working_dir_path: &Path) -> Result<()> {
     let result = fs::remove_dir_all(working_dir_path);
 
-    info!("Delete dir if exist: {} {:?}", working_dir_path.display(), result);
+    info!(
+        "Delete dir if exist: {} {:?}",
+        working_dir_path.display(),
+        result
+    );
 
     if let Err(e) = &result {
         if e.kind() == io::ErrorKind::NotFound {

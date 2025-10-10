@@ -34,7 +34,10 @@ pub fn emit<S: Serialize + Clone>(event_name: &str, payload: S) {
             error!("Failed to emit event '{}': {}", event_name, e);
         }
     } else {
-        debug!("AppHandle not initialized. Cannot emit event '{}'.", event_name);
+        debug!(
+            "AppHandle not initialized. Cannot emit event '{}'.",
+            event_name
+        );
     }
 }
 

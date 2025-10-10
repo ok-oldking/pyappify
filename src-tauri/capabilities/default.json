@@ -9,6 +9,7 @@
     "core:default",
     "opener:default",
     "opener:default",
-    "opener:allow-default-urls"
+    "opener:allow-default-urls",
+    "notification:default"
   ]
 }

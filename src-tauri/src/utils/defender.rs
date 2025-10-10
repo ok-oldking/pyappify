@@ -1,8 +1,8 @@
 use std::path::Path;
 // filename: src/defender.rs
-use tracing::{debug, error, info};
 use crate::utils::command::{is_admin, new_cmd};
 use crate::utils::path::{get_cwd, path_to_abs};
+use tracing::{debug, error, info};
 
 pub async fn is_defender_excluded() -> Result<bool, String> {
     #[cfg(not(windows))]
@@ -48,15 +48,15 @@ pub async fn is_defender_excluded() -> Result<bool, String> {
                 return Err(err_msg);
             }
         };
-        let excluded = exclusions
-            .lines()
-            .any(|excluded_line| cwd.ancestors().any(|p| p.as_os_str().eq_ignore_ascii_case(excluded_line)));
+        let excluded = exclusions.lines().any(|excluded_line| {
+            cwd.ancestors()
+                .any(|p| p.as_os_str().eq_ignore_ascii_case(excluded_line))
+        });
 
         debug!("defender exclusions {} \nexcluded:{}", exclusions, excluded);
         Ok(excluded)
     }
 }
-
 
 #[tauri::command]
 pub async fn add_defender_exclusion() -> Result<(), String> {
@@ -72,10 +72,7 @@ pub async fn add_defender_exclusion() -> Result<(), String> {
     match add_output {
         Ok(output) => {
             if output.status.success() {
-                info!(
-                    "Successfully added '{}' to the exclusion list.",
-                    cwd
-                );
+                info!("Successfully added '{}' to the exclusion list.", cwd);
                 Ok(())
             } else {
                 let err_msg = format!(

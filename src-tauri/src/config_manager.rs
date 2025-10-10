@@ -1,7 +1,6 @@
 // src/config_manager.rs
 use crate::python_env::get_supported_python_versions;
 use crate::utils::error::Error;
-use crate::utils::locale::get_locale;
 use crate::utils::path::get_config_dir;
 use crate::utils::path::get_pip_cache_dir;
 use once_cell::sync::OnceCell;
@@ -32,6 +31,14 @@ const UPDATE_METHOD_CONFIG_KEY: &str = "Update Method";
 pub const UPDATE_METHOD_OPTION_MANUAL: &str = "MANUAL_UPDATE";
 pub const UPDATE_METHOD_OPTION_AUTO: &str = "AUTO_UPDATE";
 pub const UPDATE_METHOD_OPTION_IGNORE: &str = "IGNORE_UPDATE";
+
+const I18N_CONFIG_KEY: &str = "Language";
+const I18N_OPTION_EN: &str = "en";
+const I18N_OPTION_ZH_CN: &str = "zh-CN";
+const I18N_OPTION_ZH_TW: &str = "zh-TW";
+const I18N_OPTION_ES: &str = "es";
+const I18N_OPTION_JA: &str = "ja";
+const I18N_OPTION_KO: &str = "ko";
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(untagged)]
@@ -90,6 +97,23 @@ pub struct AppConfig {
     config_path: PathBuf,
 }
 
+fn get_default_lang_from_locale() -> &'static str {
+    let locale = get_default_locale();
+    if locale == "zh-CN" {
+        I18N_OPTION_ZH_CN
+    } else if locale == "zh-TW" || locale == "zh-HK" {
+        I18N_OPTION_ZH_TW
+    } else if locale.starts_with("es") {
+        I18N_OPTION_ES
+    } else if locale.starts_with("ja") {
+        I18N_OPTION_JA
+    } else if locale.starts_with("ko") {
+        I18N_OPTION_KO
+    } else {
+        I18N_OPTION_EN
+    }
+}
+
 impl AppConfig {
     pub fn new() -> Self {
         let config_dir = get_config_dir();
@@ -104,13 +128,33 @@ impl AppConfig {
         instance.merge_and_validate_defaults();
         instance.save_to_file();
         instance.update_pip_cache_env_var_from_config();
-        instance.update_pip_index_url_env_var_from_config();
-
+        instance.update_pip_index_url_env_var_from_config();        
         instance
     }
 
     fn get_default_config_items() -> HashMap<String, ConfigItem> {
         let mut items = HashMap::new();
+
+        let default_lang = get_default_lang_from_locale();
+
+        items.insert(
+            I18N_CONFIG_KEY.to_string(),
+            ConfigItem {
+                name: I18N_CONFIG_KEY.to_string(),
+                description: "The display language of the application.".to_string(),
+                value: ConfigValue::String(default_lang.to_string()),
+                default_value: ConfigValue::String(default_lang.to_string()),
+                options: Some(vec![
+                    ConfigValue::String(I18N_OPTION_EN.to_string()),
+                    ConfigValue::String(I18N_OPTION_ZH_CN.to_string()),
+                    ConfigValue::String(I18N_OPTION_ZH_TW.to_string()),
+                    ConfigValue::String(I18N_OPTION_ES.to_string()),
+                    ConfigValue::String(I18N_OPTION_JA.to_string()),
+                    ConfigValue::String(I18N_OPTION_KO.to_string()),
+                ]),
+            },
+        );
+
         items.insert(
             PIP_CACHE_DIR_CONFIG_KEY.to_string(),
             ConfigItem {
@@ -148,7 +192,7 @@ impl AppConfig {
             },
         );
 
-        let locale = get_locale();
+        let locale = get_default_locale();
         info!("System locale is: {}", locale);
         let default_pip_url = if locale == "zh_CN" {
             PIP_INDEX_URL_OPTION_ALIYUN.to_string()
@@ -314,6 +358,10 @@ impl AppConfig {
     }
 
     pub fn update_item_value(&mut self, name: &str, new_value: ConfigValue) {
+        if name == I18N_CONFIG_KEY {
+            rust_i18n::set_locale(&*new_value.to_string());
+            info!("Updated rust_i18n to '{}' when saving configuration.", new_value);
+        }
         match self.items.get_mut(name) {
             Some(item) => {
                 match (&new_value, &item.default_value) {
@@ -474,6 +522,21 @@ impl AppConfig {
             _ => UPDATE_METHOD_OPTION_MANUAL,
         }
     }
+
+    pub fn get_effective_lang(&self) -> &'static str {
+        match self.get_item_value(I18N_CONFIG_KEY) {
+            Some(ConfigValue::String(value)) => match value.as_str() {
+                I18N_OPTION_EN => I18N_OPTION_EN,
+                I18N_OPTION_ZH_CN => I18N_OPTION_ZH_CN,
+                I18N_OPTION_ZH_TW => I18N_OPTION_ZH_TW,
+                I18N_OPTION_ES => I18N_OPTION_ES,
+                I18N_OPTION_JA => I18N_OPTION_JA,
+                I18N_OPTION_KO => I18N_OPTION_KO,
+                _ => get_default_lang_from_locale(),
+            },
+            _ => get_default_lang_from_locale(),
+        }
+    }
 }
 
 pub type ConfigState = Arc<Mutex<AppConfig>>;
@@ -500,6 +563,10 @@ pub fn update_config_item(
     Ok(())
 }
 
+pub fn get_default_locale() -> String {
+    sys_locale::get_locale().map_or("en-US".to_string(), |locale| locale.replace('_', "-"))
+}
+
 #[tauri::command]
 pub fn save_configuration(state: tauri::State<'_, ConfigState>) -> Result<(), String> {
     let config_manager = state.lock().unwrap();
@@ -509,8 +576,9 @@ pub fn save_configuration(state: tauri::State<'_, ConfigState>) -> Result<(), St
 
 pub fn init_config_manager(app_handle: &tauri::AppHandle) {
     let config = AppConfig::new();
+    rust_i18n::set_locale(config.get_effective_lang());
     let config_state_arc = Arc::new(Mutex::new(config));
-    app_handle.manage(config_state_arc.clone());
+    app_handle.manage(config_state_arc.clone());    
 
     if GLOBAL_CONFIG_STATE.set(config_state_arc).is_err() {
         warn!("GLOBAL_CONFIG_STATE was already initialized. This should not happen if init_config_manager is called only once.");

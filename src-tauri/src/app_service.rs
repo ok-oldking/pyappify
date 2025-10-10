@@ -1,6 +1,22 @@
 //src/app_service.rs
+use crate::app::App;
+use crate::config_manager::{
+    GLOBAL_CONFIG_STATE, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_IGNORE,
+};
+use crate::emitter::get_app_handle;
+use crate::git::ensure_repository;
+use crate::{runas};
+use crate::utils::error::Error;
+use crate::utils::file;
+use crate::utils::file::delete_dir_if_exist;
+use crate::utils::path::{get_app_base_path, get_app_working_dir_path, get_python_dir};
+use crate::utils::window::{create_startup_shortcut, send_notification};
+use rust_i18n::t;
 use crate::{
-    app::{load_app_config_from_json, save_app_config_to_json, read_embedded_app, update_app_from_yml, Profile, YML_FILE_NAME},
+    app::{
+        load_app_config_from_json, read_embedded_app, save_app_config_to_json, update_app_from_yml,
+        Profile, YML_FILE_NAME,
+    },
     emit_error_finish, emit_info, emit_success_finish, emitter, err, execute_python, git,
     python_env,
     utils::path,
@@ -9,23 +25,19 @@ use crate::{
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use once_cell::sync::Lazy;
-use crate::runas;
-use std::{collections::HashMap, fs, path::{Path, PathBuf}, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 use tokio::task;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
-use crate::app::App;
-use crate::config_manager::{GLOBAL_CONFIG_STATE, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_IGNORE, UPDATE_METHOD_OPTION_MANUAL};
-use crate::emitter::get_app_handle;
-use crate::git::ensure_repository;
-use crate::utils::error::Error;
-use crate::utils::file;
-use crate::utils::file::delete_dir_if_exist;
-use crate::utils::path::{get_app_base_path, get_app_working_dir_path, get_python_dir};
-use crate::utils::window::create_startup_shortcut;
+use crate::utils::locale::get_locale;
 
 pub static APPS: Lazy<Mutex<HashMap<String, App>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 pub static APP_DIR_LOCKS: Lazy<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
@@ -79,9 +91,9 @@ pub(crate) async fn get_app_lock(app_name: &str) -> Arc<Mutex<()>> {
 async fn cleanup_stale_app_directories(app_name: &str) -> Result<()> {
     if let Some(apps_dir) = get_app_base_path(app_name).parent() {
         if apps_dir.exists() {
-            let mut entries = tokio::fs::read_dir(apps_dir)
-                .await
-                .with_context(|| format!("Failed to read apps directory: {}", apps_dir.display()))?;
+            let mut entries = tokio::fs::read_dir(apps_dir).await.with_context(|| {
+                format!("Failed to read apps directory: {}", apps_dir.display())
+            })?;
             while let Some(entry) = entries.next_entry().await? {
                 if entry.file_type().await?.is_dir() {
                     let dir_name = entry.file_name().to_string_lossy().into_owned();
@@ -110,7 +122,10 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
     let app_name = &app_template.name;
     let mut app = match load_app_config_from_json(app_name).await {
         Ok(Some(mut app_from_disk)) => {
-            info!("Loaded app '{}' from app.json. {:?}", app_name, app_from_disk);
+            info!(
+                "Loaded app '{}' from app.json. {:?}",
+                app_name, app_from_disk
+            );
             let mut sys = System::new();
             sys.refresh_processes(ProcessesToUpdate::All, true);
             app_from_disk.running = is_app_running(&sys, app_name);
@@ -152,7 +167,10 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
     );
     let repo_path = path::get_app_repo_path(&app.name);
     if app.installed && !repo_path.exists() {
-        warn!("Repository for app '{}' is missing. Marking as not installed.", app_name);
+        warn!(
+            "Repository for app '{}' is missing. Marking as not installed.",
+            app_name
+        );
         app.installed = false;
     }
 
@@ -180,7 +198,10 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
     );
 
     let app = load_and_prepare_app_state(&app_template).await?;
-    info!("Finished loading app details. {} {}", app.name, app.installed);
+    info!(
+        "Finished loading app details. {} {}",
+        app.name, app.installed
+    );
 
     APPS.lock().await.insert(app.name.clone(), app);
     emit_apps().await;
@@ -217,21 +238,30 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
             let is_latest = !app.available_versions.is_empty()
                 && app.current_version.as_ref() == Some(&app.available_versions[0]);
 
-            info!("First load, checking for auto-start conditions. update_method:{}, is_latest:{}", update_method, is_latest);
+            info!(
+                "First load, checking for auto-start conditions. update_method:{}, is_latest:{}",
+                update_method, is_latest
+            );
 
             let mut needs_autostart = false;
+            info!("locale is {}", get_locale());
             if !is_latest {
                 info!("App is not the latest version.");
+                let app_name_clone = app.name.clone();
+                let latest_version = app.available_versions[0].clone();
                 if update_method == UPDATE_METHOD_OPTION_AUTO {
-                    info!("Auto-update is UPDATE_METHOD_OPTION_AUTO. Updating app.");
-                    let app_name_clone = app.name.clone();
-                    let latest_version = app.available_versions[0].clone();
-                    update_to_version(&app_name_clone, &latest_version).await?;
+                    info!("{}", t!("message.new_version_update", locale=get_locale(), version=latest_version.clone()));
+                    send_notification(app_name_clone.clone(), t!("messages.new_version_update", locale=get_locale(), version=latest_version));
+                    // update_to_version(&app_name_clone, &latest_version).await?;
                     info!("Auto Update to version {} success.", &latest_version);
+                    send_notification(app_name_clone, t!("messages.version_update_success", locale=get_locale(), version=latest_version));
                     needs_autostart = true;
-                } else if update_method == UPDATE_METHOD_OPTION_IGNORE {
-                    info!("Auto-update is UPDATE_METHOD_OPTION_IGNORE set auto_start to true.");
-                    needs_autostart = true;
+                } else {
+                    send_notification(app_name_clone.clone(), t!("message.new_version", locale=get_locale(), version=latest_version));
+                    if update_method == UPDATE_METHOD_OPTION_IGNORE {
+                        info!("Auto-update is UPDATE_METHOD_OPTION_IGNORE set auto_start to true.");
+                        needs_autostart = true;
+                    }
                 }
             } else if app.installed {
                 needs_autostart = true;
@@ -251,14 +281,16 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                     });
                 }
             } else {
-                info!("Auto-start conditions not met for app '{}' (installed: {}, is_latest: {}).", app.name, app.installed, is_latest);
+                info!(
+                    "Auto-start conditions not met for app '{}' (installed: {}, is_latest: {}).",
+                    app.name, app.installed, is_latest
+                );
             }
         }
     }
 
     Ok(get_apps_as_vec().await)
 }
-
 
 async fn update_apps_from_disk() -> Result<bool, Error> {
     let app_names: Vec<String> = APPS.lock().await.keys().cloned().collect();
@@ -279,7 +311,10 @@ async fn update_apps_from_disk() -> Result<bool, Error> {
                     git::get_tags_and_current_version(&app.name, repo_path).await?;
                 app.available_versions = versions;
                 app.current_version = Some(current);
-                info!("get_tags_and_current_version done for {}: {:?}", app.name, app.current_version);
+                info!(
+                    "get_tags_and_current_version done for {}: {:?}",
+                    app.name, app.current_version
+                );
             }
 
             if app != original_app {
@@ -291,7 +326,7 @@ async fn update_apps_from_disk() -> Result<bool, Error> {
 
             Ok(false)
         }
-            .await;
+        .await;
 
         match result {
             Ok(modified) => {
@@ -337,8 +372,12 @@ pub async fn get_update_notes(app_name: String, version: String) -> Result<Vec<S
     let app_lock = get_app_lock(&*app_name).await;
     let _guard = app_lock.lock().await;
     let app = get_app_by_name(&app_name).await?;
-    let messages = git::get_commit_messages_for_version_diff(&app.get_repo_path(), &version).await?;
-    info!("get_update_notes for {} version {} messages: {:?}", app.name, version, messages);
+    let messages =
+        git::get_commit_messages_for_version_diff(&app.get_repo_path(), &version).await?;
+    info!(
+        "get_update_notes for {} version {} messages: {:?}",
+        app.name, version, messages
+    );
     Ok(messages)
 }
 
@@ -382,7 +421,7 @@ pub async fn update_working_from_repo(app_name: &str) -> Result<()> {
         file::sync_delete_extra_files(&task_working_dir_path, &task_repo_path)?;
         Ok(())
     })
-        .await??;
+    .await??;
     Ok(())
 }
 
@@ -453,12 +492,8 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<(), Error> 
     python_env::setup_python_env(app_name.to_string(), &python_version_spec).await?;
 
     if !requirements.is_empty() {
-        python_env::install_requirements(
-            app_name,
-            requirements,
-            &working_dir_path,
-            pip_args,
-        ).await?;
+        python_env::install_requirements(app_name, requirements, &working_dir_path, pip_args)
+            .await?;
     } else {
         info!(
             "No reqs in profile '{}' of {}. Skipping sync.",
@@ -554,23 +589,36 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
 
     if needs_pip_sync {
         if spec_changed {
-            emit_info!(app_name, "Requirements spec changed from '{}' to '{}'. Syncing dependencies.", old_requirements_spec, new_requirements_spec);
+            emit_info!(
+                app_name,
+                "Requirements spec changed from '{}' to '{}'. Syncing dependencies.",
+                old_requirements_spec,
+                new_requirements_spec
+            );
         } else {
             let file_type = if new_requirements_spec.ends_with(".txt") {
                 &new_requirements_spec
             } else {
                 "pyproject.toml"
             };
-            emit_info!(app_name, "Content of '{}' changed. Syncing dependencies.", file_type);
+            emit_info!(
+                app_name,
+                "Content of '{}' changed. Syncing dependencies.",
+                file_type
+            );
         }
         python_env::install_requirements(
             app_name,
             &new_requirements_spec,
             &working_dir_path,
             &new_pip_args,
-        ).await?;
+        )
+        .await?;
     } else {
-        emit_info!(app_name, "Requirements are up to date. Skipping dependency sync.");
+        emit_info!(
+            app_name,
+            "Requirements are up to date. Skipping dependency sync."
+        );
     }
 
     {
@@ -594,7 +642,7 @@ fn build_python_execution_environment(
     profile: &Profile,
     current_version: Option<String>,
 ) -> (Vec<(String, String)>, Vec<String>) {
-    let mut envs_to_remove  = Vec::new();
+    let mut envs_to_remove = Vec::new();
     envs_to_remove.push("PYTHONHOME".to_string());
     envs_to_remove.push("PYTHONSTARTUP".to_string());
     envs_to_remove.push("VIRTUAL_ENV".to_string());
@@ -627,10 +675,7 @@ fn build_python_execution_environment(
     (envs, envs_to_remove)
 }
 
-async fn check_running_on_start(
-    app_name: &str,
-    working_dir: &Path,
-) -> Result<()> {
+async fn check_running_on_start(app_name: &str, working_dir: &Path) -> Result<()> {
     let start_time = tokio::time::Instant::now();
     let timeout = Duration::from_secs(10);
     let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -731,7 +776,7 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
             profile_to_run_with.name,
             app_name
         )
-            .into());
+        .into());
     }
 
     info!(
@@ -742,7 +787,8 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         profile_to_run_with.main_script
     );
 
-    let (envs, envs_to_remove) = build_python_execution_environment(&profile_to_run_with, current_version);
+    let (envs, envs_to_remove) =
+        build_python_execution_environment(&profile_to_run_with, current_version);
     execute_python::run_python_script(
         app_name.as_str(),
         profile_to_run_with.main_script.as_str(),
@@ -750,9 +796,9 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         profile_to_run_with.is_admin(),
         profile_to_run_with.use_pythonw(),
         envs,
-        envs_to_remove
+        envs_to_remove,
     )
-        .await?;
+    .await?;
 
     check_running_on_start(&app_name, &working_dir).await?;
     create_startup_shortcut(app_handle, app_name).await?;
@@ -788,8 +834,10 @@ fn try_kill_with_elevation(pid: Pid, app_name: &str) -> Result<()> {
             pid_str,
             status.code().unwrap_or(-1)
         ),
-        Err(e) => Err(anyhow::Error::from(e))
-            .context(format!("Failed to launch elevated kill for PID {}", pid_str)),
+        Err(e) => Err(anyhow::Error::from(e)).context(format!(
+            "Failed to launch elevated kill for PID {}",
+            pid_str
+        )),
     }
 }
 
@@ -835,7 +883,7 @@ async fn kill_app_processes(app_name: &str) -> Result<bool> {
         }
         Ok(targeted_any)
     })
-        .await?
+    .await?
 }
 
 #[tauri::command]

@@ -1,12 +1,14 @@
 // src/utils/window.rs
-use tauri::{App, AppHandle, Manager, WebviewWindow, Window, WindowEvent, Wry};
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tracing::info;
-use std::env;
-use std::fs;
 use crate::utils::error::Error;
 use crate::utils::path::get_start_dir;
+use std::env;
+use std::fs;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{App, AppHandle, Manager, WebviewWindow, Window, WindowEvent, Wry};
+use tauri_plugin_notification::NotificationExt;
+use tracing::info;
+use crate::emitter::get_app_handle;
 
 pub fn on_window_event(window: &Window, _event: &WindowEvent) {
     if let WindowEvent::Resized(size) = _event {
@@ -17,6 +19,18 @@ pub fn on_window_event(window: &Window, _event: &WindowEvent) {
     }
 }
 
+pub fn send_notification(title: impl Into<String>, body: impl Into<String>) {
+    let title = title.into();
+    let body = body.into();
+    info!("send_notification: {} {}", &title, &body);
+
+    get_app_handle().unwrap().notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .unwrap();
+}
 
 pub fn create_system_tray(app: &App<Wry>) -> anyhow::Result<()> {
     let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -77,7 +91,7 @@ pub async fn create_startup_shortcut(app_handle: AppHandle, name: String) -> Res
     let shortcut_path = shortcut_dir.join(format!("{}.lnk", name));
     let exe_path = env::current_exe()?;
     let args = format!("-c start -n {}", name);
-    
+
     let link = shortcuts_rs::ShellLink::new(&exe_path, Some(args), None, None)?;
     link.create_lnk(&shortcut_path)?;
     info!("created shortcut at {shortcut_path:?}");

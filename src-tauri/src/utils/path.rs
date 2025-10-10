@@ -57,8 +57,11 @@ pub fn get_config_dir() -> PathBuf {
 }
 
 pub fn get_start_dir(app_handle: AppHandle) -> PathBuf {
-    app_handle.path().config_dir()
-    .map(|path| path.join("Microsoft\\Windows\\Start Menu\\Programs")).unwrap()
+    app_handle
+        .path()
+        .config_dir()
+        .map(|path| path.join("Microsoft\\Windows\\Start Menu\\Programs"))
+        .unwrap()
 }
 
 fn strip_extended_path_prefix(path_str: &str) -> String {

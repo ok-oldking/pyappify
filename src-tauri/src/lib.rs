@@ -1,24 +1,32 @@
 // src/lib.rs
+mod app;
 mod app_service;
 mod config_manager;
 mod emitter;
 mod execute_python;
 mod git;
 mod python_env;
+mod runas;
 mod submodule;
 mod utils;
-mod app;
-mod runas;
 
-use crate::app_service::{delete_app, get_update_notes, load_apps, setup_app, start_app, stop_app, update_to_version};
-use crate::config_manager::{get_config_payload, init_config_manager, save_configuration, update_config_item};
+use crate::app_service::{
+    delete_app, get_update_notes, load_apps, setup_app, start_app, stop_app, update_to_version,
+};
+use crate::config_manager::{
+    get_config_payload, init_config_manager, save_configuration, update_config_item,
+};
+use crate::utils::defender::add_defender_exclusion;
 use crate::utils::logger::LoggerBuilder;
 use crate::utils::window;
-use crate::utils::defender::add_defender_exclusion;
-use std::env;
-use tauri::{Manager};
-use tracing::info;
 use crate::utils::window::on_window_event;
+use std::env;
+use tauri::Manager;
+use tracing::info;
+#[macro_use]
+extern crate rust_i18n;
+i18n!("locales", fallback = "en");
+
 
 fn has_cli_command() -> bool {
     let args: Vec<String> = env::args().collect();
@@ -42,14 +50,24 @@ async fn handle_command_line() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "-c" => { command = args.get(i + 1).cloned(); i += 2; }
-            "-p" => { profile_name = args.get(i + 1).cloned(); i += 2; }
+            "-c" => {
+                command = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "-p" => {
+                profile_name = args.get(i + 1).cloned();
+                i += 2;
+            }
             _ => i += 1,
         }
     }
 
-    if command.is_none() { command = env::var("PYAPPIFY_COMMAND").ok(); }
-    if profile_name.is_none() { profile_name = env::var("PYAPPIFY_PROFILE_NAME").ok(); }
+    if command.is_none() {
+        command = env::var("PYAPPIFY_COMMAND").ok();
+    }
+    if profile_name.is_none() {
+        profile_name = env::var("PYAPPIFY_PROFILE_NAME").ok();
+    }
 
     if let (Some(cmd), Some(p_name)) = (command, profile_name) {
         if cmd == "setup" {
@@ -63,7 +81,10 @@ async fn handle_command_line() {
 
             if let Some(app) = apps.first() {
                 let a_name = &app.name;
-                println!("Command-line mode: Setting up app '{}' with profile '{}'.", a_name, p_name);
+                println!(
+                    "Command-line mode: Setting up app '{}' with profile '{}'.",
+                    a_name, p_name
+                );
                 match setup_app(a_name, &p_name).await {
                     Ok(_path) => {
                         println!("Setup successful.");
@@ -139,7 +160,10 @@ pub async fn run() {
                 if let Err(e) = env::set_current_dir(exe_dir) {
                     eprintln!("Failed to set current directory to executable path: {}", e);
                 } else {
-                    println!("Current directory set to: {}", env::current_dir().unwrap().display());
+                    println!(
+                        "Current directory set to: {}",
+                        env::current_dir().unwrap().display()
+                    );
                 }
             }
         }
@@ -150,7 +174,11 @@ pub async fn run() {
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", cwd);
     }
 
-    let log_level = if cfg!(debug_assertions) { "debug" } else { "info" };
+    let log_level = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "info"
+    };
     let _ = LoggerBuilder::new()
         .log_dir("logs")
         .file_prefix("app")
@@ -174,12 +202,15 @@ pub async fn run() {
             }))
             .on_window_event(on_window_event)
             .plugin(tauri_plugin_opener::init())
+            .plugin(tauri_plugin_notification::init())
             .setup(|app| {
                 window::create_system_tray(&app).unwrap();
                 let app_handle = app.handle();
                 emitter::init_app_handle(app_handle.clone());
                 init_config_manager(&app_handle);
-                tokio::spawn(app_service::periodically_update_all_apps_running_status(app_handle.clone()));
+                tokio::spawn(app_service::periodically_update_all_apps_running_status(
+                    app_handle.clone(),
+                ));
                 Ok(())
             })
             .invoke_handler(tauri::generate_handler![

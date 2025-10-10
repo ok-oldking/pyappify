@@ -1,3 +1,13 @@
-pub fn get_locale() -> String {
-    sys_locale::get_locale().map_or("en_US".to_string(), |locale| locale.replace('-', "_"))
+// i18n.rs
+use crate::config_manager::GLOBAL_CONFIG_STATE;
+
+pub fn get_locale() -> &'static str {
+    if let Some(config_state) = GLOBAL_CONFIG_STATE.get() {
+        let config_guard = config_state.lock().unwrap();
+        config_guard.get_effective_lang()
+    } else {
+        "en"
+    }
 }
+
+

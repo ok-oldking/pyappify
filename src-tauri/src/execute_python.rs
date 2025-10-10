@@ -1,10 +1,10 @@
 //src/execute_python.rs
+use crate::runas;
 use crate::utils::command::{command_to_string, is_admin, run_command_and_stream_output};
 use crate::utils::error::Error;
 use crate::utils::path::{get_python_dir, get_python_exe, path_to_abs};
 use crate::{emit_error, emit_error_finish, emit_info, emit_success_finish, err};
 use anyhow::anyhow;
-use crate::runas;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -277,13 +277,14 @@ pub async fn run_python_script(
         return Err(err!(err_msg));
     }
 
-    let script_path = match find_script_or_executable(script, working_dir, &python_dir.join("Scripts")) {
-        Ok(result) => result,
-        Err(e) => {
-            emit_error!(app_name, "{}", e);
-            return Err(e);
-        }
-    };
+    let script_path =
+        match find_script_or_executable(script, working_dir, &python_dir.join("Scripts")) {
+            Ok(result) => result,
+            Err(e) => {
+                emit_error!(app_name, "{}", e);
+                return Err(e);
+            }
+        };
 
     let python_path_str = path_to_abs(&python_executable);
     let script_path_str = path_to_abs(&script_path);
@@ -326,7 +327,7 @@ pub async fn run_python_script(
                 &envs_owned,
                 &envs_to_remove_owned,
             )
-                .await
+            .await
         } else {
             run_python_script_normal_internal(
                 app_name_owned.as_str(),
@@ -336,7 +337,7 @@ pub async fn run_python_script(
                 &envs_owned,
                 &envs_to_remove_owned,
             )
-                .await
+            .await
         };
         if let Err(e) = result {
             emit_error!(app_name_owned, "Script run Error {}", e);
