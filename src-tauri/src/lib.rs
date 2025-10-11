@@ -10,9 +10,7 @@ mod runas;
 mod submodule;
 mod utils;
 
-use crate::app_service::{
-    delete_app, get_update_notes, load_apps, setup_app, start_app, stop_app, update_to_version,
-};
+use crate::app_service::{delete_app, get_update_notes, load_apps, setup_app, start_app, stop_app, update_to_version, AUTO_START_CHECKED};
 use crate::config_manager::{
     get_config_payload, init_config_manager, save_configuration, update_config_item,
 };
@@ -43,6 +41,8 @@ fn has_cli_command() -> bool {
 }
 
 async fn handle_command_line() {
+    let mut auto_start_lock = AUTO_START_CHECKED.lock().await;
+    *auto_start_lock = true;
     let args: Vec<String> = env::args().collect();
     let mut command = None;
     let mut profile_name = None;
