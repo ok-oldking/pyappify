@@ -41,8 +41,10 @@ fn has_cli_command() -> bool {
 }
 
 async fn handle_command_line() {
-    let mut auto_start_lock = AUTO_START_CHECKED.lock().await;
-    *auto_start_lock = true;
+    {
+        let mut auto_start_lock = AUTO_START_CHECKED.lock().await;
+        *auto_start_lock = true;
+    }
     let args: Vec<String> = env::args().collect();
     let mut command = None;
     let mut profile_name = None;
