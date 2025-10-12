@@ -1,15 +1,31 @@
 use std::path::{Path, PathBuf};
 use sysinfo::{Pid, Process, System};
+use std::process::Command as StdCommand;
+use tokio::process::Command as TokioCommand;
 
+pub const PYTHON_ENVS_TO_REMOVE: [&str; 3] = ["PYTHONHOME", "PYTHONSTARTUP", "VIRTUAL_ENV"];
+pub trait RemovePythonEnvsExt {
+    fn remove_python_envs(&mut self) -> &mut Self;
+}
+impl RemovePythonEnvsExt for StdCommand {
+    fn remove_python_envs(&mut self) -> &mut Self {
+        for env in PYTHON_ENVS_TO_REMOVE {
+            self.env_remove(env);
+        }
+        self
+    }
+}
+impl RemovePythonEnvsExt for TokioCommand {
+    fn remove_python_envs(&mut self) -> &mut Self {
+        for env in PYTHON_ENVS_TO_REMOVE {
+            self.env_remove(env);
+        }
+        self
+    }
+}
 pub fn is_process_related_to_app_dir(process: &Process, app_dir_canonical: &Path) -> bool {
     if let Some(exe_path) = process.exe() {
         if exe_path.starts_with(app_dir_canonical) {
-            // debug!(
-            //     "Process {:?} (PID {}) matched by EXE path: {}",
-            //     process.name(),
-            //     process.pid().as_u32(),
-            //     exe_path.display()
-            // );
             return true;
         }
     }

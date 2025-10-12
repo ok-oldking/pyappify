@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
 use tracing::{error, info};
+use crate::utils::process::{RemovePythonEnvsExt, PYTHON_ENVS_TO_REMOVE};
 
 struct ProcessContextGuard {
     original_dir: PathBuf,
@@ -20,30 +21,29 @@ struct ProcessContextGuard {
 impl ProcessContextGuard {
     fn new(
         new_dir: &Path,
-        vars_to_set: &HashMap<String, String>,
-        vars_to_remove: &[String],
+        vars_to_set: &HashMap<String, String>
     ) -> Result<Self, std::io::Error> {
         let original_dir = std::env::current_dir()?;
 
         let mut original_env_vars = HashMap::new();
 
         let mut all_keys_to_manage = Vec::new();
-        for key in vars_to_remove {
-            all_keys_to_manage.push(key.clone());
+        for key in PYTHON_ENVS_TO_REMOVE {
+            all_keys_to_manage.push(key);
         }
         for key in vars_to_set.keys() {
-            if !vars_to_remove.contains(key) {
-                all_keys_to_manage.push(key.clone());
+            if PYTHON_ENVS_TO_REMOVE.contains(&&**key) {
+                all_keys_to_manage.push(key);
             }
         }
 
         for key in all_keys_to_manage {
-            original_env_vars.insert(key.clone(), std::env::var_os(&key));
+            original_env_vars.insert(key.to_string(), std::env::var_os(&key));
         }
 
         std::env::set_current_dir(new_dir)?;
 
-        for key_to_remove in vars_to_remove {
+        for key_to_remove in PYTHON_ENVS_TO_REMOVE {
             std::env::remove_var(key_to_remove);
             info!(env_var = %key_to_remove, "Temporarily removed environment variable for current process.");
         }
@@ -87,8 +87,7 @@ async fn run_python_script_as_admin_internal(
     python_path: String,
     script_path: String,
     working_dir: &Path,
-    envs: &[(String, String)],
-    envs_to_remove: &[String],
+    envs: &[(String, String)]
 ) -> Result<(), Error> {
     let (executable, mut args) = if script_path.ends_with(".py") {
         (python_path, vec![script_path])
@@ -103,7 +102,7 @@ async fn run_python_script_as_admin_internal(
         env_vars_to_set.insert(key.clone(), value.clone());
     }
 
-    let _guard = ProcessContextGuard::new(working_dir, &env_vars_to_set, &envs_to_remove)?;
+    let _guard = ProcessContextGuard::new(working_dir, &env_vars_to_set)?;
     emit_info!(
         app_name,
         "run as admin command: {} {}, cwd: {}",
@@ -165,7 +164,6 @@ async fn run_python_script_normal_internal(
     script_path: String,
     working_dir: &Path,
     envs: &[(String, String)],
-    envs_to_remove: &[String],
 ) -> Result<(), Error> {
     let (executable, mut args) = if script_path.ends_with(".py") {
         (python_path, vec![script_path])
@@ -180,10 +178,8 @@ async fn run_python_script_normal_internal(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(false);
+    cmd.remove_python_envs();
 
-    for key in envs_to_remove {
-        cmd.env_remove(key);
-    }
     for (key, value) in envs {
         cmd.env(key, value);
     }
@@ -245,14 +241,12 @@ pub async fn run_python_script(
     working_dir: &Path,
     as_admin: bool,
     use_pythonw: bool,
-    mut envs: Vec<(String, String)>,
-    envs_to_remove: Vec<String>,
+    mut envs: Vec<(String, String)>
 ) -> Result<(), Error> {
     let envs_keys: HashSet<String> = envs.iter().map(|(k, _)| k.clone()).collect();
-    let envs_to_remove_keys: HashSet<String> = envs_to_remove.iter().cloned().collect();
 
     for (key, value) in std::env::vars() {
-        if !envs_keys.contains(&key) && !envs_to_remove_keys.contains(&key) {
+        if !envs_keys.contains(&key) {
             envs.push((key, value));
         }
     }
@@ -304,7 +298,6 @@ pub async fn run_python_script(
     let script_path_owned = script_path_str.clone();
     let working_dir_owned = working_dir.to_path_buf();
     let envs_owned = envs;
-    let envs_to_remove_owned = envs_to_remove;
 
     tokio::spawn(async move {
         let needs_elevation = as_admin && !is_admin();
@@ -324,8 +317,7 @@ pub async fn run_python_script(
                 python_path_owned,
                 script_path_owned,
                 &working_dir_owned,
-                &envs_owned,
-                &envs_to_remove_owned,
+                &envs_owned
             )
             .await
         } else {
@@ -334,8 +326,7 @@ pub async fn run_python_script(
                 python_path_owned,
                 script_path_owned,
                 &working_dir_owned,
-                &envs_owned,
-                &envs_to_remove_owned,
+                &envs_owned
             )
             .await
         };

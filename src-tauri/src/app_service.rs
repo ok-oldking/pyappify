@@ -641,18 +641,13 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
 fn build_python_execution_environment(
     profile: &Profile,
     current_version: Option<String>,
-) -> (Vec<(String, String)>, Vec<String>) {
-    let mut envs_to_remove = Vec::new();
-    envs_to_remove.push("PYTHONHOME".to_string());
-    envs_to_remove.push("PYTHONSTARTUP".to_string());
-    envs_to_remove.push("VIRTUAL_ENV".to_string());
+) -> Vec<(String, String)> {
 
     let mut envs = Vec::new();
     if !profile.python_path.is_empty() {
         envs.push(("PYTHONPATH".to_string(), profile.python_path.clone()));
-    } else {
-        envs_to_remove.push("PYTHONPATH".to_string());
-    }
+    } 
+    
     if let Some(version) = current_version {
         envs.push(("PYAPPIFY_APP_VERSION".to_string(), version));
     }
@@ -672,7 +667,7 @@ fn build_python_execution_environment(
         ));
     }
 
-    (envs, envs_to_remove)
+    envs
 }
 
 async fn check_running_on_start(app_name: &str, working_dir: &Path) -> Result<()> {
@@ -787,7 +782,7 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         profile_to_run_with.main_script
     );
 
-    let (envs, envs_to_remove) =
+    let envs =
         build_python_execution_environment(&profile_to_run_with, current_version);
     execute_python::run_python_script(
         app_name.as_str(),
@@ -795,8 +790,7 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         &working_dir,
         profile_to_run_with.is_admin(),
         profile_to_run_with.use_pythonw(),
-        envs,
-        envs_to_remove,
+        envs
     )
     .await?;
 

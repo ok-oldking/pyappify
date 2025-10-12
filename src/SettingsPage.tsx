@@ -1,8 +1,9 @@
-// src/components/SettingsPage.tsx
-import React from 'react';
+// src/SettingsPage.tsx
+import React, {useEffect, useState} from 'react';
 import {
     Box,
     Button,
+    CircularProgress,
     Container,
     FormControl,
     InputLabel,
@@ -14,205 +15,126 @@ import {
 } from '@mui/material';
 import i18n from "i18next";
 import {useTranslation} from 'react-i18next';
+import {invoke} from "@tauri-apps/api/core";
+import {invokeTauriCommandWrapper} from "./utils.ts";
+import {ThemeModeSetting} from "./App.tsx";
 
-type ThemeModeSetting = 'light' | 'dark' | 'system';
+interface StatusUpdateProps {
+    updateStatus: (newStatus: { error?: string | null, info?: string | null, messageLoading?: boolean }) => void;
+    clearMessages: () => void;
+}
 
-interface SettingsPageProps {
-    currentLanguage?: string;
-    languageOptions?: string[];
-    onChangeLanguage?: (value: string) => void;
-
+interface SettingsPageProps extends StatusUpdateProps {
     currentTheme: ThemeModeSetting;
     onChangeTheme: (theme: ThemeModeSetting) => void;
-
-    currentPipCacheDir: string;
-    pipCacheDirOptions: string[];
-    onChangePipCacheDir: (value: string) => void;
-
-    currentIndexUrl: string;
-    pipIndexUrlOptions: string[];
-    onChangePipIndexUrl: (value: string) => void;
-
-    currentUpdateMethod: string;
-    updateMethodOptions: string[];
-    onChangeUpdateMethod: (value: string) => void;
-
     onBack: () => void;
 }
 
-const languageNames: { [key: string]: string } = {
-    'en': 'English',
-    'zh-CN': '简体中文',
-    'zh-TW': '繁體中文',
-    'es': 'Español',
-    'ja': '日本語',
-    'ko': '한국인',
+interface ConfigItemFromRust {
+    name: string;
+    description: string;
+    value: string | number;
+    default_value: string | number;
+    options?: (string | number)[];
+}
+const PIP_CACHE_DIR_CONFIG_KEY = "Pip Cache Directory";
+const PIP_INDEX_URL_CONFIG_KEY = "Pip Index URL";
+const LANGUAGE_CONFIG_KEY = "Language";
+const UPDATE_METHOD_CONFIG_KEY = "Update Method";
+
+const languageNames: { [key: string]: string } = { 'en': 'English', 'zh-CN': '简体中文', 'zh-TW': '繁體中文', 'es': 'Español', 'ja': '日本語', 'ko': '한국인' };
+
+const getPipIndexUrlName = (url: string, t: (key: string) => string) => {
+    if (url === '') return t('System Default');
+    if (url.includes('pypi.org')) return 'PyPI';
+    if (url.includes('tsinghua')) return 'Tsinghua';
+    if (url.includes('aliyun')) return 'Aliyun';
+    if (url.includes('ustc')) return 'USTC';
+    if (url.includes('huaweicloud')) return 'Huawei Cloud';
+    if (url.includes('tencent')) return 'Tencent Cloud';
+    return url;
 };
 
-
-const SettingsPage: React.FC<SettingsPageProps> = ({
-                                                       currentLanguage = '',
-                                                       languageOptions = [],
-                                                       onChangeLanguage,
-                                                       currentTheme,
-                                                       onChangeTheme,
-                                                       currentPipCacheDir = '',
-                                                       pipCacheDirOptions = [],
-                                                       onChangePipCacheDir,
-                                                       currentIndexUrl = '',
-                                                       pipIndexUrlOptions = [],
-                                                       onChangePipIndexUrl,
-                                                       currentUpdateMethod = 'MANUAL_UPDATE',
-                                                       updateMethodOptions = [],
-                                                       onChangeUpdateMethod,
-                                                       onBack
-                                                   }) => {
+const SettingsPage: React.FC<SettingsPageProps> = ({ currentTheme, onChangeTheme, onBack, updateStatus, clearMessages }) => {
     const {t} = useTranslation();
+    const [configs, setConfigs] = useState<ConfigItemFromRust[] | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
 
-    const handleLanguageChange = (event: SelectChangeEvent<string>) => {
-        const lang = event.target.value;
-        i18n.changeLanguage(lang);
-        if (onChangeLanguage) {
-            onChangeLanguage(lang);
-        }
+    const loadConfigs = async () => {
+        setIsLoading(true);
+        await invokeTauriCommandWrapper<ConfigItemFromRust[]>(
+            'get_config_payload', undefined,
+            (result) => {
+                setConfigs(result);
+                const languageConfig = result.find(c => c.name === LANGUAGE_CONFIG_KEY);
+                if (languageConfig && languageConfig.value) {
+                    i18n.changeLanguage(languageConfig.value as string);
+                }
+            },
+            (errorMsg) => updateStatus({error: `Failed to load settings: ${errorMsg}`})
+        );
+        setIsLoading(false);
     };
 
-    const handleThemeChange = (event: SelectChangeEvent<ThemeModeSetting>) => {
-        onChangeTheme(event.target.value as ThemeModeSetting);
+    useEffect(() => {
+        loadConfigs();
+    }, []);
+
+    const handleSettingChange = async (name: string, value: string | number) => {
+        clearMessages();
+        updateStatus({messageLoading: true});
+        await invokeTauriCommandWrapper<void>(
+            'update_config_item', {name, value},
+            async () => {
+                const updatedConfigs = await invoke<ConfigItemFromRust[]>('get_config_payload');
+                setConfigs(updatedConfigs);
+                if (name === LANGUAGE_CONFIG_KEY) i18n.changeLanguage(value as string);
+                updateStatus({info: `${name} updated successfully.`, messageLoading: false});
+            },
+            (errorMsg) => updateStatus({error: `Failed to update ${name}: ${errorMsg}`, messageLoading: false})
+        );
     };
 
-    const handlePipCacheDirChange = (event: SelectChangeEvent<string>) => {
-        onChangePipCacheDir(event.target.value as string);
-    };
+    if (isLoading || !configs) {
+        return (
+            <Container maxWidth="sm" sx={{py: 4, display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh'}}>
+                <CircularProgress/><Typography sx={{ml: 2}}>{t('Loading settings...')}</Typography>
+            </Container>
+        );
+    }
 
-    const handlePipIndexUrlChange = (event: SelectChangeEvent<string>) => {
-        onChangePipIndexUrl(event.target.value as string);
-    };
-
-    const handleUpdateMethodChange = (event: SelectChangeEvent<string>) => {
-        onChangeUpdateMethod(event.target.value as string);
-    };
-
-    const getPipIndexUrlName = (url: string) => {
-        if (url === '') return t('System Default');
-        if (url.includes('pypi.org')) return 'PyPI';
-        if (url.includes('tsinghua')) return 'Tsinghua';
-        if (url.includes('aliyun')) return 'Aliyun';
-        if (url.includes('ustc')) return 'USTC';
-        if (url.includes('huaweicloud')) return 'Huawei Cloud';
-        if (url.includes('tencent')) return 'Tencent Cloud';
-        return url;
-    };
-
+    const getConfig = (key: string) => configs.find(c => c.name === key);
+    const languageConfig = getConfig(LANGUAGE_CONFIG_KEY);
+    const themeConfig = { value: currentTheme, options: ['system', 'light', 'dark'] };
+    const pipCacheConfig = getConfig(PIP_CACHE_DIR_CONFIG_KEY);
+    const pipIndexUrlConfig = getConfig(PIP_INDEX_URL_CONFIG_KEY);
+    const updateMethodConfig = getConfig(UPDATE_METHOD_CONFIG_KEY);
 
     return (
         <Container maxWidth="sm" sx={{py: 4}}>
             <Paper elevation={3} sx={{p: 3}}>
-                <Typography variant="h4" component="h1" gutterBottom sx={{textAlign: 'center', mb: 3}}>
-                    {t('Settings')}
-                </Typography>
-
-                <Box sx={{my: 2}}>
-                    <FormControl fullWidth variant="outlined">
-                        <InputLabel id="language-select-label">{t('Language')}</InputLabel>
-                        <Select
-                            labelId="language-select-label"
-                            id="language-select"
-                            value={currentLanguage}
-                            label={t('Language')}
-                            onChange={handleLanguageChange}
-                        >
-                            {languageOptions.map((option) => (
-                                <MenuItem key={option} value={option}>
-                                    {languageNames[option] || option}
-                                </MenuItem>
-                            ))}
-                        </Select>
-                    </FormControl>
-                </Box>
-
-                <Box sx={{my: 2}}>
-                    <FormControl fullWidth variant="outlined">
-                        <InputLabel id="theme-select-label">{t('Theme')}</InputLabel>
-                        <Select
-                            labelId="theme-select-label"
-                            id="theme-select"
-                            value={currentTheme}
-                            label={t('Theme')}
-                            onChange={handleThemeChange}
-                        >
-                            <MenuItem value="system">{t('System Default')}</MenuItem>
-                            <MenuItem value="light">{t('Light')}</MenuItem>
-                            <MenuItem value="dark">{t('Dark')}</MenuItem>
-                        </Select>
-                    </FormControl>
-                </Box>
-
-                <Box sx={{my: 2}}>
-                    <FormControl fullWidth variant="outlined">
-                        <InputLabel id="pip-cache-dir-select-label">{t('Pip Cache Directory')}</InputLabel>
-                        <Select
-                            labelId="pip-cache-dir-select-label"
-                            id="pip-cache-dir-select"
-                            value={currentPipCacheDir}
-                            label={t('Pip Cache Directory')}
-                            onChange={handlePipCacheDirChange}
-                        >
-                            {pipCacheDirOptions.map((option) => (
-                                <MenuItem key={option} value={option}>
-                                    {t(option)}
-                                </MenuItem>
-                            ))}
-                        </Select>
-                    </FormControl>
-                </Box>
-
-                <Box sx={{my: 2}}>
-                    <FormControl fullWidth variant="outlined">
-                        <InputLabel id="pip-index-url-select-label">{t('Pip Index URL')}</InputLabel>
-                        <Select
-                            labelId="pip-index-url-select-label"
-                            id="pip-index-url-select"
-                            value={currentIndexUrl}
-                            label={t('Pip Index URL')}
-                            onChange={handlePipIndexUrlChange}
-                        >
-                            {pipIndexUrlOptions.map((option) => (
-                                <MenuItem key={option} value={option}>
-                                    {t(getPipIndexUrlName(option))}
-                                </MenuItem>
-                            ))}
-                        </Select>
-                    </FormControl>
-                </Box>
-
-                <Box sx={{ my: 2 }}>
-                    <FormControl fullWidth variant="outlined">
-                        <InputLabel id="update-method-select-label">{t('Update Method')}</InputLabel>
-                        <Select
-                            labelId="update-method-select-label"
-                            id="update-method-select"
-                            value={currentUpdateMethod}
-                            label={t('Update Method')}
-                            onChange={handleUpdateMethodChange}
-                        >
-                            {updateMethodOptions.map((option) => (
-                                <MenuItem key={option} value={option}>
-                                    {t(option)}
-                                </MenuItem>
-                            ))}
-                        </Select>
-                    </FormControl>
-                </Box>
-
+                <Typography variant="h4" component="h1" gutterBottom align="center">{t('Settings')}</Typography>
+                {[
+                    { label: t('Language'), config: languageConfig, handler: (e: SelectChangeEvent) => handleSettingChange(LANGUAGE_CONFIG_KEY, e.target.value), renderOption: (o: string) => languageNames[o] || o },
+                    { label: t('Theme'), config: themeConfig, handler: (e: SelectChangeEvent) => onChangeTheme(e.target.value as ThemeModeSetting), renderOption: (o: string) => t(o.charAt(0).toUpperCase() + o.slice(1)) },
+                    { label: t('Pip Cache Directory'), config: pipCacheConfig, handler: (e: SelectChangeEvent) => handleSettingChange(PIP_CACHE_DIR_CONFIG_KEY, e.target.value), renderOption: (o: string) => t(o) },
+                    { label: t('Pip Index URL'), config: pipIndexUrlConfig, handler: (e: SelectChangeEvent) => handleSettingChange(PIP_INDEX_URL_CONFIG_KEY, e.target.value), renderOption: (o: string) => getPipIndexUrlName(o, t) },
+                    { label: t('Update Method'), config: updateMethodConfig, handler: (e: SelectChangeEvent) => handleSettingChange(UPDATE_METHOD_CONFIG_KEY, e.target.value), renderOption: (o: string) => t(o) },
+                ].map(({ label, config, handler, renderOption }) => config && (
+                    <Box key={label} sx={{my: 2}}>
+                        <FormControl fullWidth variant="outlined">
+                            <InputLabel>{label}</InputLabel>
+                            <Select value={(config.value as string) || ''} label={label} onChange={handler}>
+                                {(config.options as string[])?.map(o => <MenuItem key={o} value={o}>{renderOption(o)}</MenuItem>)}
+                            </Select>
+                        </FormControl>
+                    </Box>
+                ))}
                 <Box sx={{mt: 4, display: 'flex', justifyContent: 'center'}}>
-                    <Button variant="outlined" onClick={onBack}>
-                        {t('Back to App')}
-                    </Button>
+                    <Button variant="outlined" onClick={onBack}>{t('Back to App')}</Button>
                 </Box>
             </Paper>
         </Container>
     );
 };
-
 export default SettingsPage;

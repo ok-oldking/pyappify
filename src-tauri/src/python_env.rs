@@ -20,6 +20,7 @@ use tracing::{error, info, warn};
 use walkdir::WalkDir;
 use zip::ZipArchive;
 use crate::config_manager::get_default_locale;
+use crate::utils::process::RemovePythonEnvsExt;
 
 const KNOWN_PATCHES: [(&str, &str, &str, &str); 7] = [
     ("3.13", "3.13.5", "https://www.python.org/ftp/python/3.13.5/python-3.13.5-amd64.zip", "https://mirrors.huaweicloud.com/python/3.13.5/python-3.13.5-amd64.zip"),
@@ -545,7 +546,8 @@ pub async fn install_requirements(
         .arg("pip")
         .arg("install")
         .arg("--no-warn-script-location");
-
+    pip_install_cmd.remove_python_envs();
+    
     let mut use_config_index_url = true;
     if !pip_args.is_empty() {
         if pip_args

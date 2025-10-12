@@ -1,7 +1,7 @@
-use std::path::Path;
 // filename: src/defender.rs
 use crate::utils::command::{is_admin, new_cmd};
 use crate::utils::path::{get_cwd, path_to_abs};
+use std::path::Path;
 use tracing::{debug, error, info};
 
 pub async fn is_defender_excluded() -> Result<bool, String> {
@@ -33,19 +33,17 @@ pub async fn is_defender_excluded() -> Result<bool, String> {
         let exclusions = match get_output {
             Ok(output) => {
                 if !output.status.success() {
-                    let err_msg = format!(
+                    error!(
                         "Failed to get Defender preferences: {}",
                         String::from_utf8_lossy(&output.stderr)
                     );
-                    error!("{}", err_msg);
-                    return Err(err_msg);
+                    return Ok(true);
                 }
                 String::from_utf8_lossy(&output.stdout).to_string()
             }
             Err(e) => {
-                let err_msg = format!("Failed to execute PowerShell to get preferences: {}", e);
-                error!("{}", err_msg);
-                return Err(err_msg);
+                error!("Failed to execute PowerShell to get preferences: {}", e);
+                return Ok(true);
             }
         };
         let excluded = exclusions.lines().any(|excluded_line| {
