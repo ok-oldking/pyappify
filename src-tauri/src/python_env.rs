@@ -36,7 +36,7 @@ fn get_download_urls(patch_version: &str) -> Result<(String, String)> {
     let locale = get_default_locale();
     for patch in KNOWN_PATCHES.iter() {
         if patch.0 == patch_version || patch.1 == patch_version {
-            return if locale == "zh_CN" {
+            return if locale == "zh-CN" {
                 Ok((patch.3.to_string(), patch.2.to_string()))
             } else {
                 Ok((patch.2.to_string(), patch.3.to_string()))
