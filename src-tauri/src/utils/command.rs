@@ -13,7 +13,12 @@ pub async fn run_command_and_stream_output(
     app_name: &str,
     command_description: &str,
 ) -> Result<ExitStatus, Error> {
-    emit_info!(app_name, "executing command: {}", command_description);
+    emit_info!(
+        app_name,
+        "executing command: '{}'. Full details: {:?}",
+        command_description,
+        command
+    );
 
     command.creation_flags(0x08000000);
     command.stdout(Stdio::piped());
@@ -36,20 +41,20 @@ pub async fn run_command_and_stream_output(
         "Could not capture stdout from command ({})",
         command_description
     )
-    .map_err(|e| {
-        emit_error!(app_name, "{}", e.to_string());
-        err!(e.to_string())
-    })?;
+        .map_err(|e| {
+            emit_error!(app_name, "{}", e.to_string());
+            err!(e.to_string())
+        })?;
 
     let stderr = ensure_some!(
         child.stderr.take(),
         "Could not capture stderr from command ({})",
         command_description
     )
-    .map_err(|e| {
-        emit_error!(app_name, "{}", e.to_string());
-        err!(e.to_string())
-    })?;
+        .map_err(|e| {
+            emit_error!(app_name, "{}", e.to_string());
+            err!(e.to_string())
+        })?;
 
     let mut stdout_buf_reader = tokio::io::BufReader::new(stdout);
     let mut stderr_buf_reader = tokio::io::BufReader::new(stderr);

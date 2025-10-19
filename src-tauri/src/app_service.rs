@@ -790,7 +790,6 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         app_name.as_str(),
         profile_to_run_with.main_script.as_str(),
         &working_dir,
-        profile_to_run_with.is_admin(),
         profile_to_run_with.use_pythonw(),
         envs
     )

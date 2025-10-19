@@ -3,22 +3,22 @@ use sysinfo::{Pid, Process, System};
 use std::process::Command as StdCommand;
 use tokio::process::Command as TokioCommand;
 
-pub const PYTHON_ENVS_TO_REMOVE: [&str; 3] = ["PYTHONHOME", "PYTHONSTARTUP", "VIRTUAL_ENV"];
+pub const PYTHON_ENVS_TO_REMOVE: [&str; 4] = ["PYTHONHOME", "PYTHONSTARTUP", "VIRTUAL_ENV", "Path"];
 pub trait RemovePythonEnvsExt {
-    fn remove_python_envs(&mut self) -> &mut Self;
+    fn clear_python_envs(&mut self) -> &mut Self;
 }
 impl RemovePythonEnvsExt for StdCommand {
-    fn remove_python_envs(&mut self) -> &mut Self {
+    fn clear_python_envs(&mut self) -> &mut Self {
         for env in PYTHON_ENVS_TO_REMOVE {
-            self.env_remove(env);
+            self.env(env, "");
         }
         self
     }
 }
 impl RemovePythonEnvsExt for TokioCommand {
-    fn remove_python_envs(&mut self) -> &mut Self {
+    fn clear_python_envs(&mut self) -> &mut Self {
         for env in PYTHON_ENVS_TO_REMOVE {
-            self.env_remove(env);
+            self.env(env, "");
         }
         self
     }

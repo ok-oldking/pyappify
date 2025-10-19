@@ -509,7 +509,6 @@ pub async fn setup_python_env(app_name: String, python_version_spec: &str) -> Re
 pub fn setup_python_env(_app_name: String, _python_version_spec: &str) -> Result<PathBuf> {
     Err(anyhow!("setup_python_env is only implemented for Windows."))
 }
-
 #[cfg(target_os = "windows")]
 pub async fn install_requirements(
     app_name: &str,
@@ -527,18 +526,30 @@ pub async fn install_requirements(
             project_dir.display()
         );
     }
-
     let config_state = GLOBAL_CONFIG_STATE.get().ok_or_else(|| {
         anyhow!("GLOBAL_CONFIG_STATE not initialized. Call init_config_manager first.")
     })?;
-
     let (pip_cache_dir, pip_index_url) = {
         let config = config_state.lock().unwrap();
         let cache_dir = config.get_effective_pip_cache_dir();
         let index_url = config.get_effective_pip_index_url();
         (cache_dir, index_url)
     };
-
+    let pip_install_desc;
+    if requirements.ends_with(".txt") {
+        let requirements_path = project_dir.join(requirements);
+        pip_install_desc = format!(
+            "{} -m pip install -r {}",
+            python_exe.display(),
+            requirements_path.display()
+        );
+    } else {
+        pip_install_desc = format!(
+            "{} -m pip install {}",
+            python_exe.display(),
+            requirements
+        );
+    }
     let mut pip_install_cmd = new_cmd(python_exe);
     pip_install_cmd
         .current_dir(project_dir)
@@ -546,8 +557,7 @@ pub async fn install_requirements(
         .arg("pip")
         .arg("install")
         .arg("--no-warn-script-location");
-    pip_install_cmd.remove_python_envs();
-    
+    pip_install_cmd.clear_python_envs();
     let mut use_config_index_url = true;
     if !pip_args.is_empty() {
         if pip_args
@@ -558,8 +568,6 @@ pub async fn install_requirements(
         }
         pip_install_cmd.args(pip_args.split_whitespace());
     }
-
-    let pip_install_desc;
     if requirements.ends_with(".txt") {
         let requirements_path = project_dir.join(requirements);
         if !requirements_path.exists() {
@@ -569,24 +577,18 @@ pub async fn install_requirements(
             );
         }
         pip_install_cmd.arg("-r").arg(&requirements_path);
-        pip_install_desc = format!("pip install -r {}", requirements_path.display());
     } else {
         pip_install_cmd.arg(requirements);
-        pip_install_desc = format!("pip install {}", requirements);
     }
-
     if let Some(cache_dir) = pip_cache_dir {
         pip_install_cmd.arg("--cache-dir").arg(cache_dir);
     }
-
     if use_config_index_url {
         emit_info!(app_name, "set --index-url {:?}", pip_index_url);
-
         if let Some(index_url) = pip_index_url {
             pip_install_cmd.arg("--index-url").arg(index_url);
         }
     }
-
     command::run_command_and_stream_output(pip_install_cmd, app_name, &pip_install_desc).await?;
     clean_python_install(app_name, get_python_dir(app_name).as_ref())?;
     emit_info!(
