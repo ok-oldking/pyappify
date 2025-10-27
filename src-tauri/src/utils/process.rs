@@ -3,7 +3,7 @@ use sysinfo::{Pid, Process, System};
 use std::process::Command as StdCommand;
 use tokio::process::Command as TokioCommand;
 
-pub const PYTHON_ENVS_TO_REMOVE: [&str; 5] = ["PYTHONHOME", "PYTHONSTARTUP", "VIRTUAL_ENV", "Path", "PYTHONPATH"];
+pub const PYTHON_ENVS_TO_REMOVE: [&str; 6] = ["PYTHONHOME", "PYTHONSTARTUP", "VIRTUAL_ENV", "Path", "PYTHONPATH", "PYTHONUSERBASE"];
 pub trait RemovePythonEnvsExt {
     fn clear_python_envs(&mut self) -> &mut Self;
 }
