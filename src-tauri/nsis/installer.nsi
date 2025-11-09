@@ -363,6 +363,7 @@ FunctionEnd
 
 ; 5. Choose install directory page
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirectoryLeave
 !insertmacro MUI_PAGE_DIRECTORY
 
 ; 6. Start menu shortcut page
@@ -876,6 +877,31 @@ Section Uninstall
     SetAutoClose true
   ${EndIf}
 SectionEnd
+
+Function DirectoryLeave
+  ; This function checks if the installation directory is inside Program Files.
+
+  ; Check against the 32-bit Program Files directory ($PROGRAMFILES)
+  ; StrCmpI does a case-insensitive comparison.
+  StrLen $R0 "$PROGRAMFILES"
+  StrCpy $R1 "$INSTDIR" $R0
+  StrCmpI $R1 "$PROGRAMFILES" 0 +3
+    ; If we are here, the path starts with $PROGRAMFILES. Show error and abort.
+    MessageBox MB_OK|MB_ICONEXCLAMATION "This application cannot be installed in the Program Files directory.$\r$\nPlease choose a different folder, for example, under your user profile ($LOCALAPPDATA)."
+    Abort
+
+  ; Check against the 64-bit Program Files directory ($PROGRAMFILES64) if on a 64-bit system
+  ${If} ${RunningX64}
+    StrLen $R0 "$PROGRAMFILES64"
+    StrCpy $R1 "$INSTDIR" $R0
+    StrCmpI $R1 "$PROGRAMFILES64" 0 +3
+      ; If we are here, the path starts with $PROGRAMFILES64. Show error and abort.
+      MessageBox MB_OK|MB_ICONEXCLAMATION "This application cannot be installed in the Program Files directory.$\r$\nPlease choose a different folder, for example, under your user profile ($LOCALAPPDATA)."
+      Abort
+  ${EndIf}
+
+  ; If we reach this point, the directory is valid.
+FunctionEnd
 
 Function GetFirstNonCDriveCallback
   ; $0 = drive root path ("X:\")
