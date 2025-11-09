@@ -68,6 +68,8 @@ Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
 Var FirstNonCDrive
+Var InvalidDir_ProgramFiles_Msg
+Var InvalidDir_NonASCII_Msg
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -480,7 +482,7 @@ Function .onInit
     ${If} $FirstNonCDrive != ""
       StrCpy $INSTDIR "$FirstNonCDrive${PRODUCTNAME}"
     ${Else}
-      ; Set default install location
+      ; Set default install location if no non-C drive is found
       !if "${INSTALLMODE}" == "perMachine"
         ${If} ${RunningX64}
           !if "${ARCH}" == "x64"
@@ -878,28 +880,91 @@ Section Uninstall
   ${EndIf}
 SectionEnd
 
+; =========================================================================
+;                FIXED AND REFACTORED FUNCTION BELOW
+; =========================================================================
+
+!define VALID_ASCII_CHARS "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\`~!@#$%^&*()_+-=[]{}|;':,./<>?$\" "
+
 Function DirectoryLeave
-  ; This function checks if the installation directory is inside Program Files.
-
-  ; Check against the 32-bit Program Files directory ($PROGRAMFILES)
-  ; StrCmpI does a case-insensitive comparison.
-  StrLen $R0 "$PROGRAMFILES"
-  StrCpy $R1 "$INSTDIR" $R0
-  StrCmpI $R1 "$PROGRAMFILES" 0 +3
-    ; If we are here, the path starts with $PROGRAMFILES. Show error and abort.
-    MessageBox MB_OK|MB_ICONEXCLAMATION "This application cannot be installed in the Program Files directory.$\r$\nPlease choose a different folder, for example, under your user profile ($LOCALAPPDATA)."
-    Abort
-
-  ; Check against the 64-bit Program Files directory ($PROGRAMFILES64) if on a 64-bit system
-  ${If} ${RunningX64}
-    StrLen $R0 "$PROGRAMFILES64"
-    StrCpy $R1 "$INSTDIR" $R0
-    StrCmpI $R1 "$PROGRAMFILES64" 0 +3
-      ; If we are here, the path starts with $PROGRAMFILES64. Show error and abort.
-      MessageBox MB_OK|MB_ICONEXCLAMATION "This application cannot be installed in the Program Files directory.$\r$\nPlease choose a different folder, for example, under your user profile ($LOCALAPPDATA)."
-      Abort
+  ; Set messages based on the currently selected language
+  ; We compare against the LCID (Language ID) for Simplified Chinese (2052)
+  ; because the constant ${LANG_SIMPLIFIED_CHINESE} is not defined at compile time for this function.
+  ${If} $LANGUAGE == 2052 ; LANG_SIMPLIFIED_CHINESE
+    StrCpy $InvalidDir_ProgramFiles_Msg "此应用程序无法安装在 Program Files 目录中。$\r$\n请选择其他文件夹。"
+    StrCpy $InvalidDir_NonASCII_Msg "安装路径包含无效字符（例如中文、俄文、重音字母）。$\r$\n请仅使用标准的英文字母、数字和符号。"
+  ${Else}
+    StrCpy $InvalidDir_ProgramFiles_Msg "This application cannot be installed in the Program Files directory.$\r$\nPlease choose a different folder."
+    StrCpy $InvalidDir_NonASCII_Msg "The installation path contains invalid characters (e.g., Chinese, Russian, accented letters).$\r$\nPlease use only standard English letters, numbers, and symbols."
   ${EndIf}
 
+  ; --- Check 1: Prevent installation in Program Files directories ---
+  ; Get the selected installation path and convert to lowercase for case-insensitive comparison
+  ${StrCase} $R1 "$INSTDIR" "L"
+
+  ; Check against the primary Program Files directory ($PROGRAMFILES)
+  ${StrCase} $R2 "$PROGRAMFILES" "L"
+  StrLen $R3 $R2
+  StrCpy $R4 $R1 $R3
+  StrCmp $R4 $R2 0 check_pf64
+    Goto invalid_dir_pf_error
+
+  ; Check against the 64-bit Program Files directory ($PROGRAMFILES64) if it exists
+check_pf64:
+  ${If} "$PROGRAMFILES64" != ""
+    ${StrCase} $R2 "$PROGRAMFILES64" "L"
+    StrLen $R3 $R2
+    StrCpy $R4 $R1 $R3
+    StrCmp $R4 $R2 0 ascii_check
+      Goto invalid_dir_pf_error
+  ${EndIf}
+
+  Goto ascii_check
+
+invalid_dir_pf_error:
+  MessageBox MB_OK|MB_ICONEXCLAMATION "$InvalidDir_ProgramFiles_Msg"
+  Abort
+
+  ; --- Check 2: Prevent non-ASCII characters in the installation path ---
+  ; This logic uses a manual double-loop to validate each character against
+  ; a whitelist. This is the correct and robust way to do this at runtime.
+
+ascii_check:
+  StrCpy $R0 0 ; Outer loop counter for the installation path ($INSTDIR)
+
+path_loop:
+  ; Get the next character from the installation path
+  StrCpy $R2 "$INSTDIR" 1 $R0
+  ; If the character is empty, we've reached the end of the string
+  StrCmp $R2 "" ascii_check_done
+
+  StrCpy $R1 0 ; Inner loop counter for the valid characters whitelist
+
+whitelist_loop:
+  ; Get the next character from the whitelist
+  StrCpy $R3 "${VALID_ASCII_CHARS}" 1 $R1
+  ; If the character is empty, we've reached the end of the whitelist
+  ; without finding a match for the path character.
+  StrCmp $R3 "" non_ascii_found
+
+  ; Compare the path character with the whitelist character
+  StrCmp $R2 $R3 char_is_ok ; If they match, the character is valid
+
+  ; No match yet, continue checking the rest of the whitelist
+  IntOp $R1 $R1 + 1
+  Goto whitelist_loop
+
+char_is_ok:
+  ; The character was found in the whitelist, so it's valid.
+  ; Move to the next character in the installation path.
+  IntOp $R0 $R0 + 1
+  Goto path_loop
+
+non_ascii_found:
+  MessageBox MB_OK|MB_ICONEXCLAMATION "$InvalidDir_NonASCII_Msg"
+  Abort
+
+ascii_check_done:
   ; If we reach this point, the directory is valid.
 FunctionEnd
 
