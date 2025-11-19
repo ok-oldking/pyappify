@@ -11,6 +11,7 @@ A modern Python packaging tool to create distributable applications with built-i
 *   **Blazing-Fast Updates**: Typical incremental take about one second.
 *   **Multiple Profiles**: Define and allow users to switch between different application profiles (e.g., CPU vs. CUDA versions) with unique entry points and dependencies.
 *   **CI/CD Integration**: A dedicated GitHub Action can pre-build a full package with all dependencies included for offline distribution.
+*   **Aniti-Virus Friendly**: No large exe like pyinstaller which could cause the windows defender to delete, use the nsis setup packaging. 
 
 ## Quick Start: Prebuilt Launcher
 
