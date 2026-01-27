@@ -171,7 +171,24 @@ pub async fn run() {
         }
     }
 
-    // This must be set before the tauri::Builder is created.
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "shell32")]
+        extern "system" {
+            fn IsUserAnAdmin() -> i32;
+        }
+        let is_admin = unsafe { IsUserAnAdmin() != 0 };
+
+        if is_admin {
+            if let Ok(cwd) = std::env::current_dir() {
+                let _ = std::process::Command::new("icacls")
+                    .args([".", "/grant", "Users:(OI)(CI)F"])
+                    .current_dir(cwd)
+                    .output();
+            }
+        }
+    }
+
     if let Ok(cwd) = std::env::current_dir() {
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", cwd);
     }
