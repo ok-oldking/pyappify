@@ -19,8 +19,11 @@ use crate::utils::logger::LoggerBuilder;
 use crate::utils::window;
 use crate::utils::window::on_window_event;
 use std::env;
+use std::os::windows::process::CommandExt;
 use tauri::Manager;
 use tracing::info;
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
 #[macro_use]
 extern crate rust_i18n;
 i18n!("locales", fallback = "en");
@@ -184,6 +187,7 @@ pub async fn run() {
                 let _ = std::process::Command::new("icacls")
                     .args([".", "/grant", "Users:(OI)(CI)F"])
                     .current_dir(cwd)
+                    .creation_flags(CREATE_NO_WINDOW)
                     .output();
             }
         }
