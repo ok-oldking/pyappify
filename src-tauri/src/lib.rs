@@ -171,36 +171,6 @@ pub async fn run() {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        #[link(name = "shell32")]
-        extern "system" {
-            fn IsUserAnAdmin() -> i32;
-        }
-        let is_admin = unsafe { IsUserAnAdmin() != 0 };
-
-        if is_admin {
-            if let Ok(cwd) = std::env::current_dir() {
-                let test_path = cwd.join(".perm_check");
-                if std::fs::write(&test_path, "").is_ok() {
-                    let _ = std::fs::remove_file(&test_path);
-                    use std::os::windows::process::CommandExt;
-                    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-                    let _ = std::process::Command::new("icacls")
-                        .args([".", "/grant", "Users:(OI)(CI)F"])
-                        .current_dir(cwd)
-                        .creation_flags(CREATE_NO_WINDOW)
-                        .output();
-                }
-            }
-        }
-    }
-
-    if let Ok(cwd) = std::env::current_dir() {
-        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", cwd);
-    }
-
     let log_level = if cfg!(debug_assertions) {
         "debug"
     } else {
