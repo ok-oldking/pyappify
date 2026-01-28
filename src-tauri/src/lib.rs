@@ -19,11 +19,8 @@ use crate::utils::logger::LoggerBuilder;
 use crate::utils::window;
 use crate::utils::window::on_window_event;
 use std::env;
-use std::os::windows::process::CommandExt;
 use tauri::Manager;
 use tracing::info;
-use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
-
 #[macro_use]
 extern crate rust_i18n;
 i18n!("locales", fallback = "en");
@@ -184,11 +181,18 @@ pub async fn run() {
 
         if is_admin {
             if let Ok(cwd) = std::env::current_dir() {
-                let _ = std::process::Command::new("icacls")
-                    .args([".", "/grant", "Users:(OI)(CI)F"])
-                    .current_dir(cwd)
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .output();
+                let test_path = cwd.join(".perm_check");
+                if std::fs::write(&test_path, "").is_ok() {
+                    let _ = std::fs::remove_file(&test_path);
+                    use std::os::windows::process::CommandExt;
+                    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+                    let _ = std::process::Command::new("icacls")
+                        .args([".", "/grant", "Users:(OI)(CI)F"])
+                        .current_dir(cwd)
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .output();
+                }
             }
         }
     }
