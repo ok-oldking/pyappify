@@ -10,7 +10,10 @@ mod runas;
 mod submodule;
 mod utils;
 
-use crate::app_service::{delete_app, get_update_notes, load_apps, setup_app, start_app, stop_app, update_to_version, AUTO_START_CHECKED};
+use crate::app_service::{
+    delete_app, get_update_notes, load_apps, setup_app, start_app, stop_app, update_to_version,
+    AUTO_START_CHECKED,
+};
 use crate::config_manager::{
     get_config_payload, init_config_manager, save_configuration, update_config_item,
 };
@@ -24,7 +27,6 @@ use tracing::info;
 #[macro_use]
 extern crate rust_i18n;
 i18n!("locales", fallback = "en");
-
 
 fn has_cli_command() -> bool {
     let args: Vec<String> = env::args().collect();
@@ -155,6 +157,18 @@ pub async fn run() {
         }
     }
 
+    let log_level = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "info"
+    };
+    let _ = LoggerBuilder::new()
+        .log_dir("logs")
+        .file_prefix("app")
+        .default_level(log_level)
+        .init();
+    info!("Log initialized");
+
     #[cfg(not(debug_assertions))]
     {
         if let Some(exe_path) = env::current_exe().ok() {
@@ -181,9 +195,29 @@ pub async fn run() {
 
         if is_admin {
             if let Ok(cwd) = std::env::current_dir() {
-                let test_path = cwd.join(".perm_check");
-                if std::fs::write(&test_path, "").is_ok() {
-                    let _ = std::fs::remove_file(&test_path);
+                let eb_webview_path = cwd.join("EBWebView");
+                let mut should_run_icacls = false;
+
+                if !eb_webview_path.exists() {
+                    // Try to create it.
+                    // If creation works, it is empty -> run icacls.
+                    // If creation fails -> run icacls (as requested).
+                    let success = std::fs::create_dir(&eb_webview_path);
+                    info!("EBWebView does not exist create it {:?}", success);
+                    should_run_icacls = true;
+                } else {
+                    // Exists. Check if empty.
+                    if let Ok(mut entries) = std::fs::read_dir(&eb_webview_path) {
+                        if entries.next().is_none() {
+                            // Exists and empty -> run icacls
+                            should_run_icacls = true;
+                        }
+                    }
+                }
+
+                info!("is_admin should_run_icacls:{:?}", should_run_icacls);
+
+                if should_run_icacls {
                     use std::os::windows::process::CommandExt;
                     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -201,17 +235,6 @@ pub async fn run() {
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", cwd);
     }
 
-    let log_level = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "info"
-    };
-    let _ = LoggerBuilder::new()
-        .log_dir("logs")
-        .file_prefix("app")
-        .default_level(log_level)
-        .init();
-    info!("Log initialized");
     if has_cli_command() {
         info!("running in cli");
         let context = tauri::generate_context!();
