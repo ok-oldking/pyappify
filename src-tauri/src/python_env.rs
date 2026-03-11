@@ -22,6 +22,8 @@ use zip::ZipArchive;
 use crate::config_manager::get_default_locale;
 use crate::utils::process::RemovePythonEnvsExt;
 
+pub const PIP_UPDATE_NEEDED_MARKER: &str = ".pip_update_needed.tmp";
+
 const KNOWN_PATCHES: [(&str, &str, &str, &str); 7] = [
     ("3.13", "3.13.5", "https://www.python.org/ftp/python/3.13.5/python-3.13.5-amd64.zip", "https://mirrors.huaweicloud.com/python/3.13.5/python-3.13.5-amd64.zip"),
     ("3.12", "3.12.10", "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.zip", "https://mirrors.huaweicloud.com/python/3.12.10/python-3.12.10-amd64.zip"),
@@ -589,7 +591,16 @@ pub async fn install_requirements(
             pip_install_cmd.arg("--index-url").arg(index_url);
         }
     }
+
+    let marker_path = project_dir.join(PIP_UPDATE_NEEDED_MARKER);
+    fs::File::create(&marker_path).ok();
+
     command::run_command_and_stream_output(pip_install_cmd, app_name, &pip_install_desc).await?;
+
+    if marker_path.exists() {
+        let _ = fs::remove_file(&marker_path);
+    }
+
     clean_python_install(app_name, get_python_dir(app_name).as_ref())?;
     emit_info!(
         app_name,

@@ -745,6 +745,15 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
     let (profile_to_run_with, working_dir, current_version) = {
         let mut apps_map = APPS.lock().await;
         if let Some(app) = apps_map.get_mut(&app_name) {
+            let working_dir = get_app_working_dir_path(&app_name);
+            let marker_path = working_dir.join(python_env::PIP_UPDATE_NEEDED_MARKER);
+            if marker_path.exists() {
+                info!("Marker file found for app '{}'. Reloading app details before retry.", app_name);
+                if let Err(e) = load_app_details(app).await {
+                    warn!("Failed to reload app details for '{}': {:?}", app_name, e);
+                }
+            }
+
             app.last_start = Utc::now();
             let profile_settings = app.get_current_profile_settings().clone();
             let current_version = app.current_version.clone();
@@ -783,6 +792,12 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         profile_to_run_with.is_admin(),
         profile_to_run_with.main_script
     );
+
+    let marker_path = working_dir.join(python_env::PIP_UPDATE_NEEDED_MARKER);
+    if marker_path.exists() {
+        info!("Marker file found for app '{}' at {}. Attempting to re-install requirements.", app_name, marker_path.display());
+        python_env::install_requirements(&app_name, &profile_to_run_with.requirements, &working_dir, &profile_to_run_with.pip_args).await?;
+    }
 
     let envs =
         build_python_execution_environment(&profile_to_run_with, current_version);
