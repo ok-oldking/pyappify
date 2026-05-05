@@ -662,6 +662,7 @@ fn build_python_execution_environment(
     ));
     envs.push(("PYTHONIOENCODING".to_string(), "utf-8".to_string()));
     envs.push(("PYTHONUNBUFFERED".to_string(), "1".to_string()));
+    envs.push(("PYTHONNOUSERSITE".to_string(), "1".to_string()));
     if let Ok(exe_path) = std::env::current_exe() {
         envs.push((
             "PYAPPIFY_EXECUTABLE".to_string(),

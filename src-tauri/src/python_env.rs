@@ -630,6 +630,7 @@ fn get_python_version_from_exe(python_exe_path: &Path) -> Result<String> {
     }
     let version_cmd_output = std::process::Command::new(python_exe_path)
         .creation_flags(0x08000000)
+        .env("PYTHONNOUSERSITE", "1")
         .arg("--version")
         .output()
         .with_context(|| format!("Failed to execute {} --version", python_exe_path.display()))?;
