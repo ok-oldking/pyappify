@@ -1,27 +1,33 @@
-// src/pages/UpdateLogPage.tsx
+// src/UpdateLogPage.tsx
 import React, {useEffect, useState} from 'react';
 import {invoke} from "@tauri-apps/api/core";
-import {Alert, Box, Button, CircularProgress, Container, Paper, Stack, Typography} from "@mui/material";
-import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import {Alert, Box, Button, CircularProgress, Paper, Stack, Typography} from "@mui/material";
 import {useTranslation} from 'react-i18next';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 
-interface UpdateLogPageProps {
+interface UpdateLogPanelProps {
     appName: string;
     version: string;
     actionType: string;
-    onBack: () => void;
+    isConfirming?: boolean;
+    completed?: boolean;
+    failed?: boolean;
     onConfirm: (params: { appName: string, version: string, actionType: string }) => void;
+    onCancel: () => void;
 }
 
-const UpdateLogPage: React.FC<UpdateLogPageProps> = ({
-                                                         appName,
-                                                         version,
-                                                         actionType,
-                                                         onBack,
-                                                         onConfirm,
-                                                     }) => {
+const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
+                                                          appName,
+                                                          version,
+                                                          actionType,
+                                                          isConfirming = false,
+                                                          completed = false,
+                                                          failed = false,
+                                                          onConfirm,
+                                                          onCancel,
+                                                      }) => {
     const {t} = useTranslation();
-    const [isConfirmingAction, setIsConfirmingAction] = useState(false);
     const [notes, setNotes] = useState<string | null>(null);
     const [notesLoading, setNotesLoading] = useState(true);
     const [notesError, setNotesError] = useState<string | null>(null);
@@ -48,85 +54,100 @@ const UpdateLogPage: React.FC<UpdateLogPageProps> = ({
         }
     }, [appName, version, t]);
 
-    const handleConfirm = async () => {
-        setIsConfirmingAction(true);
+    const handleConfirm = () => {
         onConfirm({appName, version, actionType});
     };
 
-    const confirmButtonText = isConfirmingAction
+    const confirmButtonText = isConfirming
         ? t(`${actionType}ing...`)
-        : t('Confirm {{actionType}}', {
-            actionType: actionType,
-            actionTypeInChinese: t(actionType)
-        });
+        : t('Confirm {{actionType}}', {actionType: t(actionType)});
 
-    const pageTitle = t('{{actionType}} Notes for {{appName}} (Version: {{version}})', {
-        actionType: t(actionType),
-        appName: appName,
-        version: version
-    });
+    let pageTitle: string;
+    let borderColor: string;
+    let titleColor: string;
+    let titleIcon: React.ReactNode = null;
+
+    if (completed) {
+        pageTitle = `${t(`${actionType} success`)}: ${version}`;
+        borderColor = 'success.main';
+        titleColor = 'success.main';
+        titleIcon = <CheckCircleOutlineIcon fontSize="small" color="success"/>;
+    } else if (failed) {
+        pageTitle = `${t(`${actionType} failed`)}: ${version}`;
+        borderColor = 'error.main';
+        titleColor = 'error.main';
+        titleIcon = <ErrorOutlineIcon fontSize="small" color="error"/>;
+    } else if (isConfirming) {
+        pageTitle = `${t(`${actionType}ing...`)}: ${version}`;
+        borderColor = 'info.main';
+        titleColor = 'info.main';
+        titleIcon = <CircularProgress size={14}/>;
+    } else {
+        pageTitle = `${t(actionType)}: ${version}`;
+        borderColor = 'divider';
+        titleColor = 'text.primary';
+    }
 
     return (
-        <Container maxWidth="md" sx={{py: 3}}>
-            <Button
-                variant="outlined"
-                startIcon={<ArrowBackIcon/>}
-                onClick={onBack}
-                sx={{mb: 3, alignSelf: 'flex-start'}}
-                disabled={isConfirmingAction}
-            >
-                {t('Back to App')}
-            </Button>
-
-            <Typography variant="h5" component="h2" gutterBottom>
-                {pageTitle}
-            </Typography>
+        <Box sx={{mt: 2, border: 1, borderColor, borderRadius: 1, p: 2}}>
+            <Stack direction="row" alignItems="center" spacing={0.5} sx={{mb: 0.5}}>
+                {titleIcon}
+                <Typography variant="subtitle1" fontWeight="bold" color={titleColor}>
+                    {pageTitle}
+                </Typography>
+            </Stack>
 
             {notesLoading && (
-                <Box sx={{display: 'flex', justifyContent: 'center', alignItems: 'center', my: 3}}>
-                    <CircularProgress sx={{mr: 1}}/>
-                    <Typography>{t('Loading notes...')}</Typography>
+                <Box sx={{display: 'flex', alignItems: 'center', my: 1}}>
+                    <CircularProgress size={18} sx={{mr: 1}}/>
+                    <Typography variant="body2">{t('Loading notes...')}</Typography>
                 </Box>
             )}
             {notesError && (
-                <Alert severity="error" sx={{my: 2}}>
+                <Alert severity="error" sx={{my: 1}}>
                     {notesError}
                 </Alert>
             )}
 
             {notes && !notesLoading && !notesError && (
-                <Paper elevation={1} sx={{
-                    p: 2,
-                    mt: 2,
+                <Paper elevation={0} variant="outlined" sx={{
+                    p: 1.5,
+                    mt: 1,
                     whiteSpace: 'pre-wrap',
                     fontFamily: 'monospace',
-                    maxHeight: '60vh',
+                    fontSize: '0.8rem',
+                    maxHeight: '200px',
                     overflowY: 'auto',
+                    bgcolor: 'action.hover',
                 }}>
                     {notes}
                 </Paper>
             )}
 
-            {!notesLoading && (
-                <Stack direction="row" spacing={2} justifyContent="flex-end" sx={{mt: 3}}>
+            {/* Buttons: hidden while confirming/completed; only Cancel shown on failure */}
+            {!notesLoading && !completed && !isConfirming && (
+                <Stack direction="row" spacing={1} justifyContent="flex-end" sx={{mt: 2}}>
                     <Button
                         variant="outlined"
-                        onClick={onBack}
-                        disabled={isConfirmingAction}
+                        size="small"
+                        onClick={onCancel}
                     >
                         {t('Cancel')}
                     </Button>
-                    <Button
-                        variant="contained"
-                        onClick={handleConfirm}
-                        disabled={notesLoading || !!notesError || isConfirmingAction}
-                        startIcon={isConfirmingAction ? <CircularProgress size={20} color="inherit"/> : null}
-                    >
-                        {confirmButtonText}
-                    </Button>
+                    {!failed && (
+                        <Button
+                            variant="contained"
+                            size="small"
+                            color={actionType === 'Update' ? 'success' : 'warning'}
+                            onClick={handleConfirm}
+                            disabled={notesLoading || !!notesError}
+                        >
+                            {confirmButtonText}
+                        </Button>
+                    )}
                 </Stack>
             )}
-        </Container>
+        </Box>
     );
 };
 

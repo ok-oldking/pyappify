@@ -42,7 +42,6 @@ import {
     PlayArrow,
     Settings as SettingsIcon,
     StopCircle,
-    Update
 } from '@mui/icons-material';
 import {createTheme, ThemeProvider} from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
@@ -84,7 +83,6 @@ type StatusState = {
 
 type Page =
     'list'
-    | 'updateLog'
     | 'installConsole'
     | 'startConsole'
     | 'versionChangeConsole'
@@ -93,6 +91,14 @@ type Page =
     | 'profileChooser'
     | 'changeProfile'
     | 'profileChangeConsole';
+
+type InlineUpdateLogState = {
+    version: string;
+    actionType: string;
+    isConfirming: boolean;
+    completed?: boolean;
+    failed?: boolean;
+};
 
 export type ThemeModeSetting = 'light' | 'dark' | 'system';
 
@@ -104,11 +110,11 @@ function App() {
     const [selectedTargetVersions, setSelectedTargetVersions] = useState<Record<string, string>>({});
     const selectedTargetVersionsRef = useRef(selectedTargetVersions);
     const [currentPage, setCurrentPage] = useState<Page>('list');
-    const [updateLogViewData, setUpdateLogViewData] = useState<{
-        name: string;
-        version: string;
-        actionType: string;
-    } | null>(null);
+    // Per-app inline update log state: keyed by app name
+    const [inlineUpdateLogs, setInlineUpdateLogs] = useState<Record<string, InlineUpdateLogState>>({});
+    // Tracks app names whose inline log is in 'completed' state — updated synchronously (not via useEffect)
+    // so the apps event listener can always read the correct value before React re-renders.
+    const completedAppsRef = useRef<Set<string>>(new Set());
     const [isInstallProcessRunning, setIsInstallProcessRunning] = useState<boolean>(false);
     const [isStartAppProcessRunning, setIsStartAppProcessRunning] = useState<boolean>(false);
     const [startingAppName, setStartingAppName] = useState<string | null>(null);
@@ -223,9 +229,14 @@ function App() {
             const newApps = event.payload;
             setApps(newApps);
             const newSelectedTargets: Record<string, string> = {};
+            const inlineLogUpdates: Record<string, InlineUpdateLogState> = {};
             newApps.forEach(app => {
                 if (!app.installed || app.running) {
                     if (selectedTargetVersionsRef.current[app.name]) newSelectedTargets[app.name] = '';
+                    return;
+                }
+                // Don't override a completed log entry — user should see the success state
+                if (completedAppsRef.current.has(app.name)) {
                     return;
                 }
                 const sortedVersions = [...app.available_versions].sort((a, b) => compareVersions(b, a));
@@ -233,6 +244,12 @@ function App() {
                 const currentSelection = selectedTargetVersionsRef.current[app.name];
                 if (app.current_version && latestVersion && compareVersions(latestVersion, app.current_version) > 0) {
                     newSelectedTargets[app.name] = latestVersion;
+                    // Auto-select latest version: show update log inline
+                    inlineLogUpdates[app.name] = {
+                        version: latestVersion,
+                        actionType: 'Update',
+                        isConfirming: false,
+                    };
                 } else if (currentSelection && app.available_versions.includes(currentSelection) && currentSelection !== app.current_version) {
                     newSelectedTargets[app.name] = currentSelection;
                 } else {
@@ -240,6 +257,14 @@ function App() {
                 }
             });
             setSelectedTargetVersions(prev => ({...prev, ...newSelectedTargets}));
+            // Merge inlineLogUpdates but never overwrite completed entries
+            setInlineUpdateLogs(prev => {
+                const merged = {...prev};
+                for (const [name, entry] of Object.entries(inlineLogUpdates)) {
+                    if (!completedAppsRef.current.has(name)) merged[name] = entry;
+                }
+                return merged;
+            });
             updateStatus({loading: false});
         }));
 
@@ -251,6 +276,33 @@ function App() {
                 : app.profiles?.[0]?.name || "default";
             setSelectedProfileForInstall(initialProfile);
             setCurrentPage('profileChooser');
+        }));
+        unlistenPromises.push(listen<{
+            app_name: string;
+            message: string;
+            finished?: boolean;
+            error?: boolean;
+        }>("app-log", (event) => {
+            const {app_name, finished, error} = event.payload;
+            setInlineUpdateLogs(prev => {
+                const entry = prev[app_name];
+                if (!entry || entry.completed) return prev;
+                if (finished) {
+                    if (error) {
+                        completedAppsRef.current.delete(app_name); // failed — not completed
+                        return {...prev, [app_name]: {...entry, isConfirming: false, failed: true}};
+                    } else {
+                        completedAppsRef.current.add(app_name); // mark completed immediately
+                        return {...prev, [app_name]: {...entry, isConfirming: false, completed: true, failed: false}};
+                    }
+                } else if (!entry.isConfirming) {
+                    return {...prev, [app_name]: {...entry, isConfirming: true, failed: false}};
+                }
+                return prev;
+            });
+            if (finished && !error) {
+                setSelectedTargetVersions(prev => ({...prev, [app_name]: ''}));
+            }
         }));
 
         (async () => {
@@ -312,37 +364,33 @@ function App() {
         setAppActionLoading(prev => ({...prev, [appName]: false}));
     };
 
-    const handleNavigateToUpdateLogPage = (appName: string, targetVersion: string | undefined, currentAppVersion: string | null) => {
+    const handleVersionSelected = (appName: string, targetVersion: string, currentAppVersion: string | null) => {
         if (!targetVersion) {
-            updateStatus({error: `Please select a version for ${appName}.`});
+            // Version cleared — hide inline log
+            setInlineUpdateLogs(prev => {
+                const next = {...prev};
+                delete next[appName];
+                return next;
+            });
             return;
         }
-        clearMessages();
         let actionType = "Set";
         if (currentAppVersion) {
             const comparison = compareVersions(targetVersion, currentAppVersion);
             if (comparison > 0) actionType = "Update";
             else if (comparison < 0) actionType = "Downgrade";
-            else {
-                updateStatus({error: `Selected version is the current version for ${appName}.`});
-                return;
-            }
         }
-        setUpdateLogViewData({name: appName, version: targetVersion, actionType});
-        setCurrentPage('updateLog');
-    };
-
-    const handleBackFromUpdateLog = () => {
-        setCurrentPage('list');
-        setUpdateLogViewData(null);
-        if (updateLogViewData?.name) {
-            setAppActionLoading(prev => ({...prev, [updateLogViewData.name!]: false}));
-        }
+        setInlineUpdateLogs(prev => ({...prev, [appName]: {version: targetVersion, actionType, isConfirming: false}}));
     };
 
     const handleConfirmVersionChange = async (params: { appName: string, version: string, actionType: string }) => {
         clearMessages();
         setAppActionLoading(prev => ({...prev, [params.appName]: true}));
+        // Mark as confirming so the inline log shows a spinner
+        setInlineUpdateLogs(prev => ({
+            ...prev,
+            [params.appName]: {...(prev[params.appName] ?? {version: params.version, actionType: params.actionType}), isConfirming: true}
+        }));
         setVersionChangeConsoleData(params);
         setStartingAppName(params.appName);
         setConsoleInitialMessage(`Initiating ${params.actionType} for '${params.appName}' to version '${params.version}'...`);
@@ -380,6 +428,8 @@ function App() {
     }
 
     const handleBackFromConsole = async () => {
+        const wasVersionChange = currentPage === 'versionChangeConsole';
+        const appNameForVersionChange = versionChangeConsoleData?.appName;
         setCurrentPage('list');
         resetConsoleStates();
         clearMessages();
@@ -388,6 +438,16 @@ function App() {
         setStartingAppName(null);
         setVersionChangeConsoleData(null);
         setProfileChangeData(null);
+
+        // After a version change: clear version selector and mark log as completed (shows success state)
+        if (wasVersionChange && appNameForVersionChange) {
+            setSelectedTargetVersions(prev => ({...prev, [appNameForVersionChange]: ''}));
+            setInlineUpdateLogs(prev => {
+                const entry = prev[appNameForVersionChange];
+                if (entry) return {...prev, [appNameForVersionChange]: {...entry, isConfirming: false, completed: true}};
+                return prev;
+            });
+        }
 
         updateStatus({loading: true, info: t("Refreshing app...")});
         await invokeTauriCommandWrapper<App[]>("load_apps", undefined,
@@ -480,8 +540,6 @@ function App() {
         pageContent = <ConsolePage title={t('Installing App: {{appName}}', {appName: startingAppName})} appName={startingAppName} initialMessage={consoleInitialMessage} onBack={handleBackFromConsole} isProcessing={isInstallProcessRunning} onProcessComplete={() => setIsInstallProcessRunning(false)} />;
     } else if (currentPage === 'startConsole' && startingAppName) {
         pageContent = <ConsolePage title={t('Starting App: {{appName}}', {appName: startingAppName})} appName={startingAppName} initialMessage={consoleInitialMessage} onBack={handleBackFromConsole} isProcessing={isStartAppProcessRunning} onProcessComplete={() => setIsStartAppProcessRunning(false)} />;
-    } else if (currentPage === 'updateLog' && updateLogViewData) {
-        pageContent = <UpdateLogPage appName={updateLogViewData.name} version={updateLogViewData.version} actionType={updateLogViewData.actionType} onBack={handleBackFromUpdateLog} onConfirm={handleConfirmVersionChange} />;
     } else if (currentPage === 'versionChangeConsole' && versionChangeConsoleData && startingAppName) {
         const title = t('{{actionType}} App: {{appName}}', { actionType: t(versionChangeConsoleData.actionType), appName: startingAppName });
         pageContent = <ConsolePage title={title} appName={startingAppName} initialMessage={consoleInitialMessage} onBack={handleBackFromConsole} isProcessing={isVersionChangeProcessRunning} onProcessComplete={() => setIsVersionChangeProcessRunning(false)} />;
@@ -591,21 +649,51 @@ function App() {
                                                 {app.installed && <Button variant="outlined" color="error" size="small" startIcon={isThisAppLoading ? <CircularProgress size={16}/> : <Delete/>} onClick={() => handleDeleteClick(app.name)} disabled={disableRowActions || app.running}>{t("Delete")}</Button>}
                                             </Stack>
                                             {app.installed && !app.running && (
-                                                <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} alignItems="center" sx={{mt: 2}}>
-                                                    {app.available_versions.filter(v => v !== app.current_version).length > 0 ? (
-                                                        <>
-                                                            <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 200}}} disabled={disableRowActions}>
-                                                                <InputLabel>{t('Change version...')}</InputLabel>
-                                                                <Select value={selectedTargetVersions[app.name] || ''} label={t('Change version...')} onChange={(e) => setSelectedTargetVersions(p => ({...p, [app.name]: e.target.value}))}>
-                                                                    <MenuItem value=""><em>{t('Change version...')}</em></MenuItem>
-                                                                    {app.available_versions.filter(v => v !== app.current_version).map(v => <MenuItem key={v} value={v}>{v}{compareVersions(v, app.current_version!) > 0 ? ` ${t('(Update)')}` : ` ${t('(Downgrade)')}`}</MenuItem>)}
-                                                                </Select>
-                                                            </FormControl>
-                                                            <Button variant="contained" size="small" color={selectedTargetVersions[app.name] && compareVersions(selectedTargetVersions[app.name], app.current_version!) > 0 ? "success" : "warning"} startIcon={isThisAppLoading ? <CircularProgress size={16}/> : <Update/>} onClick={() => handleNavigateToUpdateLogPage(app.name, selectedTargetVersions[app.name], app.current_version)} disabled={!selectedTargetVersions[app.name] || disableRowActions}>{t("Change Version")}</Button>
-                                                        </>
-                                                    ) : <Typography variant="caption">{t("No other versions found.")}</Typography>}
-                                                    <Tooltip title={t("Check for updates")}><span><IconButton onClick={() => handleCheckForUpdates(app.name)} disabled={disableRowActions} size="small">{isThisAppLoading && checkingUpdateForApp === app.name ? <CircularProgress size={20}/> : <Cached/>}</IconButton></span></Tooltip>
-                                                </Stack>
+                                                <Box sx={{mt: 2}}>
+                                                    <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} alignItems="center">
+                                                        {app.available_versions.filter(v => v !== app.current_version).length > 0 ? (
+                                                            <>
+                                                                <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 200}}} disabled={disableRowActions}>
+                                                                    <InputLabel>{t('Change version...')}</InputLabel>
+                                                                    <Select
+                                                                        value={selectedTargetVersions[app.name] || ''}
+                                                                        label={t('Change version...')}
+                                                                        onChange={(e) => {
+                                                                            const newVer = e.target.value;
+                                                                            setSelectedTargetVersions(p => ({...p, [app.name]: newVer}));
+                                                                            handleVersionSelected(app.name, newVer, app.current_version);
+                                                                        }}
+                                                                    >
+                                                                        <MenuItem value=""><em>{t('Change version...')}</em></MenuItem>
+                                                                        {app.available_versions.filter(v => v !== app.current_version).map(v => <MenuItem key={v} value={v}>{v}{compareVersions(v, app.current_version!) > 0 ? ` ${t('(Update)')}` : ` ${t('(Downgrade)')}`}</MenuItem>)}
+                                                                    </Select>
+                                                                </FormControl>
+                                                            </>
+                                                        ) : <Typography variant="caption">{t("No other versions found.")}</Typography>}
+                                                        <Tooltip title={t("Check for updates")}><span><IconButton onClick={() => handleCheckForUpdates(app.name)} disabled={disableRowActions} size="small">{isThisAppLoading && checkingUpdateForApp === app.name ? <CircularProgress size={20}/> : <Cached/>}</IconButton></span></Tooltip>
+                                                    </Stack>
+                                                    {/* Inline update log: shown whenever an entry exists; cleared only on cancel or new selection */}
+                                                    {inlineUpdateLogs[app.name] && (
+                                                        <UpdateLogPage
+                                                            appName={app.name}
+                                                            version={inlineUpdateLogs[app.name].version}
+                                                            actionType={inlineUpdateLogs[app.name].actionType}
+                                                            isConfirming={inlineUpdateLogs[app.name].isConfirming}
+                                                            completed={inlineUpdateLogs[app.name].completed}
+                                                            failed={inlineUpdateLogs[app.name].failed}
+                                                            onConfirm={handleConfirmVersionChange}
+                                                            onCancel={() => {
+                                                                completedAppsRef.current.delete(app.name);
+                                                                setSelectedTargetVersions(p => ({...p, [app.name]: ''}));
+                                                                setInlineUpdateLogs(prev => {
+                                                                    const next = {...prev};
+                                                                    delete next[app.name];
+                                                                    return next;
+                                                                });
+                                                            }}
+                                                        />
+                                                    )}
+                                                </Box>
                                             )}
                                         </CardContent>
                                     </Card>
