@@ -32,6 +32,11 @@ pub fn send_notification(title: impl Into<String>, body: impl Into<String>) {
         .unwrap();
 }
 
+#[tauri::command]
+pub fn send_notification_cmd(title: String, body: String) {
+    send_notification(title, body);
+}
+
 pub fn create_system_tray(app: &App<Wry>) -> anyhow::Result<()> {
     let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&quit_i])?;

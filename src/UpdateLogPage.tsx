@@ -1,5 +1,5 @@
 // src/UpdateLogPage.tsx
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {invoke} from "@tauri-apps/api/core";
 import {Alert, Box, Button, CircularProgress, Paper, Stack, Typography} from "@mui/material";
 import {useTranslation} from 'react-i18next';
@@ -17,6 +17,12 @@ interface UpdateLogPanelProps {
     onCancel: () => void;
 }
 
+const sendOsNotification = (title: string, body: string) => {
+    invoke('send_notification_cmd', {title, body}).catch(err =>
+        console.warn('Failed to send OS notification:', err)
+    );
+};
+
 const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
                                                           appName,
                                                           version,
@@ -31,6 +37,10 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
     const [notes, setNotes] = useState<string | null>(null);
     const [notesLoading, setNotesLoading] = useState(true);
     const [notesError, setNotesError] = useState<string | null>(null);
+
+    // Track previous completed/failed to fire notification exactly once on transition
+    const prevCompletedRef = useRef(completed);
+    const prevFailedRef = useRef(failed);
 
     useEffect(() => {
         const fetchNotes = async () => {
@@ -54,7 +64,29 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
         }
     }, [appName, version, t]);
 
+    // Fire OS notification when completed or failed state changes
+    useEffect(() => {
+        const wasCompleted = prevCompletedRef.current;
+        const wasFailed = prevFailedRef.current;
+        prevCompletedRef.current = completed;
+        prevFailedRef.current = failed;
+
+        if (!wasCompleted && completed) {
+            const title = `${t(`${actionType} success`)}: ${appName}`;
+            const body = notes ? `${version}\n${notes}` : version;
+            sendOsNotification(title, body);
+        } else if (!wasFailed && failed) {
+            const title = `${t(`${actionType} failed`)}: ${appName}`;
+            const body = notes ? `${version}\n${notes}` : version;
+            sendOsNotification(title, body);
+        }
+    }, [completed, failed, actionType, appName, version, notes, t]);
+
     const handleConfirm = () => {
+        // Send notification when user manually triggers update/downgrade
+        const title = `${t(actionType)}: ${appName}`;
+        const body = notes ? `${version}\n${notes}` : version;
+        sendOsNotification(title, body);
         onConfirm({appName, version, actionType});
     };
 

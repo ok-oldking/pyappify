@@ -20,7 +20,7 @@ use crate::config_manager::{
 use crate::utils::defender::add_defender_exclusion;
 use crate::utils::logger::LoggerBuilder;
 use crate::utils::window;
-use crate::utils::window::on_window_event;
+use crate::utils::window::{on_window_event, send_notification_cmd};
 use std::env;
 use tauri::Manager;
 use tracing::info;
@@ -276,6 +276,7 @@ pub async fn run() {
                 save_configuration,
                 get_config_payload,
                 add_defender_exclusion,
+                send_notification_cmd,
             ])
             .run(tauri::generate_context!())
             .expect("error while running tauri application");
