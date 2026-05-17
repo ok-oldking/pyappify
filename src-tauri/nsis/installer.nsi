@@ -70,6 +70,7 @@ Var OldMainBinaryName
 Var FirstNonCDrive
 Var InvalidDir_ProgramFiles_Msg
 Var InvalidDir_NonASCII_Msg
+Var SetupMutexHandle
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -471,6 +472,8 @@ Function .onInit
     StrCpy $UpdateMode 1
   ${EndIf}
 
+  Call EnsureSingleSetupInstance
+
   !if "${DISPLAYLANGUAGESELECTOR}" == "true"
     !insertmacro MUI_LANGDLL_DISPLAY
   !endif
@@ -623,6 +626,8 @@ SectionEnd
 
 Section Install
   SetOutPath $INSTDIR
+
+  Call KillInstallDirExecutables
 
   !ifmacrodef NSIS_HOOK_PREINSTALL
     !insertmacro NSIS_HOOK_PREINSTALL
@@ -984,6 +989,62 @@ Function GetFirstNonCDrive
   StrCpy $FirstNonCDrive ""
   ${GetDrives} "FIXED" "GetFirstNonCDriveCallback"
   Pop $R9 ; Pop "Stop" or "" from stack
+FunctionEnd
+
+Function EnsureSingleSetupInstance
+  System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Global\${BUNDLEID}.Setup") p .r1 ?e'
+  Pop $R0
+  StrCpy $SetupMutexHandle $1
+
+  ${If} $R0 = 183
+    ${IfNot} ${Silent}
+      MessageBox MB_OK|MB_ICONEXCLAMATION "Another ${PRODUCTNAME} setup is already running."
+    ${EndIf}
+    Abort
+  ${EndIf}
+
+  ${If} $SetupMutexHandle = 0
+    ${IfNot} ${Silent}
+      MessageBox MB_OK|MB_ICONEXCLAMATION "Unable to start ${PRODUCTNAME} setup."
+    ${EndIf}
+    Abort
+  ${EndIf}
+FunctionEnd
+
+Function KillInstallDirExecutables
+  ${IfNot} ${FileExists} "$INSTDIR\*.*"
+    Return
+  ${EndIf}
+
+  InitPluginsDir
+  StrCpy $R0 "$PLUGINSDIR\kill-install-dir-executables.ps1"
+  FileOpen $R1 "$R0" w
+  FileWrite $R1 "param($\r$\n"
+  FileWrite $R1 "  [string]$$InstallDir,$\r$\n"
+  FileWrite $R1 "  [string]$$InstallerPath$\r$\n"
+  FileWrite $R1 ")$\r$\n"
+  FileWrite $R1 "$$ErrorActionPreference = 'SilentlyContinue'$\r$\n"
+  FileWrite $R1 "if (-not $$InstallDir) { exit 0 }$\r$\n"
+  FileWrite $R1 "$$installRoot = [System.IO.Path]::GetFullPath($$InstallDir).TrimEnd('\')$\r$\n"
+  FileWrite $R1 "$$currentInstaller = ''$\r$\n"
+  FileWrite $R1 "if ($$InstallerPath) { $$currentInstaller = [System.IO.Path]::GetFullPath($$InstallerPath) }$\r$\n"
+  FileWrite $R1 "$$processes = Get-CimInstance Win32_Process$\r$\n"
+  FileWrite $R1 "if (-not $$processes) { $$processes = Get-WmiObject Win32_Process }$\r$\n"
+  FileWrite $R1 "foreach ($$process in $$processes) {$\r$\n"
+  FileWrite $R1 "  $$exePath = $$process.ExecutablePath$\r$\n"
+  FileWrite $R1 "  if (-not $$exePath) { continue }$\r$\n"
+  FileWrite $R1 "  if (-not $$exePath.EndsWith('.exe', [System.StringComparison]::OrdinalIgnoreCase)) { continue }$\r$\n"
+  FileWrite $R1 "  $$fullPath = [System.IO.Path]::GetFullPath($$exePath)$\r$\n"
+  FileWrite $R1 "  if (-not $$fullPath.StartsWith($$installRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) { continue }$\r$\n"
+  FileWrite $R1 "  if ($$currentInstaller -and [string]::Equals($$fullPath, $$currentInstaller, [System.StringComparison]::OrdinalIgnoreCase)) { continue }$\r$\n"
+  FileWrite $R1 "  Stop-Process -Id $$process.ProcessId -Force$\r$\n"
+  FileWrite $R1 "  Wait-Process -Id $$process.ProcessId -Timeout 5$\r$\n"
+  FileWrite $R1 "}$\r$\n"
+  FileWrite $R1 "exit 0$\r$\n"
+  FileClose $R1
+
+  DetailPrint "Stopping running executables in $INSTDIR"
+  ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$R0" "$INSTDIR" "$EXEPATH"' $R2
 FunctionEnd
 
 Function RestorePreviousInstallLocation
