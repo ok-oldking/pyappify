@@ -70,9 +70,59 @@ interface App {
     show_add_defender: boolean;
 }
 
-const compareVersions = (v1: string, v2: string): number => {
-    return v1.localeCompare(v2, undefined, {numeric: true, sensitivity: 'base'});
+type ParsedVersion = {
+    major: number;
+    minor: number;
+    patch: number;
+    prerelease: null | {
+        stage: 'alpha' | 'beta' | 'rc';
+        number: number | null;
+    };
 };
+
+const parseVersion = (version: string): ParsedVersion | null => {
+    const match = version.match(/^v?(\d+)\.(\d+)\.(\d+)(?:(?:-|\.)(alpha|beta|rc)(?:\.(\d+))?)?$/);
+    if (!match) return null;
+    return {
+        major: Number(match[1]),
+        minor: Number(match[2]),
+        patch: Number(match[3]),
+        prerelease: match[4]
+            ? {stage: match[4] as 'alpha' | 'beta' | 'rc', number: match[5] ? Number(match[5]) : null}
+            : null,
+    };
+};
+
+const prereleaseRank = (version: ParsedVersion): number => {
+    if (!version.prerelease) return 3;
+    if (version.prerelease.stage === 'rc') return 2;
+    if (version.prerelease.stage === 'beta') return 1;
+    return 0;
+};
+
+const compareVersions = (v1: string, v2: string): number => {
+    const left = parseVersion(v1);
+    const right = parseVersion(v2);
+    if (!left || !right) return v1.localeCompare(v2, undefined, {numeric: true, sensitivity: 'base'});
+
+    const numericParts: Array<keyof Pick<ParsedVersion, 'major' | 'minor' | 'patch'>> = ['major', 'minor', 'patch'];
+    for (const part of numericParts) {
+        if (left[part] !== right[part]) return left[part] - right[part];
+    }
+
+    const rankDiff = prereleaseRank(left) - prereleaseRank(right);
+    if (rankDiff !== 0) return rankDiff;
+
+    const leftNumber = left.prerelease?.number ?? -1;
+    const rightNumber = right.prerelease?.number ?? -1;
+    return leftNumber - rightNumber;
+};
+
+const isReleaseVersion = (version: string): boolean => parseVersion(version)?.prerelease === null;
+
+const getVersionChannelLabelKey = (version: string): string => (
+    isReleaseVersion(version) ? 'Release Version' : 'Test Version'
+);
 
 type StatusState = {
     loading?: boolean;
@@ -239,7 +289,9 @@ function App() {
                 if (completedAppsRef.current.has(app.name)) {
                     return;
                 }
-                const sortedVersions = [...app.available_versions].sort((a, b) => compareVersions(b, a));
+                const sortedVersions = [...app.available_versions]
+                    .filter(isReleaseVersion)
+                    .sort((a, b) => compareVersions(b, a));
                 const latestVersion = sortedVersions[0];
                 const currentSelection = selectedTargetVersionsRef.current[app.name];
                 if (app.current_version && latestVersion && compareVersions(latestVersion, app.current_version) > 0) {
@@ -658,6 +710,10 @@ function App() {
                                                                     <Select
                                                                         value={selectedTargetVersions[app.name] || ''}
                                                                         label={t('Change version...')}
+                                                                        renderValue={(selected) => {
+                                                                            const selectedVersion = String(selected);
+                                                                            return selectedVersion ? `${selectedVersion} ${t(getVersionChannelLabelKey(selectedVersion))}` : t('Change version...');
+                                                                        }}
                                                                         onChange={(e) => {
                                                                             const newVer = e.target.value;
                                                                             setSelectedTargetVersions(p => ({...p, [app.name]: newVer}));
@@ -665,7 +721,7 @@ function App() {
                                                                         }}
                                                                     >
                                                                         <MenuItem value=""><em>{t('Change version...')}</em></MenuItem>
-                                                                        {app.available_versions.filter(v => v !== app.current_version).map(v => <MenuItem key={v} value={v}>{v}{compareVersions(v, app.current_version!) > 0 ? ` ${t('(Update)')}` : ` ${t('(Downgrade)')}`}</MenuItem>)}
+                                                                        {app.available_versions.filter(v => v !== app.current_version).map(v => <MenuItem key={v} value={v}>{v} {t(getVersionChannelLabelKey(v))}{compareVersions(v, app.current_version!) > 0 ? ` ${t('(Update)')}` : ` ${t('(Downgrade)')}`}</MenuItem>)}
                                                                     </Select>
                                                                 </FormControl>
                                                             </>

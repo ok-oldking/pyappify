@@ -8,6 +8,7 @@ use git2::{
 };
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
@@ -18,6 +19,98 @@ use tracing::{debug, info, warn};
 
 static REPO_LOCKS: Lazy<DashMap<PathBuf, Arc<Mutex<()>>>> = Lazy::new(DashMap::new);
 static GIT_CONFIG_INITIALIZED: OnceLock<()> = OnceLock::new();
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum Prerelease {
+    Alpha(Option<u64>),
+    Beta(Option<u64>),
+    Rc(Option<u64>),
+    Release,
+}
+
+impl Prerelease {
+    fn rank(&self) -> u8 {
+        match self {
+            Self::Alpha(_) => 0,
+            Self::Beta(_) => 1,
+            Self::Rc(_) => 2,
+            Self::Release => 3,
+        }
+    }
+
+    fn number(&self) -> Option<u64> {
+        match self {
+            Self::Alpha(number) | Self::Beta(number) | Self::Rc(number) => *number,
+            Self::Release => None,
+        }
+    }
+
+    fn is_release(&self) -> bool {
+        matches!(self, Self::Release)
+    }
+}
+
+impl Ord for Prerelease {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.rank()
+            .cmp(&other.rank())
+            .then_with(|| self.number().cmp(&other.number()))
+    }
+}
+
+impl PartialOrd for Prerelease {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+struct VersionKey {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    prerelease: Prerelease,
+}
+
+fn parse_version_tag(tag_name: &str) -> Option<VersionKey> {
+    static VERSION_REGEX: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"^v?(\d+)\.(\d+)\.(\d+)(?:(?:-|\.)(alpha|beta|rc)(?:\.(\d+))?)?$").unwrap()
+    });
+
+    let caps = VERSION_REGEX.captures(tag_name)?;
+    let major = caps.get(1)?.as_str().parse::<u64>().ok()?;
+    let minor = caps.get(2)?.as_str().parse::<u64>().ok()?;
+    let patch = caps.get(3)?.as_str().parse::<u64>().ok()?;
+    let prerelease_number = caps
+        .get(5)
+        .map(|m| m.as_str().parse::<u64>())
+        .transpose()
+        .ok()?;
+    let prerelease = match caps.get(4).map(|m| m.as_str()) {
+        Some("alpha") => Prerelease::Alpha(prerelease_number),
+        Some("beta") => Prerelease::Beta(prerelease_number),
+        Some("rc") => Prerelease::Rc(prerelease_number),
+        None => Prerelease::Release,
+        _ => return None,
+    };
+
+    Some(VersionKey {
+        major,
+        minor,
+        patch,
+        prerelease,
+    })
+}
+
+pub fn compare_version_tags(left: &str, right: &str) -> Option<Ordering> {
+    Some(parse_version_tag(left)?.cmp(&parse_version_tag(right)?))
+}
+
+pub fn is_release_version(tag_name: &str) -> bool {
+    parse_version_tag(tag_name)
+        .map(|version| version.prerelease.is_release())
+        .unwrap_or(false)
+}
 
 fn configure_credentials(callbacks: &mut RemoteCallbacks<'static>, url: Option<&str>) {
     if let Some(url_str) = url {
@@ -113,9 +206,6 @@ fn create_transfer_progress_callback(
 }
 
 fn get_sorted_tags_by_time(repo: &Repository) -> Result<Vec<String>> {
-    static VERSION_REGEX: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"^v?(\d+)\.(\d+)(?:\.(\d+))?([a-zA-Z0-9.-]*)$").unwrap());
-
     let tag_array = repo
         .tag_names(None)
         .with_context(|| format!("Failed to list tags from repository at {:?}", repo.path()))?;
@@ -124,13 +214,7 @@ fn get_sorted_tags_by_time(repo: &Repository) -> Result<Vec<String>> {
 
     for tag_name_opt in tag_array.iter() {
         if let Some(tag_name) = tag_name_opt {
-            if let Some(caps) = VERSION_REGEX.captures(tag_name) {
-                let major = caps.get(1).unwrap().as_str().parse::<u32>().unwrap_or(0);
-                let minor = caps.get(2).unwrap().as_str().parse::<u32>().unwrap_or(0);
-                let patch = caps.get(3).map_or(0, |m| m.as_str().parse().unwrap_or(0));
-                let suffix = caps.get(4).map_or("", |m| m.as_str());
-
-                let sort_key = (major, minor, patch, suffix.is_empty(), suffix.to_string());
+            if let Some(sort_key) = parse_version_tag(tag_name) {
                 version_tags.push((sort_key, tag_name.to_string()));
             }
         }
@@ -217,7 +301,7 @@ pub async fn get_tags_and_current_version(
                 )
             })?;
 
-        let mut sorted_tags = get_sorted_tags_by_time(&repo)?;
+        let sorted_tags = get_sorted_tags_by_time(&repo)?;
 
         let head_ref = repo.head().context("Failed to get repo HEAD")?;
         let head_oid = head_ref.target().context("HEAD has no target OID")?;
@@ -242,25 +326,6 @@ pub async fn get_tags_and_current_version(
             }
         }
         let current_version = current_version_tag.unwrap_or_else(|| head_oid.to_string());
-
-        let lts_commit_oid = repo
-            .revparse_single("refs/tags/lts")
-            .ok()
-            .and_then(|obj| obj.peel_to_commit().ok())
-            .map(|commit| commit.id());
-
-        if let Some(lts_oid) = lts_commit_oid {
-            let lts_version_index = sorted_tags.iter().position(|tag_name| {
-                repo.revparse_single(&format!("refs/tags/{}", tag_name))
-                    .ok()
-                    .and_then(|obj| obj.peel_to_commit().ok())
-                    .map_or(false, |commit| commit.id() == lts_oid)
-            });
-
-            if let Some(index) = lts_version_index {
-                sorted_tags.truncate(index + 1);
-            }
-        }
 
         Ok((sorted_tags, current_version))
     })
@@ -457,7 +522,10 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
             return Ok(());
         }
 
-        let latest_tag_name = &sorted_tags[0];
+        let latest_tag_name = sorted_tags
+            .iter()
+            .find(|tag| is_release_version(tag))
+            .unwrap_or(&sorted_tags[0]);
 
         emit_info!(
             app_name_for_messages,
@@ -802,4 +870,36 @@ pub async fn get_commit_messages_for_version_diff(
     .await
     .context("Task for get_commit_messages panicked or was cancelled")??;
     Ok(messages)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compare_version_tags, is_release_version};
+    use std::cmp::Ordering;
+
+    #[test]
+    fn compares_release_and_prerelease_versions() {
+        let ordered = [
+            "1.4.2",
+            "1.5.0-alpha.1",
+            "1.5.0-beta",
+            "1.5.0.beta.1",
+            "1.5.0-beta.2",
+            "1.5.0-rc.1",
+            "1.5.0",
+        ];
+
+        for pair in ordered.windows(2) {
+            assert_eq!(compare_version_tags(pair[0], pair[1]), Some(Ordering::Less));
+        }
+
+        assert_eq!(
+            compare_version_tags("1.5.0", "1.5.0-rc.1"),
+            Some(Ordering::Greater)
+        );
+        assert!(is_release_version("1.5.0"));
+        assert!(is_release_version("v1.5.0"));
+        assert!(!is_release_version("1.5.0-beta"));
+        assert!(!is_release_version("v1.5.0.beta"));
+    }
 }

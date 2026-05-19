@@ -25,6 +25,7 @@ use crate::{
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use once_cell::sync::Lazy;
+use std::cmp::Ordering;
 use std::{
     collections::HashMap,
     fs,
@@ -245,7 +246,12 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
         let apps_map = APPS.lock().await.clone();
         if !apps_map.is_empty() {
             info!("App already loaded. Triggering update from disk.");
-            emit_apps().await;
+            if update_apps_from_disk().await? {
+                emit_apps().await;
+            } else {
+                info!("No app details changed after update check.");
+                emit_apps().await;
+            }
             return Ok(get_apps_as_vec().await);
         }
     }
@@ -295,8 +301,19 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                 config_guard.get_effective_update_method().to_string()
             };
 
-            let is_latest = !app.available_versions.is_empty()
-                && app.current_version.as_ref() == Some(&app.available_versions[0]);
+            let latest_release_version = app
+                .available_versions
+                .iter()
+                .find(|version| git::is_release_version(version))
+                .cloned();
+            let release_update_available =
+                latest_release_version.as_ref().is_some_and(|latest_version| {
+                    app.current_version.as_ref().is_some_and(|current_version| {
+                        git::compare_version_tags(latest_version, current_version)
+                            == Some(Ordering::Greater)
+                    })
+                });
+            let is_latest = !release_update_available;
 
             info!(
                 "First load, checking for auto-start conditions. update_method:{}, is_latest:{}",
@@ -306,10 +323,10 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
             let mut needs_autostart = false;
             info!("locale is {}", get_locale());
             if app.installed && !app.available_versions.is_empty() {
-                if !is_latest {
-                    info!("App is not the latest version.");
+                if release_update_available {
+                    info!("App is not the latest release version.");
                     let app_name_clone = app.name.clone();
-                    let latest_version = app.available_versions[0].clone();
+                    let latest_version = latest_release_version.expect("release_update_available requires latest release");
                     if update_method == UPDATE_METHOD_OPTION_AUTO {
                         info!("{}", t!("message.new_version_update", version=latest_version.clone()));
                         send_notification(app_name_clone.clone(), t!("message.new_version_update", version=latest_version));
