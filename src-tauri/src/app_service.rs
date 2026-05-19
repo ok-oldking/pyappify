@@ -118,6 +118,62 @@ async fn cleanup_stale_app_directories(app_name: &str) -> Result<()> {
     Ok(())
 }
 
+async fn rollback_interrupted_pip_sync_on_startup(app: &mut App, repo_path: &Path) -> Result<()> {
+    if !app.installed {
+        return Ok(());
+    }
+
+    let working_dir = get_app_working_dir_path(&app.name);
+    let marker_path = working_dir.join(python_env::PIP_UPDATE_NEEDED_MARKER);
+    if !marker_path.exists() {
+        return Ok(());
+    }
+
+    let Some(previous_version) = app.current_version.clone() else {
+        warn!(
+            "Found unfinished pip sync marker for '{}', but no previous version is recorded.",
+            app.name
+        );
+        return Ok(());
+    };
+
+    emit_info!(
+        app.name,
+        "Found unfinished pip dependency sync from a previous update. Rolling back Git version to {}.",
+        previous_version
+    );
+
+    let rollback_oid =
+        git::checkout_existing_revision(&app.name, repo_path, &previous_version).await?;
+    emit_info!(
+        app.name,
+        "Checked out previous commit {} for version {}",
+        rollback_oid,
+        previous_version
+    );
+
+    update_working_from_repo(&app.name).await?;
+    if marker_path.exists() {
+        if let Err(e) = fs::remove_file(&marker_path) {
+            warn!(
+                "Rollback for '{}' completed, but failed to remove marker {}: {}",
+                app.name,
+                marker_path.display(),
+                e
+            );
+        }
+    }
+
+    load_app_details(app).await?;
+    app.current_version = Some(previous_version.clone());
+    emit_info!(
+        app.name,
+        "Startup rollback complete. The app is back on version {}.",
+        previous_version
+    );
+    Ok(())
+}
+
 async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
     let app_name = &app_template.name;
     let mut app = match load_app_config_from_json(app_name).await {
@@ -172,6 +228,10 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
             app_name
         );
         app.installed = false;
+    }
+
+    if app.installed {
+        rollback_interrupted_pip_sync_on_startup(&mut app, &repo_path).await?;
     }
 
     load_app_details(&mut app).await?;
@@ -546,6 +606,48 @@ fn get_relevant_content(spec: &str, dir: &Path) -> Option<String> {
     fs::read_to_string(file_to_check).ok()
 }
 
+async fn rollback_to_previous_version(
+    app_name: &str,
+    repo_path: &Path,
+    previous_version: &str,
+) -> Result<(), Error> {
+    emit_info!(
+        app_name,
+        "Pip dependency sync failed. Rolling back Git version to {}.",
+        previous_version
+    );
+
+    let rollback_oid =
+        git::checkout_existing_revision(app_name, repo_path, previous_version).await?;
+    emit_info!(
+        app_name,
+        "Checked out previous commit {} for version {}",
+        rollback_oid,
+        previous_version
+    );
+
+    update_working_from_repo(app_name).await?;
+
+    {
+        let mut apps = APPS.lock().await;
+        if let Some(app) = apps.get_mut(app_name) {
+            load_app_details(app).await?;
+            app.current_version = Some(previous_version.to_string());
+            let app_to_save = app.clone();
+            drop(apps);
+            save_app_config_to_json(&app_to_save).await?;
+        }
+    }
+
+    emit_apps().await;
+    emit_info!(
+        app_name,
+        "Rollback complete. The app is back on version {}.",
+        previous_version
+    );
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Error> {
     info!("Updating {} to version {}", app_name, version);
@@ -554,11 +656,15 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
 
     let working_dir_path = get_app_working_dir_path(app_name);
 
-    let old_requirements_spec = {
+    let (previous_version, old_requirements_spec) = {
         let apps = APPS.lock().await;
-        apps.get(app_name)
-            .map(|app| app.get_current_profile_settings().requirements.clone())
-            .unwrap_or_default()
+        match apps.get(app_name) {
+            Some(app) => (
+                app.current_version.clone(),
+                app.get_current_profile_settings().requirements.clone(),
+            ),
+            None => (None, String::new()),
+        }
     };
     let old_content = get_relevant_content(&old_requirements_spec, &working_dir_path);
 
@@ -609,13 +715,37 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
                 file_type
             );
         }
-        python_env::install_requirements(
+        if let Err(pip_error) = python_env::install_requirements(
             app_name,
             &new_requirements_spec,
             &working_dir_path,
             &new_pip_args,
         )
-        .await?;
+        .await
+        {
+            if let Some(previous_version) = previous_version.as_deref() {
+                info!(
+                    "Pip sync failed while updating {} to {}. Attempting rollback to {}.",
+                    app_name, version, previous_version
+                );
+                if let Err(rollback_error) =
+                    rollback_to_previous_version(app_name, &repo_path, previous_version).await
+                {
+                    return Err(err!(
+                        "Pip dependency sync failed: {}. Rollback to previous version '{}' also failed: {}",
+                        pip_error,
+                        previous_version,
+                        rollback_error
+                    ));
+                }
+            } else {
+                warn!(
+                    "Pip sync failed while updating {} to {}, but no previous version is recorded.",
+                    app_name, version
+                );
+            }
+            return Err(pip_error);
+        }
     } else {
         emit_info!(
             app_name,

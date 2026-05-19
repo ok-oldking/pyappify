@@ -613,6 +613,75 @@ pub async fn checkout_version_tag(
     Ok(oid)
 }
 
+pub async fn checkout_existing_revision(
+    app_name: &str,
+    repo_path: &Path,
+    revision: &str,
+) -> Result<Oid> {
+    let lock_arc = REPO_LOCKS
+        .entry(repo_path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone();
+    let _guard = lock_arc.lock().await;
+
+    let task_repo_path = repo_path.to_path_buf();
+    let revision_to_checkout = revision.to_string();
+    let app_name_for_task = app_name.to_string();
+
+    let oid = task::spawn_blocking(move || -> Result<Oid> {
+        let repo = open_repository(&task_repo_path)?;
+
+        let obj = repo
+            .revparse_single(&revision_to_checkout)
+            .or_else(|_| repo.revparse_single(&format!("refs/tags/{}", revision_to_checkout)))
+            .with_context(|| {
+                format!(
+                    "Revision '{}' not found locally in repo {}",
+                    revision_to_checkout,
+                    task_repo_path.display()
+                )
+            })?;
+
+        repo.checkout_tree(&obj, Some(CheckoutBuilder::new().force()))
+            .with_context(|| {
+                format!(
+                    "Failed to checkout tree for revision {}",
+                    revision_to_checkout
+                )
+            })?;
+
+        let commit_oid = obj
+            .peel_to_commit()
+            .map_or_else(|_| obj.id(), |commit| commit.id());
+
+        repo.set_head_detached(commit_oid)
+            .with_context(|| format!("Failed to set head detached to {}", commit_oid))?;
+
+        emit_info!(
+            app_name_for_task,
+            "Successfully rolled back and set head to revision {} ({}) for repo {}.",
+            revision_to_checkout,
+            commit_oid,
+            task_repo_path.display()
+        );
+
+        submodule::update_repository_submodules(
+            &repo,
+            &app_name_for_task,
+            &format!(
+                "repository at {} after rolling back to revision {}",
+                task_repo_path.display(),
+                revision_to_checkout
+            ),
+        )?;
+
+        Ok(commit_oid)
+    })
+    .await
+    .context("Task for checkout_existing_revision panicked or was cancelled")??;
+    Ok(oid)
+}
+
 pub async fn get_commit_messages_for_version_diff(
     repo_path: &Path,
     target_version_tag_name: &str,

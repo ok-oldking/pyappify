@@ -109,6 +109,10 @@ pub async fn run_command_and_stream_output(
         error!(error = %e, cmd_desc = %command_description, "Log reading task encountered an error. This does not necessarily mean the command itself failed.");
     }
 
+    if !status.success() {
+        return Err(err!("Command failed ({}): {}", command_description, status));
+    }
+
     Ok(status)
 }
 
