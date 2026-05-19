@@ -790,6 +790,7 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
 fn build_python_execution_environment(
     profile: &Profile,
     current_version: Option<String>,
+    pyappify_version: String,
 ) -> Vec<(String, String)> {
 
     let mut envs = Vec::new();
@@ -805,7 +806,7 @@ fn build_python_execution_environment(
     envs.push(("PYAPPIFY_UPGRADEABLE".to_string(), 1.to_string()));
     envs.push((
         "PYAPPIFY_VERSION".to_string(),
-        env!("CARGO_PKG_VERSION").to_string(),
+        pyappify_version,
     ));
     envs.push(("PYTHONIOENCODING".to_string(), "utf-8".to_string()));
     envs.push(("PYTHONUNBUFFERED".to_string(), "1".to_string()));
@@ -947,8 +948,9 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         python_env::install_requirements(&app_name, &profile_to_run_with.requirements, &working_dir, &profile_to_run_with.pip_args).await?;
     }
 
+    let pyappify_version = app_handle.package_info().version.to_string();
     let envs =
-        build_python_execution_environment(&profile_to_run_with, current_version);
+        build_python_execution_environment(&profile_to_run_with, current_version, pyappify_version);
     execute_python::run_python_script(
         app_name.as_str(),
         profile_to_run_with.main_script.as_str(),
