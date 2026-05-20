@@ -213,7 +213,7 @@ fn get_sorted_tags_by_time(repo: &Repository) -> Result<Vec<String>> {
     let mut version_tags = Vec::new();
 
     for tag_name_opt in tag_array.iter() {
-        if let Some(tag_name) = tag_name_opt {
+        if let Ok(Some(tag_name)) = tag_name_opt {
             if let Some(sort_key) = parse_version_tag(tag_name) {
                 version_tags.push((sort_key, tag_name.to_string()));
             }
@@ -239,7 +239,7 @@ pub fn open_repository(repo_path: &Path) -> Result<Repository> {
 
 pub fn get_repository_origin_url(repo: &Repository) -> Result<Option<String>> {
     match repo.find_remote("origin") {
-        Ok(remote) => Ok(remote.url().map(String::from)),
+        Ok(remote) => Ok(remote.url().ok().map(String::from)),
         Err(e) => {
             if e.code() == ErrorCode::NotFound && e.class() == ErrorClass::Config {
                 Ok(None)
@@ -280,7 +280,7 @@ pub async fn get_tags_and_current_version(
             )
         })?;
 
-        let remote_url = remote.url().map(String::from);
+        let remote_url = remote.url().ok().map(String::from);
 
         let mut remote_callbacks = RemoteCallbacks::new();
         configure_credentials(&mut remote_callbacks, remote_url.as_deref());
@@ -601,7 +601,7 @@ pub async fn checkout_version_tag(
             .context("Failed to find remote 'origin'")?;
 
         let mut callbacks = RemoteCallbacks::new();
-        configure_credentials(&mut callbacks, remote.url());
+        configure_credentials(&mut callbacks, remote.url().ok());
 
         callbacks.transfer_progress(create_transfer_progress_callback(
             app_name_for_task.clone(),
@@ -770,7 +770,7 @@ pub async fn get_commit_messages_for_version_diff(
             .context("Failed to find remote 'origin'")?;
 
         let mut callbacks = RemoteCallbacks::new();
-        configure_credentials(&mut callbacks, remote.url());
+        configure_credentials(&mut callbacks, remote.url().ok());
 
         let mut fetch_options = create_fetch_options(callbacks, None);
 
@@ -824,7 +824,7 @@ pub async fn get_commit_messages_for_version_diff(
                 continue;
             }
 
-            if let Some(full_message) = commit.message() {
+            if let Ok(full_message) = commit.message() {
                 for line in full_message.lines() {
                     let trimmed_line = line.trim();
                     if !trimmed_line.is_empty() {
@@ -851,7 +851,7 @@ pub async fn get_commit_messages_for_version_diff(
             let target_commit = repo.find_commit(target_commit_oid).with_context(|| {
                 format!("Failed to find target commit for OID {}", target_commit_oid)
             })?;
-            if let Some(full_message) = target_commit.message() {
+            if let Ok(full_message) = target_commit.message() {
                 info!(
                     "Diff is empty, using target commit's message: {}",
                     full_message.lines().next().unwrap_or("")

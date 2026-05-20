@@ -613,7 +613,7 @@ function App() {
                                 {profileChoiceApp.profiles.map(p => <MenuItem key={p.name} value={p.name}>{p.name}</MenuItem>)}
                             </Select>
                         </FormControl>
-                        <Stack direction="row" spacing={2} justifyContent="flex-end" sx={{mt: 3}}>
+                        <Stack direction="row" spacing={2} sx={{mt: 3, justifyContent: 'flex-end'}}>
                             <Button variant="outlined" onClick={() => setCurrentPage('list')}>{t('Cancel')}</Button>
                             <Button variant="contained" onClick={() => handleInstallWithProfile(profileChoiceApp.name, selectedProfileForInstall)} disabled={!selectedProfileForInstall || appActionLoading[profileChoiceApp.name]}>
                                 {appActionLoading[profileChoiceApp.name] ? t("Starting Install...") : t("Confirm & Install")}
@@ -641,7 +641,7 @@ function App() {
                                 {appForProfileChange.profiles.map(p => <MenuItem key={p.name} value={p.name} disabled={p.name === appForProfileChange.current_profile}>{p.name}{p.name === appForProfileChange.current_profile && t(" (Current)")}</MenuItem>)}
                             </Select>
                         </FormControl>
-                        <Stack direction="row" spacing={2} justifyContent="flex-end" sx={{mt: 3}}>
+                        <Stack direction="row" spacing={2} sx={{mt: 3, justifyContent: 'flex-end'}}>
                             <Button variant="outlined" onClick={() => setCurrentPage('list')}>{t('Cancel')}</Button>
                             <Button variant="contained" onClick={() => handleConfirmProfileChange(appForProfileChange.name, selectedNewProfileName)} disabled={!selectedNewProfileName || selectedNewProfileName === appForProfileChange.current_profile || appActionLoading[appForProfileChange.name]}>
                                 {appActionLoading[appForProfileChange.name] ? t("Initiating...") : t("Change Profile")}
@@ -681,7 +681,7 @@ function App() {
                                                 {isEffectivelyInstalling && <Typography component="span" color="info.main" sx={{ml: 1}}>{t('(Installing...)')}</Typography>}
                                                 {app.installed && app.running && <Typography component="span" color="success.main" sx={{ml: 1}}>{t('(Running)')}</Typography>}
                                             </Typography>
-                                            <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{my: 1, flexWrap: 'wrap'}} alignItems="center">
+                                            <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{my: 1, flexWrap: 'wrap', alignItems: 'center'}}>
                                                 {app.installed ? (
                                                     app.running ? (
                                                         <>
@@ -702,7 +702,7 @@ function App() {
                                             </Stack>
                                             {app.installed && !app.running && (
                                                 <Box sx={{mt: 2}}>
-                                                    <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} alignItems="center">
+                                                    <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{alignItems: 'center'}}>
                                                         {app.available_versions.filter(v => v !== app.current_version).length > 0 ? (
                                                             <>
                                                                 <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 200}}} disabled={disableRowActions}>

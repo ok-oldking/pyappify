@@ -8,7 +8,7 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use flate2::read::GzDecoder;
 use rand::distr::Alphanumeric;
-use rand::Rng;
+use rand::RngExt;
 use reqwest::Client;
 use reqwest::Url;
 use std::io::Write;

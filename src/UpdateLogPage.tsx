@@ -3,8 +3,8 @@ import React, {useEffect, useRef, useState} from 'react';
 import {invoke} from "@tauri-apps/api/core";
 import {Alert, Box, Button, CircularProgress, Paper, Stack, Typography} from "@mui/material";
 import {useTranslation} from 'react-i18next';
-import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
-import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlineOutlined';
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutlineOutlined';
 
 interface UpdateLogPanelProps {
     appName: string;
@@ -122,9 +122,9 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
 
     return (
         <Box sx={{mt: 2, border: 1, borderColor, borderRadius: 1, p: 2}}>
-            <Stack direction="row" alignItems="center" spacing={0.5} sx={{mb: 0.5}}>
+            <Stack direction="row" spacing={0.5} sx={{mb: 0.5, alignItems: 'center'}}>
                 {titleIcon}
-                <Typography variant="subtitle1" fontWeight="bold" color={titleColor}>
+                <Typography variant="subtitle1" sx={{fontWeight: 'bold', color: titleColor}}>
                     {pageTitle}
                 </Typography>
             </Stack>
@@ -158,7 +158,7 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
 
             {/* Buttons: hidden while confirming/completed; only Cancel shown on failure */}
             {!notesLoading && !completed && !isConfirming && (
-                <Stack direction="row" spacing={1} justifyContent="flex-end" sx={{mt: 2}}>
+                <Stack direction="row" spacing={1} sx={{mt: 2, justifyContent: 'flex-end'}}>
                     <Button
                         variant="outlined"
                         size="small"
