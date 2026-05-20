@@ -21,7 +21,7 @@ tauri-build = { version = "2.6.2", features = [] }
 tauri = { version = "2.11.2", features = ["tray-icon"] }
 tauri-plugin-opener = "2.5.4"
 serde = { version = "1.0.228", features = ["derive"] }
-git2 = "0.21.0" # Or another client like -curl
+git2 = { version = "0.21.0", features = ["https", "ssh", "vendored-libgit2", "vendored-openssl"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "registry", "env-filter", "time", "local-time"] }
 tracing-appender = "0.2.5"
