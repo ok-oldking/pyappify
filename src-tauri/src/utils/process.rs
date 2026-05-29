@@ -1,11 +1,23 @@
 use std::path::{Path, PathBuf};
-use sysinfo::{Pid, Process, System};
 use std::process::Command as StdCommand;
+use sysinfo::{Pid, Process, System};
 use tokio::process::Command as TokioCommand;
 
-pub const PYTHON_ENVS_TO_REMOVE: [&str; 13] = ["PYTHONHOME", "PYTHONSTARTUP", "VIRTUAL_ENV",
-    "PYTHONPATH", "PYTHONUSERBASE", "PYTHONCASEOK", "PYTHONHASHSEED", "PYTHONOPTIMIZE", "PYTHONVERBOSE",
-    "PYTHONDEBUG", "PYTHONWARNINGS", "PYTHONIOENCODING", "PYTHONINSPECT"];
+pub const PYTHON_ENVS_TO_REMOVE: [&str; 13] = [
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "VIRTUAL_ENV",
+    "PYTHONPATH",
+    "PYTHONUSERBASE",
+    "PYTHONCASEOK",
+    "PYTHONHASHSEED",
+    "PYTHONOPTIMIZE",
+    "PYTHONVERBOSE",
+    "PYTHONDEBUG",
+    "PYTHONWARNINGS",
+    "PYTHONIOENCODING",
+    "PYTHONINSPECT",
+];
 #[cfg(windows)]
 fn system_default_path() -> String {
     let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
@@ -16,7 +28,7 @@ fn system_default_path() -> String {
         format!("{}\\System32\\WindowsPowerShell\\v1.0\\", system_root),
         format!("{}\\System32\\OpenSSH\\", system_root),
     ]
-        .join(";")
+    .join(";")
 }
 
 pub trait RemovePythonEnvsExt {

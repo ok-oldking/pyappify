@@ -1,4 +1,5 @@
 // src/utils/window.rs
+use crate::emitter::get_app_handle;
 use crate::utils::error::Error;
 use crate::utils::path::get_start_dir;
 use std::env;
@@ -8,7 +9,6 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{App, AppHandle, Manager, WebviewWindow, Window, WindowEvent, Wry};
 use tauri_plugin_notification::NotificationExt;
 use tracing::info;
-use crate::emitter::get_app_handle;
 
 pub fn on_window_event(window: &Window, _event: &WindowEvent) {
     if let WindowEvent::Resized(size) = _event {
@@ -24,7 +24,9 @@ pub fn send_notification(title: impl Into<String>, body: impl Into<String>) {
     let body = body.into();
     info!("send_notification: {} {}", &title, &body);
 
-    get_app_handle().unwrap().notification()
+    get_app_handle()
+        .unwrap()
+        .notification()
         .builder()
         .title(title)
         .body(body)

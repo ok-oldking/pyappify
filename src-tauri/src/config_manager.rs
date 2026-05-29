@@ -360,7 +360,10 @@ impl AppConfig {
     pub fn update_item_value(&mut self, name: &str, new_value: ConfigValue) {
         if name == I18N_CONFIG_KEY {
             rust_i18n::set_locale(&*new_value.to_string());
-            info!("Updated rust_i18n to '{}' when saving configuration.", new_value);
+            info!(
+                "Updated rust_i18n to '{}' when saving configuration.",
+                new_value
+            );
         }
         match self.items.get_mut(name) {
             Some(item) => {

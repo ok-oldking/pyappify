@@ -2,8 +2,8 @@
 use crate::utils::command::{command_to_string, run_command_and_stream_output};
 use crate::utils::error::Error;
 use crate::utils::path::{get_python_dir, get_python_exe, path_to_abs};
-use crate::{emit_error, emit_error_finish, emit_info, emit_success_finish, err};
 use crate::utils::process::RemovePythonEnvsExt;
+use crate::{emit_error, emit_error_finish, emit_info, emit_success_finish, err};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -150,7 +150,7 @@ pub async fn run_python_script(
             &working_dir_owned,
             &envs_owned,
         )
-            .await;
+        .await;
         if let Err(e) = result {
             emit_error!(app_name_owned, "Script run Error {}", e);
             emit_error_finish!(app_name_owned);

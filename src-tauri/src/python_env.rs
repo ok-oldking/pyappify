@@ -1,7 +1,9 @@
 // src/python_env.rs
+use crate::config_manager::get_default_locale;
 use crate::utils::command::new_cmd;
 use crate::utils::error::Error;
 use crate::utils::path::{get_python_dir, get_python_exe};
+use crate::utils::process::RemovePythonEnvsExt;
 use crate::{
     config_manager::GLOBAL_CONFIG_STATE, emit_info, emit_update_info, err, utils::command,
 };
@@ -19,8 +21,6 @@ use tar::Archive;
 use tracing::{error, info, warn};
 use walkdir::WalkDir;
 use zip::ZipArchive;
-use crate::config_manager::get_default_locale;
-use crate::utils::process::RemovePythonEnvsExt;
 
 pub const PIP_UPDATE_NEEDED_MARKER: &str = ".pip_update_needed.tmp";
 
@@ -546,11 +546,7 @@ pub async fn install_requirements(
             requirements_path.display()
         );
     } else {
-        pip_install_desc = format!(
-            "{} -m pip install {}",
-            python_exe.display(),
-            requirements
-        );
+        pip_install_desc = format!("{} -m pip install {}", python_exe.display(), requirements);
     }
     let mut pip_install_cmd = new_cmd(python_exe);
     pip_install_cmd

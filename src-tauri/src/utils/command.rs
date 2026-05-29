@@ -41,20 +41,20 @@ pub async fn run_command_and_stream_output(
         "Could not capture stdout from command ({})",
         command_description
     )
-        .map_err(|e| {
-            emit_error!(app_name, "{}", e.to_string());
-            err!(e.to_string())
-        })?;
+    .map_err(|e| {
+        emit_error!(app_name, "{}", e.to_string());
+        err!(e.to_string())
+    })?;
 
     let stderr = ensure_some!(
         child.stderr.take(),
         "Could not capture stderr from command ({})",
         command_description
     )
-        .map_err(|e| {
-            emit_error!(app_name, "{}", e.to_string());
-            err!(e.to_string())
-        })?;
+    .map_err(|e| {
+        emit_error!(app_name, "{}", e.to_string());
+        err!(e.to_string())
+    })?;
 
     let mut stdout_buf_reader = tokio::io::BufReader::new(stdout);
     let mut stderr_buf_reader = tokio::io::BufReader::new(stderr);

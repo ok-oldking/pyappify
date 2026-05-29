@@ -9,5 +9,3 @@ pub fn get_locale() -> &'static str {
         "en"
     }
 }
-
-

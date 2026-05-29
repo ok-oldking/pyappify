@@ -18,6 +18,10 @@ pub struct App {
     #[serde(default)]
     pub current_version: Option<String>,
     #[serde(default)]
+    pub app_starting_version: Option<String>,
+    #[serde(default)]
+    pub update_note: Vec<String>,
+    #[serde(default)]
     pub available_versions: Vec<String>,
     #[serde(default)]
     pub running: bool,

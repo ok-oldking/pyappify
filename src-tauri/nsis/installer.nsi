@@ -1028,23 +1028,51 @@ Function KillInstallDirExecutables
   FileWrite $R1 "$$installRoot = [System.IO.Path]::GetFullPath($$InstallDir).TrimEnd('\')$\r$\n"
   FileWrite $R1 "$$currentInstaller = ''$\r$\n"
   FileWrite $R1 "if ($$InstallerPath) { $$currentInstaller = [System.IO.Path]::GetFullPath($$InstallerPath) }$\r$\n"
-  FileWrite $R1 "$$processes = Get-CimInstance Win32_Process$\r$\n"
-  FileWrite $R1 "if (-not $$processes) { $$processes = Get-WmiObject Win32_Process }$\r$\n"
-  FileWrite $R1 "foreach ($$process in $$processes) {$\r$\n"
-  FileWrite $R1 "  $$exePath = $$process.ExecutablePath$\r$\n"
-  FileWrite $R1 "  if (-not $$exePath) { continue }$\r$\n"
-  FileWrite $R1 "  if (-not $$exePath.EndsWith('.exe', [System.StringComparison]::OrdinalIgnoreCase)) { continue }$\r$\n"
-  FileWrite $R1 "  $$fullPath = [System.IO.Path]::GetFullPath($$exePath)$\r$\n"
-  FileWrite $R1 "  if (-not $$fullPath.StartsWith($$installRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) { continue }$\r$\n"
-  FileWrite $R1 "  if ($$currentInstaller -and [string]::Equals($$fullPath, $$currentInstaller, [System.StringComparison]::OrdinalIgnoreCase)) { continue }$\r$\n"
-  FileWrite $R1 "  Stop-Process -Id $$process.ProcessId -Force$\r$\n"
-  FileWrite $R1 "  Wait-Process -Id $$process.ProcessId -Timeout 5$\r$\n"
+  FileWrite $R1 "function Get-InstallDirProcesses {$\r$\n"
+  FileWrite $R1 "  $$processes = Get-CimInstance Win32_Process$\r$\n"
+  FileWrite $R1 "  if (-not $$processes) { $$processes = Get-WmiObject Win32_Process }$\r$\n"
+  FileWrite $R1 "  foreach ($$process in $$processes) {$\r$\n"
+  FileWrite $R1 "    if ($$process.ProcessId -eq $$PID) { continue }$\r$\n"
+  FileWrite $R1 "    $$exePath = $$process.ExecutablePath$\r$\n"
+  FileWrite $R1 "    if ($$exePath) {$\r$\n"
+  FileWrite $R1 "      $$fullPath = [System.IO.Path]::GetFullPath($$exePath)$\r$\n"
+  FileWrite $R1 "      if ($$currentInstaller -and [string]::Equals($$fullPath, $$currentInstaller, [System.StringComparison]::OrdinalIgnoreCase)) { continue }$\r$\n"
+  FileWrite $R1 "      if ($$fullPath.StartsWith($$installRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) { $$process; continue }$\r$\n"
+  FileWrite $R1 "    }$\r$\n"
+  FileWrite $R1 "    $$commandLine = $$process.CommandLine$\r$\n"
+  FileWrite $R1 "    if ($$commandLine -and $$commandLine.IndexOf($$installRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $$process; continue }$\r$\n"
+  FileWrite $R1 "    try {$\r$\n"
+  FileWrite $R1 "      $$nativeProcess = Get-Process -Id $$process.ProcessId -ErrorAction SilentlyContinue$\r$\n"
+  FileWrite $R1 "      foreach ($$module in $$nativeProcess.Modules) {$\r$\n"
+  FileWrite $R1 "        $$modulePath = $$module.FileName$\r$\n"
+  FileWrite $R1 "        if ($$modulePath -and $$modulePath.StartsWith($$installRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) { $$process; break }$\r$\n"
+  FileWrite $R1 "      }$\r$\n"
+  FileWrite $R1 "    } catch {}$\r$\n"
+  FileWrite $R1 "  }$\r$\n"
   FileWrite $R1 "}$\r$\n"
+  FileWrite $R1 "$$targets = @(Get-InstallDirProcesses | Sort-Object ProcessId -Unique)$\r$\n"
+  FileWrite $R1 "foreach ($$process in $$targets) {$\r$\n"
+  FileWrite $R1 "  Stop-Process -Id $$process.ProcessId -Force$\r$\n"
+  FileWrite $R1 "  taskkill.exe /F /T /PID $$process.ProcessId | Out-Null$\r$\n"
+  FileWrite $R1 "}$\r$\n"
+  FileWrite $R1 "foreach ($$process in $$targets) { Wait-Process -Id $$process.ProcessId -Timeout 5 }$\r$\n"
+  FileWrite $R1 "Start-Sleep -Milliseconds 500$\r$\n"
+  FileWrite $R1 "$$remaining = @(Get-InstallDirProcesses)$\r$\n"
+  FileWrite $R1 "if ($$remaining.Count -gt 0) { exit 2 }$\r$\n"
   FileWrite $R1 "exit 0$\r$\n"
   FileClose $R1
 
+  retry_kill_install_dir_executables:
   DetailPrint "Stopping running executables in $INSTDIR"
   ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$R0" "$INSTDIR" "$EXEPATH"' $R2
+  ${If} $R2 <> 0
+    ${If} $LANGUAGE == 2052
+      MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "无法停止正在使用 $INSTDIR 中 Python/Qt 文件的进程。$\r$\n请关闭相关应用后点击“重试”。" IDRETRY retry_kill_install_dir_executables
+    ${Else}
+      MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "Some processes are still using Python/Qt files in $INSTDIR.$\r$\nClose the related app and click Retry." IDRETRY retry_kill_install_dir_executables
+    ${EndIf}
+    Abort
+  ${EndIf}
 FunctionEnd
 
 Function RestorePreviousInstallLocation

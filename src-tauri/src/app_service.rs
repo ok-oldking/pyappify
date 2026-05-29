@@ -684,6 +684,22 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
         }
     };
     let old_content = get_relevant_content(&old_requirements_spec, &working_dir_path);
+    let update_note = if previous_version.as_deref() == Some(version) {
+        Vec::new()
+    } else {
+        match git::get_commit_messages_for_version_diff(&path::get_app_repo_path(app_name), version)
+            .await
+        {
+            Ok(messages) => messages,
+            Err(error) => {
+                warn!(
+                    "Failed to collect update notes for {} moving to {}: {}",
+                    app_name, version, error
+                );
+                Vec::new()
+            }
+        }
+    };
 
     let repo_path = path::get_app_repo_path(app_name);
     let commit_oid = git::checkout_version_tag(app_name, &repo_path, version).await?;
@@ -775,6 +791,12 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
         if let Some(app) = apps.get_mut(app_name) {
             load_app_details(app).await?;
             app.current_version = Some(version.to_string());
+            app.app_starting_version = Some(
+                previous_version
+                    .clone()
+                    .unwrap_or_else(|| version.to_string()),
+            );
+            app.update_note = update_note;
             let app_to_save = app.clone();
             drop(apps);
             save_app_config_to_json(&app_to_save).await?;
@@ -790,24 +812,38 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
 fn build_python_execution_environment(
     profile: &Profile,
     current_version: Option<String>,
+    app_starting_version: Option<String>,
+    update_note: Vec<String>,
     pyappify_version: String,
 ) -> Vec<(String, String)> {
-
     let mut envs = Vec::new();
     if !profile.python_path.is_empty() {
         envs.push(("PYTHONPATH".to_string(), profile.python_path.clone()));
-    } 
-    
+    }
+
+    let app_version = current_version.clone().unwrap_or_default();
+    let starting_version = app_starting_version.unwrap_or_else(|| app_version.clone());
+    let encoded_update_note = if update_note.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&update_note).unwrap_or_else(|error| {
+            warn!("Failed to encode PYAPPIFY_UPDATE_NOTE as JSON: {}", error);
+            String::new()
+        })
+    };
+
     if let Some(version) = current_version {
         envs.push(("PYAPPIFY_APP_VERSION".to_string(), version));
     }
+    envs.push((
+        "PYAPPIFY_APP_STARTING_VERSION".to_string(),
+        starting_version,
+    ));
+    envs.push(("PYAPPIFY_UPDATE_NOTE".to_string(), encoded_update_note));
     envs.push(("PYAPPIFY_APP_PROFILE".to_string(), profile.name.clone()));
     envs.push(("PYAPPIFY_PID".to_string(), std::process::id().to_string()));
     envs.push(("PYAPPIFY_UPGRADEABLE".to_string(), 1.to_string()));
-    envs.push((
-        "PYAPPIFY_VERSION".to_string(),
-        pyappify_version,
-    ));
+    envs.push(("PYAPPIFY_VERSION".to_string(), pyappify_version));
     envs.push(("PYTHONIOENCODING".to_string(), "utf-8".to_string()));
     envs.push(("PYTHONUNBUFFERED".to_string(), "1".to_string()));
     envs.push(("PYTHONNOUSERSITE".to_string(), "1".to_string()));
@@ -891,7 +927,7 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         );
     }
 
-    let (profile_to_run_with, working_dir, current_version) = {
+    let (profile_to_run_with, working_dir, current_version, app_starting_version, update_note) = {
         let mut apps_map = APPS.lock().await;
         if let Some(app) = apps_map.get_mut(&app_name) {
             let working_dir = get_app_working_dir_path(&app_name);
@@ -906,6 +942,8 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
             app.last_start = Utc::now();
             let profile_settings = app.get_current_profile_settings().clone();
             let current_version = app.current_version.clone();
+            let app_starting_version = app.app_starting_version.clone();
+            let update_note = app.update_note.clone();
             let app_to_save = app.clone();
             drop(apps_map);
 
@@ -919,6 +957,8 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
                 profile_settings,
                 get_app_working_dir_path(&app_name),
                 current_version,
+                app_starting_version,
+                update_note,
             )
         } else {
             return Err(anyhow!("App '{}' not found.", app_name).into());
@@ -949,8 +989,13 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
     }
 
     let pyappify_version = app_handle.package_info().version.to_string();
-    let envs =
-        build_python_execution_environment(&profile_to_run_with, current_version, pyappify_version);
+    let envs = build_python_execution_environment(
+        &profile_to_run_with,
+        current_version,
+        app_starting_version,
+        update_note,
+        pyappify_version,
+    );
     execute_python::run_python_script(
         app_name.as_str(),
         profile_to_run_with.main_script.as_str(),
