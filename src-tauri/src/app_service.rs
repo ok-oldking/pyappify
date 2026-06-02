@@ -5,13 +5,13 @@ use crate::config_manager::{
 };
 use crate::emitter::get_app_handle;
 use crate::git::ensure_repository;
-use crate::{runas};
+use crate::runas;
 use crate::utils::error::Error;
 use crate::utils::file;
 use crate::utils::file::delete_dir_if_exist;
+use crate::utils::locale::get_locale;
 use crate::utils::path::{get_app_base_path, get_app_working_dir_path, get_python_dir};
 use crate::utils::window::{create_startup_shortcut, send_notification};
-use rust_i18n::t;
 use crate::{
     app::{
         load_app_config_from_json, read_embedded_app, save_app_config_to_json, update_app_from_yml,
@@ -25,6 +25,7 @@ use crate::{
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use once_cell::sync::Lazy;
+use rust_i18n::t;
 use std::cmp::Ordering;
 use std::{
     collections::HashMap,
@@ -38,7 +39,6 @@ use tokio::sync::Mutex;
 use tokio::task;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
-use crate::utils::locale::get_locale;
 
 pub static APPS: Lazy<Mutex<HashMap<String, App>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 pub static APP_DIR_LOCKS: Lazy<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
@@ -306,36 +306,64 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                 .iter()
                 .find(|version| git::is_release_version(version))
                 .cloned();
+            let current_version_missing = app.current_version_missing;
             let release_update_available =
-                latest_release_version.as_ref().is_some_and(|latest_version| {
-                    app.current_version.as_ref().is_some_and(|current_version| {
-                        git::compare_version_tags(latest_version, current_version)
-                            == Some(Ordering::Greater)
-                    })
-                });
+                latest_release_version
+                    .as_ref()
+                    .is_some_and(|latest_version| {
+                        if current_version_missing {
+                            return true;
+                        }
+                        app.current_version.as_ref().is_some_and(|current_version| {
+                            git::compare_version_tags(latest_version, current_version)
+                                == Some(Ordering::Greater)
+                        })
+                    });
             let is_latest = !release_update_available;
 
             info!(
-                "First load, checking for auto-start conditions. update_method:{}, is_latest:{}",
-                update_method, is_latest
+                "First load, checking for auto-start conditions. update_method:{}, is_latest:{}, current_version_missing:{}",
+                update_method, is_latest, current_version_missing
             );
 
             let mut needs_autostart = false;
             info!("locale is {}", get_locale());
             if app.installed && !app.available_versions.is_empty() {
                 if release_update_available {
-                    info!("App is not the latest release version.");
+                    if current_version_missing {
+                        info!(
+                            "Current version is no longer available upstream. Forcing update to latest available release."
+                        );
+                    } else {
+                        info!("App is not the latest release version.");
+                    }
                     let app_name_clone = app.name.clone();
-                    let latest_version = latest_release_version.expect("release_update_available requires latest release");
-                    if update_method == UPDATE_METHOD_OPTION_AUTO {
-                        info!("{}", t!("message.new_version_update", version=latest_version.clone()));
-                        send_notification(app_name_clone.clone(), t!("message.new_version_update", version=latest_version));
+                    let latest_version = latest_release_version
+                        .expect("release_update_available requires latest release");
+                    if current_version_missing || update_method == UPDATE_METHOD_OPTION_AUTO {
+                        info!(
+                            "{}",
+                            t!(
+                                "message.new_version_update",
+                                version = latest_version.clone()
+                            )
+                        );
+                        send_notification(
+                            app_name_clone.clone(),
+                            t!("message.new_version_update", version = latest_version),
+                        );
                         update_to_version(&app_name_clone, &latest_version).await?;
                         info!("Auto Update to version {} success.", &latest_version);
-                        send_notification(app_name_clone, t!("message.version_update_success", version=latest_version));
+                        send_notification(
+                            app_name_clone,
+                            t!("message.version_update_success", version = latest_version),
+                        );
                         needs_autostart = true;
                     } else {
-                        send_notification(app_name_clone.clone(), t!("message.new_version", version=latest_version));
+                        send_notification(
+                            app_name_clone.clone(),
+                            t!("message.new_version", version = latest_version),
+                        );
                         if update_method == UPDATE_METHOD_OPTION_IGNORE {
                             info!("Auto-update is UPDATE_METHOD_OPTION_IGNORE set auto_start to true.");
                             needs_autostart = true;
@@ -386,10 +414,26 @@ async fn update_apps_from_disk() -> Result<bool, Error> {
 
             let repo_path = path::get_app_repo_path(&app.name);
             if app.installed && repo_path.exists() {
+                let previous_known_version = app.current_version.clone();
                 let (versions, current) =
                     git::get_tags_and_current_version(&app.name, repo_path).await?;
+                app.current_version_missing =
+                    previous_known_version.as_ref().is_some_and(|version| {
+                        git::is_release_version(version)
+                            && !versions.iter().any(|available| available == version)
+                    });
+                if app.current_version_missing {
+                    warn!(
+                        "Current version {:?} for app '{}' no longer exists in remote tags.",
+                        previous_known_version, app.name
+                    );
+                }
                 app.available_versions = versions;
-                app.current_version = Some(current);
+                app.current_version = if app.current_version_missing {
+                    previous_known_version
+                } else {
+                    Some(current)
+                };
                 info!(
                     "get_tags_and_current_version done for {}: {:?}",
                     app.name, app.current_version
@@ -627,6 +671,7 @@ async fn rollback_to_previous_version(
     app_name: &str,
     repo_path: &Path,
     previous_version: &str,
+    previous_revision: Option<&str>,
 ) -> Result<(), Error> {
     emit_info!(
         app_name,
@@ -634,8 +679,35 @@ async fn rollback_to_previous_version(
         previous_version
     );
 
-    let rollback_oid =
-        git::checkout_existing_revision(app_name, repo_path, previous_version).await?;
+    let mut used_revision_fallback = false;
+    let rollback_oid = match git::checkout_existing_revision(app_name, repo_path, previous_version)
+        .await
+    {
+        Ok(oid) => oid,
+        Err(version_error) => {
+            let Some(previous_revision) = previous_revision else {
+                return Err(version_error.into());
+            };
+            emit_info!(
+                app_name,
+                "Rollback by version '{}' failed. Trying previous commit {}.",
+                previous_version,
+                previous_revision
+            );
+            used_revision_fallback = true;
+            git::checkout_existing_revision(app_name, repo_path, previous_revision)
+                .await
+                .map_err(|revision_error| {
+                    err!(
+                        "Rollback by version '{}' failed: {}. Rollback by previous commit {} also failed: {}",
+                        previous_version,
+                        version_error,
+                        previous_revision,
+                        revision_error
+                    )
+                })?
+        }
+    };
     emit_info!(
         app_name,
         "Checked out previous commit {} for version {}",
@@ -650,6 +722,7 @@ async fn rollback_to_previous_version(
         if let Some(app) = apps.get_mut(app_name) {
             load_app_details(app).await?;
             app.current_version = Some(previous_version.to_string());
+            app.current_version_missing = used_revision_fallback;
             let app_to_save = app.clone();
             drop(apps);
             save_app_config_to_json(&app_to_save).await?;
@@ -702,6 +775,10 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
     };
 
     let repo_path = path::get_app_repo_path(app_name);
+    let previous_revision = git::get_current_head_oid(&repo_path)
+        .await
+        .map(|oid| oid.to_string())
+        .ok();
     let commit_oid = git::checkout_version_tag(app_name, &repo_path, version).await?;
     emit_info!(
         app_name,
@@ -761,8 +838,13 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
                     "Pip sync failed while updating {} to {}. Attempting rollback to {}.",
                     app_name, version, previous_version
                 );
-                if let Err(rollback_error) =
-                    rollback_to_previous_version(app_name, &repo_path, previous_version).await
+                if let Err(rollback_error) = rollback_to_previous_version(
+                    app_name,
+                    &repo_path,
+                    previous_version,
+                    previous_revision.as_deref(),
+                )
+                .await
                 {
                     return Err(err!(
                         "Pip dependency sync failed: {}. Rollback to previous version '{}' also failed: {}",
@@ -791,6 +873,7 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
         if let Some(app) = apps.get_mut(app_name) {
             load_app_details(app).await?;
             app.current_version = Some(version.to_string());
+            app.current_version_missing = false;
             app.app_starting_version = Some(
                 previous_version
                     .clone()
@@ -933,7 +1016,10 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
             let working_dir = get_app_working_dir_path(&app_name);
             let marker_path = working_dir.join(python_env::PIP_UPDATE_NEEDED_MARKER);
             if marker_path.exists() {
-                info!("Marker file found for app '{}'. Reloading app details before retry.", app_name);
+                info!(
+                    "Marker file found for app '{}'. Reloading app details before retry.",
+                    app_name
+                );
                 if let Err(e) = load_app_details(app).await {
                     warn!("Failed to reload app details for '{}': {:?}", app_name, e);
                 }
@@ -984,8 +1070,18 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
 
     let marker_path = working_dir.join(python_env::PIP_UPDATE_NEEDED_MARKER);
     if marker_path.exists() {
-        info!("Marker file found for app '{}' at {}. Attempting to re-install requirements.", app_name, marker_path.display());
-        python_env::install_requirements(&app_name, &profile_to_run_with.requirements, &working_dir, &profile_to_run_with.pip_args).await?;
+        info!(
+            "Marker file found for app '{}' at {}. Attempting to re-install requirements.",
+            app_name,
+            marker_path.display()
+        );
+        python_env::install_requirements(
+            &app_name,
+            &profile_to_run_with.requirements,
+            &working_dir,
+            &profile_to_run_with.pip_args,
+        )
+        .await?;
     }
 
     let pyappify_version = app_handle.package_info().version.to_string();
@@ -1001,7 +1097,7 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         profile_to_run_with.main_script.as_str(),
         &working_dir,
         profile_to_run_with.use_pythonw(),
-        envs
+        envs,
     )
     .await?;
 

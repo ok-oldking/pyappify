@@ -3,8 +3,8 @@ use crate::{app::App, emit_info, emit_update_info, submodule};
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use git2::{
-    build::CheckoutBuilder, opts, Cred, Error as GitError, ErrorClass, ErrorCode, FetchOptions,
-    ObjectType, Oid, Progress, ProxyOptions, RemoteCallbacks, Repository, Sort,
+    build::CheckoutBuilder, opts, Cred, Direction, Error as GitError, ErrorClass, ErrorCode,
+    FetchOptions, ObjectType, Oid, Progress, ProxyOptions, RemoteCallbacks, Repository, Sort,
 };
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -226,6 +226,96 @@ fn get_sorted_tags_by_time(repo: &Repository) -> Result<Vec<String>> {
     Ok(sorted_tags)
 }
 
+fn collect_remote_tag_names(
+    remote: &mut git2::Remote<'_>,
+    remote_url: Option<&str>,
+) -> Result<HashSet<String>> {
+    let mut callbacks = RemoteCallbacks::new();
+    configure_credentials(&mut callbacks, remote_url);
+
+    let connection = remote
+        .connect_auth(
+            Direction::Fetch,
+            Some(callbacks),
+            Some(create_proxy_options()),
+        )
+        .context("Failed to connect to remote for tag pruning")?;
+
+    let mut remote_tags = HashSet::new();
+    for head in connection
+        .list()
+        .context("Failed to list remote refs for tag pruning")?
+    {
+        if let Some(tag_name) = head.name().strip_prefix("refs/tags/") {
+            if !tag_name.ends_with("^{}") {
+                remote_tags.insert(tag_name.to_string());
+            }
+        }
+    }
+
+    Ok(remote_tags)
+}
+
+fn prune_deleted_local_tags_from_remote(
+    repo: &Repository,
+    remote_name: &str,
+    app_name: &str,
+) -> Result<()> {
+    let mut remote = repo
+        .find_remote(remote_name)
+        .with_context(|| format!("Failed to find remote '{}' for tag pruning", remote_name))?;
+    let remote_url = remote.url().ok().map(String::from);
+    let remote_tags = collect_remote_tag_names(&mut remote, remote_url.as_deref())?;
+
+    let local_tag_array = repo
+        .tag_names(None)
+        .with_context(|| format!("Failed to list local tags from {:?}", repo.path()))?;
+    let mut local_tags = Vec::new();
+    for tag_name_opt in local_tag_array.iter() {
+        if let Ok(Some(tag_name)) = tag_name_opt {
+            local_tags.push(tag_name.to_string());
+        }
+    }
+
+    let mut pruned_count = 0;
+    for tag_name in local_tags {
+        if remote_tags.contains(&tag_name) {
+            continue;
+        }
+
+        let reference_name = format!("refs/tags/{}", tag_name);
+        match repo.find_reference(&reference_name) {
+            Ok(mut reference) => {
+                reference
+                    .delete()
+                    .with_context(|| format!("Failed to delete local tag {}", tag_name))?;
+                pruned_count += 1;
+                emit_info!(
+                    app_name,
+                    "Pruned local tag '{}' because it no longer exists on remote.",
+                    tag_name
+                );
+            }
+            Err(error)
+                if error.code() == ErrorCode::NotFound
+                    && error.class() == ErrorClass::Reference => {}
+            Err(error) => {
+                return Err(anyhow::Error::new(error)
+                    .context(format!("Failed to find local tag {}", tag_name)));
+            }
+        }
+    }
+
+    if pruned_count > 0 {
+        info!(
+            "Pruned {} local tag(s) for {} that no longer exist on remote.",
+            pruned_count, app_name
+        );
+    }
+
+    Ok(())
+}
+
 pub fn open_repository(repo_path: &Path) -> Result<Repository> {
     GIT_CONFIG_INITIALIZED.get_or_init(|| {
         unsafe {
@@ -300,6 +390,7 @@ pub async fn get_tags_and_current_version(
                     repo_path_for_task.display()
                 )
             })?;
+        prune_deleted_local_tags_from_remote(&repo, "origin", &app_name_for_task)?;
 
         let sorted_tags = get_sorted_tags_by_time(&repo)?;
 
@@ -418,6 +509,7 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
                     emit_update_info!(app_name_for_task, "");
                     println!();
                     fetch_result?;
+                    prune_deleted_local_tags_from_remote(&repo, "origin", &app_name_for_task)?;
                     emit_info!(app_name_for_task, "Fetch complete.");
                     Ok(())
                 })
@@ -630,6 +722,7 @@ pub async fn checkout_version_tag(
         emit_update_info!(app_name_for_task, "");
         println!();
         fetch_result?;
+        prune_deleted_local_tags_from_remote(&repo, "origin", &app_name_for_task)?;
 
         debug!("Fetch successful for tag {}", tag_to_checkout);
 
@@ -678,6 +771,25 @@ pub async fn checkout_version_tag(
     })
     .await
     .context("Task for checkout_version_tag panicked or was cancelled")??;
+    Ok(oid)
+}
+
+pub async fn get_current_head_oid(repo_path: &Path) -> Result<Oid> {
+    let lock_arc = REPO_LOCKS
+        .entry(repo_path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone();
+    let _guard = lock_arc.lock().await;
+
+    let task_repo_path = repo_path.to_path_buf();
+    let oid = task::spawn_blocking(move || -> Result<Oid> {
+        let repo = open_repository(&task_repo_path)?;
+        let head_ref = repo.head().context("Failed to get repo HEAD")?;
+        head_ref.target().context("HEAD has no target OID")
+    })
+    .await
+    .context("Task for get_current_head_oid panicked or was cancelled")??;
+
     Ok(oid)
 }
 
