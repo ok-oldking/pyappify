@@ -2,7 +2,41 @@
 use crate::utils::command::{is_admin, new_cmd};
 use crate::utils::path::{get_cwd, path_to_abs};
 use std::path::Path;
+#[cfg(windows)]
+use std::process::Output;
+#[cfg(windows)]
+use std::time::Duration;
+#[cfg(windows)]
+use tokio::time::timeout;
 use tracing::{debug, error, info};
+#[cfg(windows)]
+use tracing::warn;
+
+#[cfg(windows)]
+const DEFENDER_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
+
+#[cfg(windows)]
+async fn run_powershell_defender_command(args: &[&str]) -> Result<Output, String> {
+    let mut command = new_cmd("powershell");
+    command
+        .kill_on_drop(true)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+        ])
+        .args(args);
+
+    match timeout(DEFENDER_COMMAND_TIMEOUT, command.output()).await {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(e)) => Err(format!("Failed to execute PowerShell: {}", e)),
+        Err(_) => Err(format!(
+            "PowerShell Defender command timed out after {} seconds",
+            DEFENDER_COMMAND_TIMEOUT.as_secs()
+        )),
+    }
+}
 
 pub async fn is_defender_excluded() -> Result<bool, String> {
     #[cfg(not(windows))]
@@ -22,13 +56,11 @@ pub async fn is_defender_excluded() -> Result<bool, String> {
         if !is_admin {
             return Ok(true);
         }
-        let get_output = new_cmd("powershell")
-            .args([
-                "-Command",
-                "Get-MpPreference | Select-Object -ExpandProperty ExclusionPath",
-            ])
-            .output()
-            .await;
+        let get_output = run_powershell_defender_command(&[
+            "-Command",
+            "Get-MpPreference | Select-Object -ExpandProperty ExclusionPath",
+        ])
+        .await;
 
         let exclusions = match get_output {
             Ok(output) => {
@@ -42,7 +74,7 @@ pub async fn is_defender_excluded() -> Result<bool, String> {
                 String::from_utf8_lossy(&output.stdout).to_string()
             }
             Err(e) => {
-                error!("Failed to execute PowerShell to get preferences: {}", e);
+                warn!("Failed to get Defender preferences: {}", e);
                 return Ok(true);
             }
         };
@@ -62,10 +94,9 @@ pub async fn add_defender_exclusion() -> Result<(), String> {
     let cwd = cwd_string.as_str();
 
     info!("'{}' not found in exclusion list. Adding it...", cwd);
-    let add_output = new_cmd("powershell")
-        .args(["-Command", "Add-MpPreference", "-ExclusionPath", cwd])
-        .output()
-        .await;
+    let add_output =
+        run_powershell_defender_command(&["-Command", "Add-MpPreference", "-ExclusionPath", cwd])
+            .await;
 
     match add_output {
         Ok(output) => {
@@ -82,7 +113,7 @@ pub async fn add_defender_exclusion() -> Result<(), String> {
             }
         }
         Err(e) => {
-            let err_msg = format!("Failed to execute PowerShell to add exclusion: {}", e);
+            let err_msg = format!("Failed to add Defender exclusion: {}", e);
             error!("{}", err_msg);
             Err(err_msg)
         }

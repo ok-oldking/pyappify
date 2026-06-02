@@ -17,6 +17,8 @@ pub struct App {
     pub name: String,
     #[serde(default)]
     pub current_version: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub current_version_missing: bool,
     #[serde(default)]
     pub app_starting_version: Option<String>,
     #[serde(default)]
