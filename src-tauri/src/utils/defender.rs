@@ -8,9 +8,9 @@ use std::process::Output;
 use std::time::Duration;
 #[cfg(windows)]
 use tokio::time::timeout;
-use tracing::{debug, error, info};
 #[cfg(windows)]
 use tracing::warn;
+use tracing::{debug, error, info};
 
 #[cfg(windows)]
 const DEFENDER_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);

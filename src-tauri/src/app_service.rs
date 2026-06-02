@@ -414,17 +414,19 @@ async fn update_apps_from_disk() -> Result<bool, Error> {
 
             let repo_path = path::get_app_repo_path(&app.name);
             if app.installed && repo_path.exists() {
+                ensure_repository(&app).await?;
                 let previous_known_version = app.current_version.clone();
                 let (versions, current) =
                     git::get_tags_and_current_version(&app.name, repo_path).await?;
                 app.current_version_missing =
                     previous_known_version.as_ref().is_some_and(|version| {
                         git::is_release_version(version)
-                            && !versions.iter().any(|available| available == version)
+                            && (!versions.iter().any(|available| available == version)
+                                || current != *version)
                     });
                 if app.current_version_missing {
                     warn!(
-                        "Current version {:?} for app '{}' no longer exists in remote tags.",
+                        "Current version {:?} for app '{}' no longer matches remote tags.",
                         previous_known_version, app.name
                     );
                 }
