@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use sysinfo::{Pid, Process, System};
@@ -31,6 +33,19 @@ fn system_default_path() -> String {
     .join(";")
 }
 
+#[cfg(windows)]
+fn inherited_path_or_default() -> OsString {
+    for key in ["PATH", "Path"] {
+        if let Some(value) = std::env::var_os(key) {
+            if !value.is_empty() {
+                return value;
+            }
+        }
+    }
+
+    OsString::from(system_default_path())
+}
+
 pub trait RemovePythonEnvsExt {
     fn clear_python_envs(&mut self) -> &mut Self;
 }
@@ -41,9 +56,8 @@ impl RemovePythonEnvsExt for StdCommand {
         }
         #[cfg(windows)]
         {
-            self.env_remove("Path");
-            self.env_remove("PATH");
-            self.env("PATH", system_default_path());
+            // 保留启动器继承到的完整 PATH，避免子进程缺少 Qt、驱动或工具路径。
+            self.env("PATH", inherited_path_or_default());
         }
         self.env("PYTHONNOUSERSITE", "1");
         self
@@ -56,9 +70,8 @@ impl RemovePythonEnvsExt for TokioCommand {
         }
         #[cfg(windows)]
         {
-            self.env_remove("Path");
-            self.env_remove("PATH");
-            self.env("PATH", system_default_path());
+            // 保留启动器继承到的完整 PATH，避免子进程缺少 Qt、驱动或工具路径。
+            self.env("PATH", inherited_path_or_default());
         }
         self.env("PYTHONNOUSERSITE", "1");
         self
