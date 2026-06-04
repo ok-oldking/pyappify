@@ -71,6 +71,39 @@ pub(crate) async fn load_app_details(app: &mut App) -> Result<()> {
     Ok(())
 }
 
+fn resolve_current_version_state(
+    previous_known_version: Option<String>,
+    available_versions: &[String],
+    resolved_current: String,
+) -> (Option<String>, bool) {
+    if git::is_version_tag(&resolved_current) {
+        let previous_release_moved_or_missing =
+            previous_known_version.as_ref().is_some_and(|version| {
+                git::is_release_version(version)
+                    && (!available_versions
+                        .iter()
+                        .any(|available| available == version)
+                        || resolved_current != *version)
+            });
+
+        if previous_release_moved_or_missing {
+            return (
+                previous_known_version.filter(|version| git::is_version_tag(version)),
+                true,
+            );
+        }
+
+        return (Some(resolved_current), false);
+    }
+
+    let previous_version = previous_known_version.filter(|version| git::is_version_tag(version));
+    let release_available = available_versions
+        .iter()
+        .any(|version| git::is_release_version(version));
+
+    (previous_version, release_available)
+}
+
 pub async fn get_apps_as_vec() -> Vec<App> {
     let mut apps_vec: Vec<App> = APPS.lock().await.values().cloned().collect();
     apps_vec.sort_unstable_by(|a, b| {
@@ -418,12 +451,12 @@ async fn update_apps_from_disk() -> Result<bool, Error> {
                 let previous_known_version = app.current_version.clone();
                 let (versions, current) =
                     git::get_tags_and_current_version(&app.name, repo_path).await?;
-                app.current_version_missing =
-                    previous_known_version.as_ref().is_some_and(|version| {
-                        git::is_release_version(version)
-                            && (!versions.iter().any(|available| available == version)
-                                || current != *version)
-                    });
+                let (current_version, current_version_missing) = resolve_current_version_state(
+                    previous_known_version.clone(),
+                    &versions,
+                    current,
+                );
+                app.current_version_missing = current_version_missing;
                 if app.current_version_missing {
                     warn!(
                         "Current version {:?} for app '{}' no longer matches remote tags.",
@@ -431,11 +464,7 @@ async fn update_apps_from_disk() -> Result<bool, Error> {
                     );
                 }
                 app.available_versions = versions;
-                app.current_version = if app.current_version_missing {
-                    previous_known_version
-                } else {
-                    Some(current)
-                };
+                app.current_version = current_version;
                 info!(
                     "get_tags_and_current_version done for {}: {:?}",
                     app.name, app.current_version
@@ -1285,5 +1314,50 @@ pub async fn periodically_update_all_apps_running_status(app_handle: AppHandle) 
             info!("App status changed by periodic check. Emitting.");
             emit_apps().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_current_version_state;
+
+    fn versions(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn resolves_current_version_tag_normally() {
+        let (current_version, current_version_missing) = resolve_current_version_state(
+            Some("v1.0.0".to_string()),
+            &versions(&["v1.1.0", "v1.0.0"]),
+            "v1.0.0".to_string(),
+        );
+
+        assert_eq!(current_version, Some("v1.0.0".to_string()));
+        assert!(!current_version_missing);
+    }
+
+    #[test]
+    fn does_not_save_commit_hash_as_current_version() {
+        let (current_version, current_version_missing) = resolve_current_version_state(
+            Some("7fa243f331892d478c4e450f6215495ca3b48258".to_string()),
+            &versions(&["v1.1.0", "v1.0.0"]),
+            "7fa243f331892d478c4e450f6215495ca3b48258".to_string(),
+        );
+
+        assert_eq!(current_version, None);
+        assert!(current_version_missing);
+    }
+
+    #[test]
+    fn preserves_previous_version_when_head_no_longer_matches_it() {
+        let (current_version, current_version_missing) = resolve_current_version_state(
+            Some("v1.0.0".to_string()),
+            &versions(&["v1.1.0"]),
+            "7fa243f331892d478c4e450f6215495ca3b48258".to_string(),
+        );
+
+        assert_eq!(current_version, Some("v1.0.0".to_string()));
+        assert!(current_version_missing);
     }
 }

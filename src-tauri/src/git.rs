@@ -106,6 +106,10 @@ pub fn compare_version_tags(left: &str, right: &str) -> Option<Ordering> {
     Some(parse_version_tag(left)?.cmp(&parse_version_tag(right)?))
 }
 
+pub fn is_version_tag(tag_name: &str) -> bool {
+    parse_version_tag(tag_name).is_some()
+}
+
 pub fn is_release_version(tag_name: &str) -> bool {
     parse_version_tag(tag_name)
         .map(|version| version.prerelease.is_release())
@@ -986,7 +990,7 @@ pub async fn get_commit_messages_for_version_diff(
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_version_tags, is_release_version};
+    use super::{compare_version_tags, is_release_version, is_version_tag};
     use std::cmp::Ordering;
 
     #[test]
@@ -1013,5 +1017,7 @@ mod tests {
         assert!(is_release_version("v1.5.0"));
         assert!(!is_release_version("1.5.0-beta"));
         assert!(!is_release_version("v1.5.0.beta"));
+        assert!(is_version_tag("v1.5.0.beta"));
+        assert!(!is_version_tag("7fa243f331892d478c4e450f6215495ca3b48258"));
     }
 }
