@@ -413,12 +413,9 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                 let app_name_clone = app.name.clone();
                 drop(auto_start_guard);
                 if let Some(app_handle) = get_app_handle() {
-                    let app_handle_clone = app_handle.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = start_app(app_handle_clone, app_name_clone.clone()).await {
-                            error!("Auto-start for app '{}' failed: {:?}", app_name_clone, e);
-                        }
-                    });
+                    if let Err(e) = start_app(app_handle.clone(), app_name_clone.clone()).await {
+                        error!("Auto-start for app '{}' failed: {:?}", app_name_clone, e);
+                    }
                 }
             } else {
                 info!(

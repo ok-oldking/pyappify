@@ -165,6 +165,7 @@ function App() {
     // Tracks app names whose inline log is in 'completed' state — updated synchronously (not via useEffect)
     // so the apps event listener can always read the correct value before React re-renders.
     const completedAppsRef = useRef<Set<string>>(new Set());
+    const pendingVersionChangeAppsRef = useRef<Set<string>>(new Set());
     const [isInstallProcessRunning, setIsInstallProcessRunning] = useState<boolean>(false);
     const [isStartAppProcessRunning, setIsStartAppProcessRunning] = useState<boolean>(false);
     const [startingAppName, setStartingAppName] = useState<string | null>(null);
@@ -317,7 +318,6 @@ function App() {
                 }
                 return merged;
             });
-            updateStatus({loading: false});
         }));
 
         unlistenPromises.push(listen<App>("choose_app_profile", (event) => {
@@ -336,10 +336,13 @@ function App() {
             error?: boolean;
         }>("app-log", (event) => {
             const {app_name, finished, error} = event.payload;
+            const isPendingVersionChange = pendingVersionChangeAppsRef.current.has(app_name);
             setInlineUpdateLogs(prev => {
                 const entry = prev[app_name];
                 if (!entry || entry.completed) return prev;
+                if (!isPendingVersionChange) return prev;
                 if (finished) {
+                    pendingVersionChangeAppsRef.current.delete(app_name);
                     if (error) {
                         completedAppsRef.current.delete(app_name); // failed — not completed
                         return {...prev, [app_name]: {...entry, isConfirming: false, failed: true}};
@@ -347,18 +350,19 @@ function App() {
                         completedAppsRef.current.add(app_name); // mark completed immediately
                         return {...prev, [app_name]: {...entry, isConfirming: false, completed: true, failed: false}};
                     }
-                } else if (!entry.isConfirming) {
-                    return {...prev, [app_name]: {...entry, isConfirming: true, failed: false}};
                 }
                 return prev;
             });
-            if (finished && !error) {
+            if (finished && isPendingVersionChange) {
+                pendingVersionChangeAppsRef.current.delete(app_name);
+            }
+            if (finished && !error && isPendingVersionChange) {
                 setSelectedTargetVersions(prev => ({...prev, [app_name]: ''}));
             }
         }));
 
         (async () => {
-            await invokeTauriCommandWrapper<App[]>("load_apps", undefined, () => {},
+            await invokeTauriCommandWrapper<App[]>("load_apps", undefined, () => updateStatus({loading: false}),
                 (errorMessage, rawError) => {
                     console.error("Failed to initially load apps:", rawError);
                     updateStatus({error: `Failed to load apps: ${errorMessage}`, loading: false});
@@ -438,6 +442,7 @@ function App() {
     const handleConfirmVersionChange = async (params: { appName: string, version: string, actionType: string }) => {
         clearMessages();
         setAppActionLoading(prev => ({...prev, [params.appName]: true}));
+        pendingVersionChangeAppsRef.current.add(params.appName);
         // Mark as confirming so the inline log shows a spinner
         setInlineUpdateLogs(prev => ({
             ...prev,
@@ -455,7 +460,13 @@ function App() {
         await invokeTauriCommandWrapper<void>("update_to_version", {appName: params.appName, version: params.version, requirements: requirementsFile}, () => {},
             (errorMessage, rawError) => {
                 console.error(`Failed to invoke ${params.actionType.toLowerCase()}:`, rawError);
+                pendingVersionChangeAppsRef.current.delete(params.appName);
+                setAppActionLoading(prev => ({...prev, [params.appName]: false}));
                 setConsoleInitialMessage(prev => `${prev}\nERROR (client-side): Failed to dispatch operation: ${errorMessage}`);
+                setInlineUpdateLogs(prev => ({
+                    ...prev,
+                    [params.appName]: {...(prev[params.appName] ?? {version: params.version, actionType: params.actionType}), isConfirming: false, failed: true}
+                }));
             }
         );
     };
@@ -487,6 +498,7 @@ function App() {
         clearMessages();
         updateStatus({messageLoading: false});
         if (startingAppName) setAppActionLoading(prev => ({...prev, [startingAppName]: false}));
+        if (appNameForVersionChange) pendingVersionChangeAppsRef.current.delete(appNameForVersionChange);
         setStartingAppName(null);
         setVersionChangeConsoleData(null);
         setProfileChangeData(null);
@@ -668,7 +680,7 @@ function App() {
                         {apps.map((app) => {
                             const isEffectivelyInstalling = app.running && !app.installed;
                             const isThisAppLoading = appActionLoading[app.name] || false;
-                            const disableRowActions = currentPage !== 'list' || status.messageLoading || isThisAppLoading;
+                            const disableRowActions = currentPage !== 'list' || status.loading || status.messageLoading || isThisAppLoading;
                             return (
                                 <ListItem key={app.name} disablePadding sx={{mb: 2}}>
                                     <Card variant="outlined" sx={{width: '100%', bgcolor: (app.running) ? 'action.selected' : 'background.paper'}}>
