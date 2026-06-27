@@ -1,9 +1,6 @@
 //src/app_service.rs
 use crate::app::App;
-use crate::config_manager::{
-    GLOBAL_CONFIG_STATE, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_IGNORE,
-};
-use crate::emitter::get_app_handle;
+use crate::config_manager::{GLOBAL_CONFIG_STATE, UPDATE_METHOD_OPTION_AUTO};
 use crate::git::ensure_repository;
 use crate::runas;
 use crate::utils::error::Error;
@@ -340,6 +337,13 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                 .find(|version| git::is_release_version(version))
                 .cloned();
             let current_version_missing = app.current_version_missing;
+            let has_pending_version_change_notice = app
+                .app_starting_version
+                .as_ref()
+                .zip(app.current_version.as_ref())
+                .is_some_and(|(starting_version, current_version)| {
+                    starting_version != current_version && !app.update_note.is_empty()
+                });
             let release_update_available =
                 latest_release_version
                     .as_ref()
@@ -355,77 +359,55 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
             let is_latest = !release_update_available;
 
             info!(
-                "First load, checking for auto-start conditions. update_method:{}, is_latest:{}, current_version_missing:{}",
-                update_method, is_latest, current_version_missing
+                "First load, checking for auto-start conditions. update_method:{}, is_latest:{}, current_version_missing:{}, has_pending_version_change_notice:{}",
+                update_method, is_latest, current_version_missing, has_pending_version_change_notice
             );
 
-            let mut needs_autostart = false;
             info!("locale is {}", get_locale());
             if app.installed && !app.available_versions.is_empty() {
                 if release_update_available {
-                    if current_version_missing {
-                        info!(
-                            "Current version is no longer available upstream. Forcing update to latest available release."
-                        );
-                    } else {
-                        info!("App is not the latest release version.");
-                    }
-                    let app_name_clone = app.name.clone();
                     let latest_version = latest_release_version
                         .expect("release_update_available requires latest release");
-                    if current_version_missing || update_method == UPDATE_METHOD_OPTION_AUTO {
+                    if current_version_missing {
                         info!(
-                            "{}",
-                            t!(
-                                "message.new_version_update",
-                                version = latest_version.clone()
-                            )
+                            "Current version is no longer available upstream. Waiting for explicit user action before updating to {}.",
+                            latest_version
                         );
-                        send_notification(
-                            app_name_clone.clone(),
-                            t!("message.new_version_update", version = latest_version),
-                        );
-                        update_to_version(&app_name_clone, &latest_version).await?;
-                        info!("Auto Update to version {} success.", &latest_version);
-                        send_notification(
-                            app_name_clone,
-                            t!("message.version_update_success", version = latest_version),
-                        );
-                        needs_autostart = true;
                     } else {
-                        send_notification(
-                            app_name_clone.clone(),
-                            t!("message.new_version", version = latest_version),
+                        info!(
+                            "App is not the latest release version. Waiting for explicit user action before updating to {}.",
+                            latest_version
                         );
-                        if update_method == UPDATE_METHOD_OPTION_IGNORE {
-                            info!("Auto-update is UPDATE_METHOD_OPTION_IGNORE set auto_start to true.");
-                            needs_autostart = true;
-                        }
                     }
+
+                    let app_name_clone = app.name.clone();
+                    let notification_key =
+                        if current_version_missing || update_method == UPDATE_METHOD_OPTION_AUTO {
+                            "message.new_version_update"
+                        } else {
+                            "message.new_version"
+                        };
+                    send_notification(
+                        app_name_clone,
+                        t!(notification_key, version = latest_version),
+                    );
+                } else if has_pending_version_change_notice {
+                    info!(
+                        "Pending version-change notice detected for app '{}'. Waiting for user action before any further operation.",
+                        app.name
+                    );
                 } else {
-                    needs_autostart = true;
-                    info!("App is the latest version and installed. set auto start to true");
+                    info!(
+                        "App '{}' is installed and up to date. Waiting for explicit user action instead of auto-starting.",
+                        app.name
+                    );
                 }
             }
 
-            if needs_autostart {
-                info!("Auto-starting app '{}'.", app.name);
-                let app_name_clone = app.name.clone();
-                drop(auto_start_guard);
-                if let Some(app_handle) = get_app_handle() {
-                    let app_handle_clone = app_handle.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = start_app(app_handle_clone, app_name_clone.clone()).await {
-                            error!("Auto-start for app '{}' failed: {:?}", app_name_clone, e);
-                        }
-                    });
-                }
-            } else {
-                info!(
-                    "Auto-start conditions not met for app '{}' (installed: {}, is_latest: {}).",
-                    app.name, app.installed, is_latest
-                );
-            }
+            info!(
+                "First-load automation is disabled for app '{}' (installed: {}, is_latest: {}).",
+                app.name, app.installed, is_latest
+            );
         }
     }
 

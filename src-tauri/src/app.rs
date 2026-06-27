@@ -2,7 +2,7 @@
 use crate::utils::defender::is_defender_excluded;
 use crate::utils::path;
 use crate::utils::path::{get_app_base_path, get_app_working_dir_path};
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -241,8 +241,9 @@ pub(crate) async fn load_app_config_from_json(app_name: &str) -> anyhow::Result<
     let json_data = tokio::fs::read_to_string(&config_path)
         .await
         .with_context(|| format!("Failed to read app.json for {}", app_name))?;
+    let normalized_json_data = json_data.trim_start_matches('\u{feff}');
 
-    match serde_json::from_str::<App>(&json_data) {
+    match serde_json::from_str::<App>(normalized_json_data) {
         Ok(mut app) => {
             if app.name != app_name {
                 warn!("App name mismatch in app.json ('{}') and directory ('{}'). Correcting to directory name: '{}'.", app.name, app_name, app_name);
@@ -266,17 +267,29 @@ pub(crate) async fn load_app_config_from_json(app_name: &str) -> anyhow::Result<
             Ok(Some(app))
         }
         Err(e) => {
-            error!(
-                "Failed to deserialize app.json for {}: {}. Content sample: {}",
+            let bad_path = config_path.with_extension("json.bad");
+            warn!(
+                "Failed to deserialize app.json for {}: {}. Backing up invalid file to {} and rebuilding from embedded config.",
                 app_name,
                 e,
-                json_data.chars().take(200).collect::<String>()
+                bad_path.display()
             );
-            Err(anyhow!(
-                "Failed to deserialize app.json for {}: {}",
+            warn!(
+                "Invalid app.json content sample for {}: {}",
                 app_name,
-                e
-            ))
+                normalized_json_data.chars().take(200).collect::<String>()
+            );
+
+            if let Err(copy_err) = tokio::fs::copy(&config_path, &bad_path).await {
+                warn!(
+                    "Failed to back up invalid app.json for {} to {}: {}",
+                    app_name,
+                    bad_path.display(),
+                    copy_err
+                );
+            }
+
+            Ok(None)
         }
     }
 }

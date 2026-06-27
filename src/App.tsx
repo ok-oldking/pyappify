@@ -174,6 +174,7 @@ function App() {
         version: string;
         actionType: string;
     } | null>(null);
+    const activeVersionChangeAppRef = useRef<string | null>(null);
     const [isVersionChangeProcessRunning, setIsVersionChangeProcessRunning] = useState<boolean>(false);
     const [isRunningAppConsoleOpen, setIsRunningAppConsoleOpen] = useState<boolean>(false);
     const [themeMode, setThemeMode] = useState<ThemeModeSetting>(() => {
@@ -336,6 +337,9 @@ function App() {
             error?: boolean;
         }>("app-log", (event) => {
             const {app_name, finished, error} = event.payload;
+            if (activeVersionChangeAppRef.current !== app_name) {
+                return;
+            }
             setInlineUpdateLogs(prev => {
                 const entry = prev[app_name];
                 if (!entry || entry.completed) return prev;
@@ -347,8 +351,6 @@ function App() {
                         completedAppsRef.current.add(app_name); // mark completed immediately
                         return {...prev, [app_name]: {...entry, isConfirming: false, completed: true, failed: false}};
                     }
-                } else if (!entry.isConfirming) {
-                    return {...prev, [app_name]: {...entry, isConfirming: true, failed: false}};
                 }
                 return prev;
             });
@@ -438,6 +440,7 @@ function App() {
     const handleConfirmVersionChange = async (params: { appName: string, version: string, actionType: string }) => {
         clearMessages();
         setAppActionLoading(prev => ({...prev, [params.appName]: true}));
+        activeVersionChangeAppRef.current = params.appName;
         // Mark as confirming so the inline log shows a spinner
         setInlineUpdateLogs(prev => ({
             ...prev,
@@ -490,6 +493,7 @@ function App() {
         setStartingAppName(null);
         setVersionChangeConsoleData(null);
         setProfileChangeData(null);
+        activeVersionChangeAppRef.current = null;
 
         // After a version change: clear version selector and mark log as completed (shows success state)
         if (wasVersionChange && appNameForVersionChange) {
