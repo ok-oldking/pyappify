@@ -245,7 +245,7 @@ pub fn update_app_from_yml(app: &mut App, file_path_str: &str) {
     }
 }
 
-fn get_app_config_json_path(app_name: &str) -> PathBuf {
+pub(crate) fn get_app_config_json_path(app_name: &str) -> PathBuf {
     get_app_base_path(app_name).join("app.json")
 }
 

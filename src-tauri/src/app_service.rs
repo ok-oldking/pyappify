@@ -14,8 +14,8 @@ use crate::utils::path::{get_app_base_path, get_app_working_dir_path, get_python
 use crate::utils::window::{create_startup_shortcut, send_notification};
 use crate::{
     app::{
-        load_app_config_from_json, read_embedded_app, save_app_config_to_json, update_app_from_yml,
-        Profile, YML_FILE_NAME,
+        get_app_config_json_path, load_app_config_from_json, read_embedded_app,
+        save_app_config_to_json, update_app_from_yml, Profile, YML_FILE_NAME,
     },
     emit_error_finish, emit_info, emit_success_finish, emitter, err, execute_python, git,
     python_env,
@@ -1111,6 +1111,7 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
 }
 
 fn build_python_execution_environment(
+    app_name: &str,
     profile: &Profile,
     current_version: Option<String>,
     app_starting_version: Option<String>,
@@ -1142,6 +1143,11 @@ fn build_python_execution_environment(
     ));
     envs.push(("PYAPPIFY_UPDATE_NOTE".to_string(), encoded_update_note));
     envs.push(("PYAPPIFY_APP_PROFILE".to_string(), profile.name.clone()));
+    envs.push(("PYAPPIFY_LOCALE".to_string(), get_locale().to_string()));
+    envs.push((
+        "PYAPPIFY_APP_JSON_PATH".to_string(),
+        path::path_to_abs(&get_app_config_json_path(app_name)),
+    ));
     envs.push(("PYAPPIFY_PID".to_string(), std::process::id().to_string()));
     envs.push(("PYAPPIFY_UPGRADEABLE".to_string(), 1.to_string()));
     envs.push(("PYAPPIFY_VERSION".to_string(), pyappify_version));
@@ -1304,6 +1310,7 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
 
     let pyappify_version = app_handle.package_info().version.to_string();
     let envs = build_python_execution_environment(
+        &app_name,
         &profile_to_run_with,
         current_version,
         app_starting_version,
@@ -1453,6 +1460,92 @@ pub async fn stop_app(app_name: String) -> Result<(), Error> {
     Ok(())
 }
 
+fn parse_app_preferences(json: &str) -> Result<(String, bool)> {
+    let value: serde_json::Value = serde_json::from_str(json)?;
+    let update_method = value
+        .get("update_method")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("app.json is missing a string update_method"))?;
+    if !matches!(
+        update_method,
+        UPDATE_METHOD_OPTION_MANUAL
+            | UPDATE_METHOD_OPTION_AUTO
+            | UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE
+    ) {
+        return Err(anyhow!("Unsupported update method: {}", update_method));
+    }
+    let auto_start = value
+        .get("auto_start")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| anyhow!("app.json is missing a boolean auto_start"))?;
+    Ok((update_method.to_string(), auto_start))
+}
+
+pub async fn watch_app_config_changes() {
+    let mut ticker = interval(Duration::from_millis(500));
+    let mut observed_contents: HashMap<String, String> = HashMap::new();
+    info!("Starting app.json preference watcher (500ms interval).");
+
+    loop {
+        ticker.tick().await;
+        let app_names: Vec<String> = APPS.lock().await.keys().cloned().collect();
+        observed_contents.retain(|name, _| app_names.contains(name));
+
+        for app_name in app_names {
+            let config_path = get_app_config_json_path(&app_name);
+            let json = match tokio::fs::read_to_string(&config_path).await {
+                Ok(json) => json,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    warn!(
+                        "Failed to watch app config {}: {}",
+                        config_path.display(),
+                        error
+                    );
+                    continue;
+                }
+            };
+
+            if observed_contents.get(&app_name) == Some(&json) {
+                continue;
+            }
+            observed_contents.insert(app_name.clone(), json.clone());
+
+            let (update_method, auto_start) = match parse_app_preferences(&json) {
+                Ok(preferences) => preferences,
+                Err(error) => {
+                    warn!(
+                        "Ignoring invalid preferences in {}: {}",
+                        config_path.display(),
+                        error
+                    );
+                    continue;
+                }
+            };
+
+            let changed = {
+                let mut apps = APPS.lock().await;
+                if let Some(app) = apps.get_mut(&app_name) {
+                    if app.update_method != update_method || app.auto_start != auto_start {
+                        app.update_method = update_method;
+                        app.auto_start = auto_start;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+
+            if changed {
+                info!("Reloaded preferences from app.json for '{}'.", app_name);
+                emit_apps().await;
+            }
+        }
+    }
+}
+
 pub async fn periodically_update_all_apps_running_status(app_handle: AppHandle) {
     let mut ticker = interval(Duration::from_secs(2));
     info!("Starting periodic app status update (2s interval).");
@@ -1506,12 +1599,64 @@ pub async fn periodically_update_all_apps_running_status(app_handle: AppHandle) 
 
 #[cfg(test)]
 mod tests {
-    use super::{get_update_target, icon_mime_type, resolve_current_version_state};
-    use crate::app::{UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE};
+    use super::{
+        build_python_execution_environment, get_update_target, icon_mime_type,
+        parse_app_preferences, resolve_current_version_state,
+    };
+    use crate::app::{Profile, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE};
     use std::path::Path;
 
     fn versions(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_preferences_written_by_the_python_api() {
+        assert_eq!(
+            parse_app_preferences(
+                r#"{"name":"example","update_method":"AUTO_UPDATE_PRE_RELEASE","auto_start":true}"#
+            )
+            .unwrap(),
+            (UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE.to_string(), true)
+        );
+    }
+
+    #[test]
+    fn python_environment_contains_absolute_app_json_path() {
+        let profile = Profile {
+            name: "default".to_string(),
+            main_script: "main.py".to_string(),
+            admin: None,
+            use_pythonw: None,
+            show_add_defender: None,
+            requirements: String::new(),
+            python_path: String::new(),
+            git_url: String::new(),
+            requires_python: String::new(),
+            pip_args: String::new(),
+        };
+        let env = build_python_execution_environment(
+            "example",
+            &profile,
+            None,
+            None,
+            Vec::new(),
+            "0.1.0".to_string(),
+        );
+        let app_json_path = env
+            .iter()
+            .find(|(name, _)| name == "PYAPPIFY_APP_JSON_PATH")
+            .map(|(_, value)| Path::new(value))
+            .unwrap();
+
+        assert!(app_json_path.is_absolute());
+        assert!(app_json_path.ends_with(Path::new("data/apps/example/app.json")));
+        assert_eq!(
+            env.iter()
+                .find(|(name, _)| name == "PYAPPIFY_LOCALE")
+                .map(|(_, value)| value.as_str()),
+            Some("en")
+        );
     }
 
     #[test]

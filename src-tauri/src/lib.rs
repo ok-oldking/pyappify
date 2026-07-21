@@ -261,6 +261,7 @@ pub async fn run() {
                 tokio::spawn(app_service::periodically_update_all_apps_running_status(
                     app_handle.clone(),
                 ));
+                tokio::spawn(app_service::watch_app_config_changes());
                 Ok(())
             })
             .invoke_handler(tauri::generate_handler![
