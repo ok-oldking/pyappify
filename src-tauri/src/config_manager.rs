@@ -27,11 +27,9 @@ const PIP_INDEX_URL_OPTION_USTC: &str = "https://mirrors.ustc.edu.cn/pypi/simple
 const PIP_INDEX_URL_OPTION_HUAWEI: &str = "https://repo.huaweicloud.com/repository/pypi/simple/";
 const PIP_INDEX_URL_OPTION_TENCENT: &str = "https://mirrors.cloud.tencent.com/pypi/simple/";
 
-const UPDATE_METHOD_CONFIG_KEY: &str = "Update Method";
-pub const UPDATE_METHOD_OPTION_MANUAL: &str = "MANUAL_UPDATE";
-pub const UPDATE_METHOD_OPTION_AUTO: &str = "AUTO_UPDATE";
-pub const UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE: &str = "AUTO_UPDATE_PRE_RELEASE";
-const AUTO_START_CONFIG_KEY: &str = "Auto Start";
+// Read only for the one-time migration to per-app preferences.
+const LEGACY_UPDATE_METHOD_CONFIG_KEY: &str = "Update Method";
+const LEGACY_AUTO_START_CONFIG_KEY: &str = "Auto Start";
 
 const I18N_CONFIG_KEY: &str = "Language";
 const I18N_OPTION_EN: &str = "en";
@@ -99,6 +97,8 @@ impl ConfigItem {
 pub struct AppConfig {
     items: HashMap<String, ConfigItem>,
     config_path: PathBuf,
+    legacy_update_method: Option<String>,
+    legacy_auto_start: Option<bool>,
 }
 
 fn get_default_lang_from_locale() -> &'static str {
@@ -126,6 +126,8 @@ impl AppConfig {
         let mut instance = Self {
             items: Self::get_default_config_items(),
             config_path: config_file_path,
+            legacy_update_method: None,
+            legacy_auto_start: None,
         };
 
         instance.load_from_file();
@@ -222,34 +224,6 @@ impl AppConfig {
             },
         );
 
-        items.insert(
-            UPDATE_METHOD_CONFIG_KEY.to_string(),
-            ConfigItem {
-                name: UPDATE_METHOD_CONFIG_KEY.to_string(),
-                description: "Controls the app's update behavior. 'MANUAL_UPDATE' requires user action, 'AUTO_UPDATE' automatically installs stable releases, and 'AUTO_UPDATE_PRE_RELEASE' automatically installs pre-release versions.".to_string(),
-                value: ConfigValue::String(UPDATE_METHOD_OPTION_AUTO.to_string()),
-                default_value: ConfigValue::String(UPDATE_METHOD_OPTION_AUTO.to_string()),
-                options: Some(vec![
-                    ConfigValue::String(UPDATE_METHOD_OPTION_MANUAL.to_string()),
-                    ConfigValue::String(UPDATE_METHOD_OPTION_AUTO.to_string()),
-                    ConfigValue::String(UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE.to_string()),
-                ]),
-            },
-        );
-
-        items.insert(
-            AUTO_START_CONFIG_KEY.to_string(),
-            ConfigItem {
-                name: AUTO_START_CONFIG_KEY.to_string(),
-                description:
-                    "Starts the installed app automatically after startup update handling finishes."
-                        .to_string(),
-                value: ConfigValue::Boolean(false),
-                default_value: ConfigValue::Boolean(false),
-                options: None,
-            },
-        );
-
         items
     }
 
@@ -296,6 +270,19 @@ impl AppConfig {
         match fs::read_to_string(&self.config_path) {
             Ok(content) => match serde_json::from_str::<HashMap<String, ConfigValue>>(&content) {
                 Ok(loaded_values) => {
+                    self.legacy_update_method = loaded_values
+                        .get(LEGACY_UPDATE_METHOD_CONFIG_KEY)
+                        .and_then(|value| match value {
+                            ConfigValue::String(value) => Some(value.clone()),
+                            _ => None,
+                        });
+                    self.legacy_auto_start = loaded_values
+                        .get(LEGACY_AUTO_START_CONFIG_KEY)
+                        .and_then(|value| match value {
+                            ConfigValue::Boolean(value) => Some(*value),
+                            _ => None,
+                        });
+
                     for (name, loaded_value) in loaded_values {
                         if let Some(item) = self.items.get_mut(&name) {
                             item.value = loaded_value;
@@ -532,24 +519,6 @@ impl AppConfig {
         }
     }
 
-    pub fn get_effective_update_method(&self) -> &str {
-        match self.get_item_value(UPDATE_METHOD_CONFIG_KEY) {
-            Some(ConfigValue::String(value)) => match value.as_str() {
-                UPDATE_METHOD_OPTION_AUTO => UPDATE_METHOD_OPTION_AUTO,
-                UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE => UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE,
-                _ => UPDATE_METHOD_OPTION_MANUAL,
-            },
-            _ => UPDATE_METHOD_OPTION_MANUAL,
-        }
-    }
-
-    pub fn should_auto_start(&self) -> bool {
-        matches!(
-            self.get_item_value(AUTO_START_CONFIG_KEY),
-            Some(ConfigValue::Boolean(true))
-        )
-    }
-
     pub fn get_effective_lang(&self) -> &'static str {
         match self.get_item_value(I18N_CONFIG_KEY) {
             Some(ConfigValue::String(value)) => match value.as_str() {
@@ -563,6 +532,10 @@ impl AppConfig {
             },
             _ => get_default_lang_from_locale(),
         }
+    }
+
+    pub fn legacy_app_preferences(&self) -> (Option<String>, Option<bool>) {
+        (self.legacy_update_method.clone(), self.legacy_auto_start)
     }
 }
 
@@ -620,6 +593,14 @@ mod tests {
             get_default_pip_url_for_locale("en-US"),
             PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT
         );
+    }
+
+    #[test]
+    fn per_app_preferences_are_not_global_config_items() {
+        let items = AppConfig::get_default_config_items();
+
+        assert!(!items.contains_key(LEGACY_UPDATE_METHOD_CONFIG_KEY));
+        assert!(!items.contains_key(LEGACY_AUTO_START_CONFIG_KEY));
     }
 }
 

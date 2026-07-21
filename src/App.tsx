@@ -68,6 +68,8 @@ interface App {
     available_versions: string[];
     running: boolean;
     installed: boolean;
+    update_method: string;
+    auto_start: boolean;
     profiles: Profile[];
     current_profile: string;
     show_add_defender: boolean;
@@ -134,16 +136,11 @@ type StatusState = {
     messageLoading?: boolean;
 };
 
-interface ConfigItemFromRust {
-    name: string;
-    description: string;
-    value: string | number | boolean;
-    default_value: string | number | boolean;
-    options?: (string | number | boolean)[];
-}
-
-const UPDATE_METHOD_CONFIG_KEY = "Update Method";
-const AUTO_START_CONFIG_KEY = "Auto Start";
+const UPDATE_METHOD_OPTIONS = [
+    'MANUAL_UPDATE',
+    'AUTO_UPDATE',
+    'AUTO_UPDATE_PRE_RELEASE',
+] as const;
 
 type Page =
     'list'
@@ -260,7 +257,6 @@ function App() {
     const [snackbarOpen, setSnackbarOpen] = useState(false);
     const [snackbarMessage, setSnackbarMessage] = useState("");
     const [snackbarSeverity, setSnackbarSeverity] = useState<"success" | "info" | "warning" | "error">("info");
-    const [mainConfigs, setMainConfigs] = useState<ConfigItemFromRust[] | null>(null);
 
     useEffect(() => {
         selectedTargetVersionsRef.current = selectedTargetVersions;
@@ -324,27 +320,18 @@ function App() {
         updateStatus({error: null, info: null});
     }, [updateStatus]);
 
-    useEffect(() => {
-        invokeTauriCommandWrapper<ConfigItemFromRust[]>(
-            'get_config_payload',
-            undefined,
-            setMainConfigs,
-            (errorMessage) => updateStatus({error: `Failed to load update settings: ${errorMessage}`}),
-        );
-    }, [updateStatus]);
-
-    const handleMainConfigChange = async (name: string, value: string | number | boolean) => {
+    const handleAppPreferenceChange = async (
+        appName: string,
+        updateMethod: string | null,
+        autoStart: boolean | null,
+    ) => {
         clearMessages();
         updateStatus({messageLoading: true});
         await invokeTauriCommandWrapper<void>(
-            'update_config_item',
-            {name, value},
-            async () => {
-                const updatedConfigs = await invoke<ConfigItemFromRust[]>('get_config_payload');
-                setMainConfigs(updatedConfigs);
-                updateStatus({info: t('{{name}} updated successfully.', {name: t(name)}), messageLoading: false});
-            },
-            (errorMessage) => updateStatus({error: `Failed to update ${name}: ${errorMessage}`, messageLoading: false}),
+            'update_app_preferences',
+            {appName, updateMethod, autoStart},
+            () => updateStatus({info: t('App settings updated successfully.'), messageLoading: false}),
+            (errorMessage) => updateStatus({error: `Failed to update ${appName}: ${errorMessage}`, messageLoading: false}),
         );
     };
 
@@ -724,9 +711,6 @@ function App() {
 
     let pageContent;
 
-    const updateMethodConfig = mainConfigs?.find(config => config.name === UPDATE_METHOD_CONFIG_KEY);
-    const autoStartConfig = mainConfigs?.find(config => config.name === AUTO_START_CONFIG_KEY);
-
     if (currentPage === 'installConsole' && startingAppName) {
         pageContent = <ConsolePage title={t('Installing App: {{appName}}', {appName: startingAppName})} appName={startingAppName} initialMessage={consoleInitialMessage} onBack={handleBackFromConsole} isProcessing={isInstallProcessRunning} onProcessComplete={() => setIsInstallProcessRunning(false)} />;
     } else if (currentPage === 'startConsole' && startingAppName) {
@@ -856,9 +840,9 @@ function App() {
                                                                 control={(
                                                                     <Switch
                                                                         size="small"
-                                                                        checked={autoStartConfig?.value === true}
-                                                                        disabled={!autoStartConfig || disableRowActions}
-                                                                        onChange={(event) => handleMainConfigChange(AUTO_START_CONFIG_KEY, event.target.checked)}
+                                                                        checked={app.auto_start}
+                                                                        disabled={disableRowActions}
+                                                                        onChange={(event) => handleAppPreferenceChange(app.name, null, event.target.checked)}
                                                                     />
                                                                 )}
                                                                 label={<Typography variant="body2" sx={{fontWeight: 600}}>{t('Auto Start')}</Typography>}
@@ -927,14 +911,14 @@ function App() {
                                                 }}
                                             >
                                                 <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{alignItems: {xs: 'stretch', sm: 'center'}}}>
-                                                        <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 220}}} disabled={!updateMethodConfig || disableRowActions}>
+                                                        <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 220}}} disabled={disableRowActions}>
                                                             <InputLabel>{t('Update Method')}</InputLabel>
                                                             <Select
-                                                                value={typeof updateMethodConfig?.value === 'string' ? updateMethodConfig.value : ''}
+                                                                value={app.update_method}
                                                                 label={t('Update Method')}
-                                                                onChange={(event) => handleMainConfigChange(UPDATE_METHOD_CONFIG_KEY, event.target.value)}
+                                                                onChange={(event) => handleAppPreferenceChange(app.name, event.target.value, null)}
                                                             >
-                                                                {updateMethodConfig?.options?.filter((option): option is string => typeof option === 'string').map(option => (
+                                                                {UPDATE_METHOD_OPTIONS.map(option => (
                                                                     <MenuItem key={option} value={option}>{t(option)}</MenuItem>
                                                                 ))}
                                                             </Select>

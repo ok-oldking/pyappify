@@ -1,4 +1,5 @@
 // src/app.rs
+use crate::config_manager::GLOBAL_CONFIG_STATE;
 use crate::utils::defender::is_defender_excluded;
 use crate::utils::path;
 use crate::utils::path::{get_app_base_path, get_app_working_dir_path};
@@ -11,6 +12,13 @@ use std::vec::Vec;
 use tracing::{debug, error, info, warn};
 
 pub const YML_FILE_NAME: &str = "pyappify.yml";
+pub const UPDATE_METHOD_OPTION_MANUAL: &str = "MANUAL_UPDATE";
+pub const UPDATE_METHOD_OPTION_AUTO: &str = "AUTO_UPDATE";
+pub const UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE: &str = "AUTO_UPDATE_PRE_RELEASE";
+
+fn default_update_method_fn() -> String {
+    UPDATE_METHOD_OPTION_AUTO.to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct App {
@@ -35,6 +43,10 @@ pub struct App {
     pub current_profile: String,
     #[serde(default)]
     pub installed: bool,
+    #[serde(default = "default_update_method_fn")]
+    pub update_method: String,
+    #[serde(default)]
+    pub auto_start: bool,
     #[serde(default)]
     pub profiles: Vec<Profile>,
     #[serde(default)]
@@ -65,6 +77,29 @@ impl App {
             .iter()
             .find(|p| p.name == profile_name)
             .or_else(|| self.profiles.first())
+    }
+
+    pub fn effective_update_method(&self) -> &str {
+        match self.update_method.as_str() {
+            UPDATE_METHOD_OPTION_AUTO => UPDATE_METHOD_OPTION_AUTO,
+            UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE => UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE,
+            _ => UPDATE_METHOD_OPTION_MANUAL,
+        }
+    }
+
+    fn normalize_preferences(&mut self) {
+        if !matches!(
+            self.update_method.as_str(),
+            UPDATE_METHOD_OPTION_MANUAL
+                | UPDATE_METHOD_OPTION_AUTO
+                | UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE
+        ) {
+            warn!(
+                "Unknown update method '{}' for app '{}'. Resetting to '{}'.",
+                self.update_method, self.name, UPDATE_METHOD_OPTION_AUTO
+            );
+            self.update_method = default_update_method_fn();
+        }
     }
 }
 
@@ -153,6 +188,7 @@ pub fn read_embedded_app() -> App {
         }
     }
     apply_profile_inheritance(&mut app);
+    app.normalize_preferences();
     if app.current_profile.is_empty() {
         app.current_profile = app.profiles.first().unwrap().name.clone();
         info!(
@@ -245,12 +281,45 @@ pub(crate) async fn load_app_config_from_json(app_name: &str) -> anyhow::Result<
         .await
         .with_context(|| format!("Failed to read app.json for {}", app_name))?;
 
-    match serde_json::from_str::<App>(&json_data) {
+    let json_value: serde_json::Value = serde_json::from_str(&json_data)
+        .with_context(|| format!("Failed to parse app.json as JSON for {}", app_name))?;
+    let has_update_method = json_value.get("update_method").is_some();
+    let has_auto_start = json_value.get("auto_start").is_some();
+
+    match serde_json::from_value::<App>(json_value) {
         Ok(mut app) => {
             if app.name != app_name {
                 warn!("App name mismatch in app.json ('{}') and directory ('{}'). Correcting to directory name: '{}'.", app.name, app_name, app_name);
                 app.name = app_name.to_string();
             }
+
+            if !has_update_method || !has_auto_start {
+                if let Some(config_state) = GLOBAL_CONFIG_STATE.get() {
+                    let (legacy_update_method, legacy_auto_start) =
+                        config_state.lock().unwrap().legacy_app_preferences();
+                    let mut migrated = false;
+                    if !has_update_method {
+                        if let Some(update_method) = legacy_update_method {
+                            app.update_method = update_method;
+                            migrated = true;
+                        }
+                    }
+                    if !has_auto_start {
+                        if let Some(auto_start) = legacy_auto_start {
+                            app.auto_start = auto_start;
+                            migrated = true;
+                        }
+                    }
+                    if migrated {
+                        info!(
+                            "Migrated legacy global preferences into app.json for '{}'.",
+                            app_name
+                        );
+                    }
+                }
+            }
+
+            app.normalize_preferences();
 
             let profile = app.get_current_profile_settings();
             debug!("app {} current profile: {:?}", app.name, profile);
@@ -286,7 +355,7 @@ pub(crate) async fn load_app_config_from_json(app_name: &str) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
-    use super::App;
+    use super::{App, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_MANUAL};
 
     #[test]
     fn icon_defaults_to_empty_when_omitted_from_yaml() {
@@ -298,5 +367,28 @@ mod tests {
     fn reads_relative_icon_path_from_yaml() {
         let app: App = serde_yaml::from_str("name: example\nicon: assets/icon.png\n").unwrap();
         assert_eq!(app.icon, "assets/icon.png");
+    }
+
+    #[test]
+    fn app_preferences_have_per_app_defaults_when_omitted() {
+        let app: App = serde_json::from_str(r#"{"name":"example"}"#).unwrap();
+
+        assert_eq!(app.update_method, UPDATE_METHOD_OPTION_AUTO);
+        assert!(!app.auto_start);
+
+        let saved = serde_json::to_value(app).unwrap();
+        assert_eq!(saved["update_method"], UPDATE_METHOD_OPTION_AUTO);
+        assert_eq!(saved["auto_start"], false);
+    }
+
+    #[test]
+    fn unknown_update_method_is_treated_as_manual() {
+        let app: App = serde_json::from_str(
+            r#"{"name":"example","update_method":"UNKNOWN","auto_start":true}"#,
+        )
+        .unwrap();
+
+        assert_eq!(app.effective_update_method(), UPDATE_METHOD_OPTION_MANUAL);
+        assert!(app.auto_start);
     }
 }

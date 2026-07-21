@@ -1,7 +1,7 @@
 //src/app_service.rs
-use crate::app::App;
-use crate::config_manager::{
-    GLOBAL_CONFIG_STATE, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE,
+use crate::app::{
+    App, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE,
+    UPDATE_METHOD_OPTION_MANUAL,
 };
 use crate::emitter::get_app_handle;
 use crate::git::ensure_repository;
@@ -340,16 +340,8 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
         }
 
         if let Some(app) = app_clone_for_checks {
-            let (update_method, auto_start) = {
-                let config_state = GLOBAL_CONFIG_STATE.get().ok_or_else(|| {
-                    anyhow!("GLOBAL_CONFIG_STATE not initialized. Call init_config_manager first.")
-                })?;
-                let config_guard = config_state.lock().unwrap();
-                (
-                    config_guard.get_effective_update_method().to_string(),
-                    config_guard.should_auto_start(),
-                )
-            };
+            let update_method = app.effective_update_method().to_string();
+            let auto_start = app.auto_start;
 
             let latest_update_version =
                 get_update_target(&app.available_versions, &update_method).cloned();
@@ -523,6 +515,38 @@ pub async fn delete_app(app_name: &str) -> Result<(), Error> {
     app.installed = false;
     save_app_config_to_json(&app).await?;
     APPS.lock().await.insert(app_name.to_string(), app);
+    emit_apps().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_app_preferences(
+    app_name: String,
+    update_method: Option<String>,
+    auto_start: Option<bool>,
+) -> Result<(), Error> {
+    let app_dir_lock = get_app_lock(&app_name).await;
+    let _guard = app_dir_lock.lock().await;
+    let mut app = get_app_by_name(&app_name).await?;
+
+    if let Some(update_method) = update_method {
+        if !matches!(
+            update_method.as_str(),
+            UPDATE_METHOD_OPTION_MANUAL
+                | UPDATE_METHOD_OPTION_AUTO
+                | UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE
+        ) {
+            return Err(err!("Unsupported update method: {}", update_method));
+        }
+        app.update_method = update_method;
+    }
+
+    if let Some(auto_start) = auto_start {
+        app.auto_start = auto_start;
+    }
+
+    save_app_config_to_json(&app).await?;
+    APPS.lock().await.insert(app_name, app);
     emit_apps().await;
     Ok(())
 }
@@ -1483,7 +1507,7 @@ pub async fn periodically_update_all_apps_running_status(app_handle: AppHandle) 
 #[cfg(test)]
 mod tests {
     use super::{get_update_target, icon_mime_type, resolve_current_version_state};
-    use crate::config_manager::{UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE};
+    use crate::app::{UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE};
     use std::path::Path;
 
     fn versions(values: &[&str]) -> Vec<String> {
