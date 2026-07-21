@@ -22,6 +22,7 @@ import {
     DialogContentText,
     DialogTitle,
     FormControl,
+    FormControlLabel,
     IconButton,
     InputLabel,
     Link,
@@ -31,6 +32,7 @@ import {
     Select,
     Snackbar,
     Stack,
+    Switch,
     Tooltip,
     Typography
 } from "@mui/material";
@@ -131,6 +133,17 @@ type StatusState = {
     messageLoading?: boolean;
 };
 
+interface ConfigItemFromRust {
+    name: string;
+    description: string;
+    value: string | number | boolean;
+    default_value: string | number | boolean;
+    options?: (string | number | boolean)[];
+}
+
+const UPDATE_METHOD_CONFIG_KEY = "Update Method";
+const AUTO_START_CONFIG_KEY = "Auto Start";
+
 type Page =
     'list'
     | 'installConsole'
@@ -198,6 +211,7 @@ function App() {
     const [snackbarOpen, setSnackbarOpen] = useState(false);
     const [snackbarMessage, setSnackbarMessage] = useState("");
     const [snackbarSeverity, setSnackbarSeverity] = useState<"success" | "info" | "warning" | "error">("info");
+    const [mainConfigs, setMainConfigs] = useState<ConfigItemFromRust[] | null>(null);
 
     useEffect(() => {
         selectedTargetVersionsRef.current = selectedTargetVersions;
@@ -220,6 +234,30 @@ function App() {
     const clearMessages = useCallback(() => {
         updateStatus({error: null, info: null});
     }, [updateStatus]);
+
+    useEffect(() => {
+        invokeTauriCommandWrapper<ConfigItemFromRust[]>(
+            'get_config_payload',
+            undefined,
+            setMainConfigs,
+            (errorMessage) => updateStatus({error: `Failed to load update settings: ${errorMessage}`}),
+        );
+    }, [updateStatus]);
+
+    const handleMainConfigChange = async (name: string, value: string | number | boolean) => {
+        clearMessages();
+        updateStatus({messageLoading: true});
+        await invokeTauriCommandWrapper<void>(
+            'update_config_item',
+            {name, value},
+            async () => {
+                const updatedConfigs = await invoke<ConfigItemFromRust[]>('get_config_payload');
+                setMainConfigs(updatedConfigs);
+                updateStatus({info: t('{{name}} updated successfully.', {name: t(name)}), messageLoading: false});
+            },
+            (errorMessage) => updateStatus({error: `Failed to update ${name}: ${errorMessage}`, messageLoading: false}),
+        );
+    };
 
     const handleStartApp = async (appName: string) => {
         clearMessages();
@@ -588,6 +626,9 @@ function App() {
 
     let pageContent;
 
+    const updateMethodConfig = mainConfigs?.find(config => config.name === UPDATE_METHOD_CONFIG_KEY);
+    const autoStartConfig = mainConfigs?.find(config => config.name === AUTO_START_CONFIG_KEY);
+
     if (currentPage === 'installConsole' && startingAppName) {
         pageContent = <ConsolePage title={t('Installing App: {{appName}}', {appName: startingAppName})} appName={startingAppName} initialMessage={consoleInitialMessage} onBack={handleBackFromConsole} isProcessing={isInstallProcessRunning} onProcessComplete={() => setIsInstallProcessRunning(false)} />;
     } else if (currentPage === 'startConsole' && startingAppName) {
@@ -655,7 +696,9 @@ function App() {
         pageContent = (
             <Container maxWidth="lg" sx={{py: 3}}>
                 <Box sx={{display: 'flex', justifyContent: 'flex-end', alignItems: 'center', mb: 2}}>
-                    <IconButton onClick={() => setCurrentPage('settings')} color="inherit" title={t("Settings")}><SettingsIcon/></IconButton>
+                    <Tooltip title={t('Settings')}>
+                        <IconButton onClick={() => setCurrentPage('settings')} color="inherit"><SettingsIcon/></IconButton>
+                    </Tooltip>
                 </Box>
                 {status.messageLoading && <Box sx={{display: 'flex', alignItems: 'center', my: 2}}><CircularProgress size={24} sx={{mr: 1}}/><Typography>{t('Processing action...')}</Typography></Box>}
                 <Snackbar open={snackbarOpen} autoHideDuration={6000} onClose={() => setSnackbarOpen(false)} anchorOrigin={{vertical: 'bottom', horizontal: 'center'}}>
@@ -689,7 +732,21 @@ function App() {
                                                             <Button variant="outlined" color="info" size="small" startIcon={<OpenInNew/>} onClick={() => handleOpenRunningAppConsole(app.name)} disabled={disableRowActions}>{t('Console')}</Button>
                                                         </>
                                                     ) : (
-                                                        <Button variant="outlined" color="success" size="small" startIcon={isThisAppLoading ? <CircularProgress size={16}/> : <PlayArrow/>} onClick={() => handleStartApp(app.name)} disabled={disableRowActions || !app.current_version}>{t("Start App")}</Button>
+                                                        <>
+                                                            <Button variant="outlined" color="success" size="small" startIcon={isThisAppLoading ? <CircularProgress size={16}/> : <PlayArrow/>} onClick={() => handleStartApp(app.name)} disabled={disableRowActions || !app.current_version}>{t("Start App")}</Button>
+                                                            <FormControlLabel
+                                                                sx={{m: 0}}
+                                                                control={(
+                                                                    <Switch
+                                                                        size="small"
+                                                                        checked={autoStartConfig?.value === true}
+                                                                        disabled={!autoStartConfig || disableRowActions}
+                                                                        onChange={(event) => handleMainConfigChange(AUTO_START_CONFIG_KEY, event.target.checked)}
+                                                                    />
+                                                                )}
+                                                                label={t('Auto Start')}
+                                                            />
+                                                        </>
                                                     )
                                                 ) : isEffectivelyInstalling ? (
                                                     <Button variant="outlined" color="info" size="small" startIcon={<OpenInNew/>} onClick={() => handleOpenRunningAppConsole(app.name)} disabled={disableRowActions}>{t('Console')}</Button>
@@ -703,6 +760,18 @@ function App() {
                                             {app.installed && !app.running && (
                                                 <Box sx={{mt: 2}}>
                                                     <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{alignItems: 'center'}}>
+                                                        <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 230}}} disabled={!updateMethodConfig || disableRowActions}>
+                                                            <InputLabel>{t('Update Method')}</InputLabel>
+                                                            <Select
+                                                                value={typeof updateMethodConfig?.value === 'string' ? updateMethodConfig.value : ''}
+                                                                label={t('Update Method')}
+                                                                onChange={(event) => handleMainConfigChange(UPDATE_METHOD_CONFIG_KEY, event.target.value)}
+                                                            >
+                                                                {updateMethodConfig?.options?.filter((option): option is string => typeof option === 'string').map(option => (
+                                                                    <MenuItem key={option} value={option}>{t(option)}</MenuItem>
+                                                                ))}
+                                                            </Select>
+                                                        </FormControl>
                                                         {app.available_versions.filter(v => v !== app.current_version).length > 0 ? (
                                                             <>
                                                                 <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 200}}} disabled={disableRowActions}>

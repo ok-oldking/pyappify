@@ -1,7 +1,7 @@
 //src/app_service.rs
 use crate::app::App;
 use crate::config_manager::{
-    GLOBAL_CONFIG_STATE, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_IGNORE,
+    GLOBAL_CONFIG_STATE, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE,
 };
 use crate::emitter::get_app_handle;
 use crate::git::ensure_repository;
@@ -102,6 +102,19 @@ fn resolve_current_version_state(
         .any(|version| git::is_release_version(version));
 
     (previous_version, release_available)
+}
+
+fn get_update_target<'a>(
+    available_versions: &'a [String],
+    update_method: &str,
+) -> Option<&'a String> {
+    available_versions
+        .iter()
+        .filter(|version| {
+            update_method == UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE
+                || git::is_release_version(version)
+        })
+        .max_by(|left, right| git::compare_version_tags(left, right).unwrap_or(Ordering::Equal))
 }
 
 pub async fn get_apps_as_vec() -> Vec<App> {
@@ -326,54 +339,55 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
         }
 
         if let Some(app) = app_clone_for_checks {
-            let update_method = {
+            let (update_method, auto_start) = {
                 let config_state = GLOBAL_CONFIG_STATE.get().ok_or_else(|| {
                     anyhow!("GLOBAL_CONFIG_STATE not initialized. Call init_config_manager first.")
                 })?;
                 let config_guard = config_state.lock().unwrap();
-                config_guard.get_effective_update_method().to_string()
+                (
+                    config_guard.get_effective_update_method().to_string(),
+                    config_guard.should_auto_start(),
+                )
             };
 
-            let latest_release_version = app
-                .available_versions
-                .iter()
-                .find(|version| git::is_release_version(version))
-                .cloned();
+            let latest_update_version =
+                get_update_target(&app.available_versions, &update_method).cloned();
             let current_version_missing = app.current_version_missing;
-            let release_update_available =
-                latest_release_version
-                    .as_ref()
-                    .is_some_and(|latest_version| {
-                        if current_version_missing {
-                            return true;
-                        }
-                        app.current_version.as_ref().is_some_and(|current_version| {
-                            git::compare_version_tags(latest_version, current_version)
-                                == Some(Ordering::Greater)
-                        })
-                    });
-            let is_latest = !release_update_available;
+            let update_available = latest_update_version
+                .as_ref()
+                .is_some_and(|latest_version| {
+                    if current_version_missing {
+                        return true;
+                    }
+                    app.current_version.as_ref().is_some_and(|current_version| {
+                        git::compare_version_tags(latest_version, current_version)
+                            == Some(Ordering::Greater)
+                    })
+                });
+            let is_latest = !update_available;
 
             info!(
-                "First load, checking for auto-start conditions. update_method:{}, is_latest:{}, current_version_missing:{}",
-                update_method, is_latest, current_version_missing
+                "First load, checking update and auto-start conditions. update_method:{}, auto_start:{}, is_latest:{}, current_version_missing:{}",
+                update_method, auto_start, is_latest, current_version_missing
             );
 
-            let mut needs_autostart = false;
             info!("locale is {}", get_locale());
             if app.installed && !app.available_versions.is_empty() {
-                if release_update_available {
+                if update_available {
                     if current_version_missing {
                         info!(
-                            "Current version is no longer available upstream. Forcing update to latest available release."
+                            "Current version is no longer available upstream. Forcing update to the latest available version."
                         );
                     } else {
-                        info!("App is not the latest release version.");
+                        info!("App is not the latest version for the selected update method.");
                     }
                     let app_name_clone = app.name.clone();
-                    let latest_version = latest_release_version
-                        .expect("release_update_available requires latest release");
-                    if current_version_missing || update_method == UPDATE_METHOD_OPTION_AUTO {
+                    let latest_version =
+                        latest_update_version.expect("update_available requires a target version");
+                    if current_version_missing
+                        || update_method == UPDATE_METHOD_OPTION_AUTO
+                        || update_method == UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE
+                    {
                         info!(
                             "{}",
                             t!(
@@ -391,24 +405,16 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                             app_name_clone,
                             t!("message.version_update_success", version = latest_version),
                         );
-                        needs_autostart = true;
                     } else {
                         send_notification(
                             app_name_clone.clone(),
                             t!("message.new_version", version = latest_version),
                         );
-                        if update_method == UPDATE_METHOD_OPTION_IGNORE {
-                            info!("Auto-update is UPDATE_METHOD_OPTION_IGNORE set auto_start to true.");
-                            needs_autostart = true;
-                        }
                     }
-                } else {
-                    needs_autostart = true;
-                    info!("App is the latest version and installed. set auto start to true");
                 }
             }
 
-            if needs_autostart {
+            if auto_start && app.installed && !app.available_versions.is_empty() {
                 info!("Auto-starting app '{}'.", app.name);
                 let app_name_clone = app.name.clone();
                 drop(auto_start_guard);
@@ -422,8 +428,11 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                 }
             } else {
                 info!(
-                    "Auto-start conditions not met for app '{}' (installed: {}, is_latest: {}).",
-                    app.name, app.installed, is_latest
+                    "Auto-start disabled or app not ready for '{}' (enabled: {}, installed: {}, has_versions: {}).",
+                    app.name,
+                    auto_start,
+                    app.installed,
+                    !app.available_versions.is_empty()
                 );
             }
         }
@@ -1319,7 +1328,8 @@ pub async fn periodically_update_all_apps_running_status(app_handle: AppHandle) 
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_current_version_state;
+    use super::{get_update_target, resolve_current_version_state};
+    use crate::config_manager::{UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE};
 
     fn versions(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
@@ -1359,5 +1369,25 @@ mod tests {
 
         assert_eq!(current_version, Some("v1.0.0".to_string()));
         assert!(current_version_missing);
+    }
+
+    #[test]
+    fn stable_auto_update_ignores_newer_prereleases() {
+        let available = versions(&["v2.0.0-beta.1", "v1.9.0", "v1.8.0"]);
+
+        assert_eq!(
+            get_update_target(&available, UPDATE_METHOD_OPTION_AUTO),
+            available.get(1)
+        );
+    }
+
+    #[test]
+    fn prerelease_auto_update_uses_newest_version() {
+        let available = versions(&["v1.9.0", "v2.0.0-beta.1", "v2.0.0-alpha.2"]);
+
+        assert_eq!(
+            get_update_target(&available, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE),
+            available.get(1)
+        );
     }
 }

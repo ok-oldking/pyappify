@@ -30,7 +30,8 @@ const PIP_INDEX_URL_OPTION_TENCENT: &str = "https://mirrors.cloud.tencent.com/py
 const UPDATE_METHOD_CONFIG_KEY: &str = "Update Method";
 pub const UPDATE_METHOD_OPTION_MANUAL: &str = "MANUAL_UPDATE";
 pub const UPDATE_METHOD_OPTION_AUTO: &str = "AUTO_UPDATE";
-pub const UPDATE_METHOD_OPTION_IGNORE: &str = "IGNORE_UPDATE";
+pub const UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE: &str = "AUTO_UPDATE_PRE_RELEASE";
+const AUTO_START_CONFIG_KEY: &str = "Auto Start";
 
 const I18N_CONFIG_KEY: &str = "Language";
 const I18N_OPTION_EN: &str = "en";
@@ -45,6 +46,7 @@ const I18N_OPTION_KO: &str = "ko";
 pub enum ConfigValue {
     String(String),
     Integer(i32),
+    Boolean(bool),
 }
 
 impl std::fmt::Display for ConfigValue {
@@ -52,6 +54,7 @@ impl std::fmt::Display for ConfigValue {
         match self {
             ConfigValue::String(s) => write!(f, "{}", s),
             ConfigValue::Integer(i) => write!(f, "{}", i),
+            ConfigValue::Boolean(b) => write!(f, "{}", b),
         }
     }
 }
@@ -79,7 +82,8 @@ impl ConfigItem {
         }
         match (&self.value, &self.default_value) {
             (ConfigValue::String(_), ConfigValue::String(_))
-            | (ConfigValue::Integer(_), ConfigValue::Integer(_)) => {}
+            | (ConfigValue::Integer(_), ConfigValue::Integer(_))
+            | (ConfigValue::Boolean(_), ConfigValue::Boolean(_)) => {}
             _ => {
                 error!(
                     "Mismatch between value type and default_value type for '{}'. Resetting to default.",
@@ -222,14 +226,27 @@ impl AppConfig {
             UPDATE_METHOD_CONFIG_KEY.to_string(),
             ConfigItem {
                 name: UPDATE_METHOD_CONFIG_KEY.to_string(),
-                description: "Controls the app's update behavior. 'MANUAL_UPDATE' requires user action, 'AUTO_UPDATE' updates automatically, and 'IGNORE_UPDATE' disables update checks.".to_string(),
+                description: "Controls the app's update behavior. 'MANUAL_UPDATE' requires user action, 'AUTO_UPDATE' automatically installs stable releases, and 'AUTO_UPDATE_PRE_RELEASE' automatically installs pre-release versions.".to_string(),
                 value: ConfigValue::String(UPDATE_METHOD_OPTION_AUTO.to_string()),
                 default_value: ConfigValue::String(UPDATE_METHOD_OPTION_AUTO.to_string()),
                 options: Some(vec![
                     ConfigValue::String(UPDATE_METHOD_OPTION_MANUAL.to_string()),
                     ConfigValue::String(UPDATE_METHOD_OPTION_AUTO.to_string()),
-                    ConfigValue::String(UPDATE_METHOD_OPTION_IGNORE.to_string()),
+                    ConfigValue::String(UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE.to_string()),
                 ]),
+            },
+        );
+
+        items.insert(
+            AUTO_START_CONFIG_KEY.to_string(),
+            ConfigItem {
+                name: AUTO_START_CONFIG_KEY.to_string(),
+                description:
+                    "Starts the installed app automatically after startup update handling finishes."
+                        .to_string(),
+                value: ConfigValue::Boolean(false),
+                default_value: ConfigValue::Boolean(false),
+                options: None,
             },
         );
 
@@ -368,7 +385,8 @@ impl AppConfig {
             Some(item) => {
                 match (&new_value, &item.default_value) {
                     (ConfigValue::String(_), ConfigValue::String(_))
-                    | (ConfigValue::Integer(_), ConfigValue::Integer(_)) => {}
+                    | (ConfigValue::Integer(_), ConfigValue::Integer(_))
+                    | (ConfigValue::Boolean(_), ConfigValue::Boolean(_)) => {}
                     _ => {
                         error!(
                             "Type mismatch for config item '{}'. Expected type compatible with default value's type ('{}'), got '{}'. Update rejected.",
@@ -518,11 +536,18 @@ impl AppConfig {
         match self.get_item_value(UPDATE_METHOD_CONFIG_KEY) {
             Some(ConfigValue::String(value)) => match value.as_str() {
                 UPDATE_METHOD_OPTION_AUTO => UPDATE_METHOD_OPTION_AUTO,
-                UPDATE_METHOD_OPTION_IGNORE => UPDATE_METHOD_OPTION_IGNORE,
+                UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE => UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE,
                 _ => UPDATE_METHOD_OPTION_MANUAL,
             },
             _ => UPDATE_METHOD_OPTION_MANUAL,
         }
+    }
+
+    pub fn should_auto_start(&self) -> bool {
+        matches!(
+            self.get_item_value(AUTO_START_CONFIG_KEY),
+            Some(ConfigValue::Boolean(true))
+        )
     }
 
     pub fn get_effective_lang(&self) -> &'static str {

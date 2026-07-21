@@ -107,8 +107,9 @@ const resources = {
             "No profiles available for this app. This view should not be reachable in this state.": "No profiles available for this app. This view should not be reachable in this state.",
             "Update Method": "Update Method",
             "MANUAL_UPDATE": "Manual Update",
-            "AUTO_UPDATE": "Auto Update",
-            "IGNORE_UPDATE": "Ignore Updates"
+            "AUTO_UPDATE": "Auto Update to Release",
+            "AUTO_UPDATE_PRE_RELEASE": "Auto Update to Pre-release",
+            "Auto Start": "Auto Start"
         }
     },
     'zh-CN': {
@@ -216,8 +217,9 @@ const resources = {
             "failedToAddExclusion": "添加白名单失败: {{errorMessage}}",
             "Update Method": "更新方式",
             "MANUAL_UPDATE": "手动更新",
-            "AUTO_UPDATE": "自动更新",
-            "IGNORE_UPDATE": "忽略更新"
+            "AUTO_UPDATE": "自动更新至正式版",
+            "AUTO_UPDATE_PRE_RELEASE": "自动更新至预发布版",
+            "Auto Start": "自动启动"
         }
     },
     'zh-TW': {
@@ -325,8 +327,9 @@ const resources = {
             "failedToAddExclusion": "新增排除項目失敗: {{errorMessage}}",
             "Update Method": "更新方式",
             "MANUAL_UPDATE": "手動更新",
-            "AUTO_UPDATE": "自動更新",
-            "IGNORE_UPDATE": "忽略更新"
+            "AUTO_UPDATE": "自動更新至正式版",
+            "AUTO_UPDATE_PRE_RELEASE": "自動更新至預發佈版",
+            "Auto Start": "自動啟動"
         }
     },
     ja: {
@@ -434,8 +437,9 @@ const resources = {
             "failedToAddExclusion": "除外設定の追加に失敗しました: {{errorMessage}}",
             "Update Method": "更新方法",
             "MANUAL_UPDATE": "手動更新",
-            "AUTO_UPDATE": "自動更新",
-            "IGNORE_UPDATE": "更新を無視"
+            "AUTO_UPDATE": "正式版に自動更新",
+            "AUTO_UPDATE_PRE_RELEASE": "プレリリース版に自動更新",
+            "Auto Start": "自動起動"
         }
     },
     ko: {
@@ -543,8 +547,9 @@ const resources = {
             "failedToAddExclusion": "제외 추가 실패: {{errorMessage}}",
             "Update Method": "업데이트 방법",
             "MANUAL_UPDATE": "수동 업데이트",
-            "AUTO_UPDATE": "자동 업데이트",
-            "IGNORE_UPDATE": "업데이트 무시"
+            "AUTO_UPDATE": "정식 버전으로 자동 업데이트",
+            "AUTO_UPDATE_PRE_RELEASE": "사전 출시 버전으로 자동 업데이트",
+            "Auto Start": "자동 시작"
         }
     },
     es: {
@@ -652,8 +657,9 @@ const resources = {
             "failedToAddExclusion": "Error al agregar la exclusión: `{{errorMessage}}`",
             "Update Method": "Método de Actualización",
             "MANUAL_UPDATE": "Actualización Manual",
-            "AUTO_UPDATE": "Actualización Automática",
-            "IGNORE_UPDATE": "Ignorar Actualizaciones"
+            "AUTO_UPDATE": "Actualizar Automáticamente a la Versión Estable",
+            "AUTO_UPDATE_PRE_RELEASE": "Actualizar Automáticamente a la Versión Preliminar",
+            "Auto Start": "Inicio Automático"
         }
     },
 };
