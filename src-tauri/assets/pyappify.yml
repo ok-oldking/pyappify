@@ -1,4 +1,5 @@
 name: "pyappify-sample" # English only
+icon: "" # optional image path relative to the app working directory, for example "assets/icon.png"
 profiles:
   - name: "release_正式版" # can use Unicode chars
     git_url: "https://github.com/ok-oldking/pyappify-action.git" # the repo url to clone, must have tags for the version management, semver is recommended

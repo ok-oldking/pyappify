@@ -19,6 +19,7 @@ interface ConsolePageProps {
     appName: string;
     initialMessage?: string;
     initialMessageIsError?: boolean;
+    externalError?: string | null;
     onBack: () => void;
     isProcessing: boolean;
     onProcessComplete: () => void;
@@ -60,6 +61,7 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
                                                      appName,
                                                      initialMessage,
                                                      initialMessageIsError = false,
+                                                     externalError,
                                                      onBack,
                                                      isProcessing: initialIsProcessing,
                                                      onProcessComplete
@@ -104,6 +106,13 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
             });
         }
     }, [initialMessage, initialMessageIsError, appName, addLog]);
+
+    useEffect(() => {
+        if (!externalError) return;
+        addLog({message: externalError, app_name: appName, error: true});
+        setInternalIsProcessing(false);
+        setProcessCompletedWithError(true);
+    }, [externalError, appName, addLog]);
 
     useEffect(() => {
         const unlistenPromises: Promise<UnlistenFn>[] = [];

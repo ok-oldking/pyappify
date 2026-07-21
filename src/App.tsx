@@ -14,6 +14,7 @@ import {
     Button,
     Card,
     CardContent,
+    Chip,
     CircularProgress,
     Container,
     Dialog,
@@ -26,8 +27,6 @@ import {
     IconButton,
     InputLabel,
     Link,
-    List,
-    ListItem,
     MenuItem,
     Select,
     Snackbar,
@@ -40,12 +39,13 @@ import {
     Build,
     Cached,
     Delete,
+    KeyboardArrowRight,
     OpenInNew,
     PlayArrow,
     Settings as SettingsIcon,
     StopCircle,
 } from '@mui/icons-material';
-import {createTheme, ThemeProvider} from '@mui/material/styles';
+import {alpha, createTheme, ThemeProvider} from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import {useTranslation} from 'react-i18next';
@@ -61,6 +61,7 @@ interface Profile {
 
 interface App {
     name: string;
+    icon: string;
     url: string;
     path: string;
     current_version: string | null;
@@ -163,6 +164,53 @@ type InlineUpdateLogState = {
     failed?: boolean;
 };
 
+type AppIconAsset = {
+    bytes: number[];
+    mime_type: string;
+};
+
+function AppIcon({appName, iconPath}: {appName: string; iconPath: string}) {
+    const [src, setSrc] = useState<string | null>(null);
+
+    useEffect(() => {
+        let disposed = false;
+        let objectUrl: string | null = null;
+        setSrc(null);
+
+        if (!iconPath?.trim()) return;
+
+        invoke<AppIconAsset | null>('get_app_icon', {appName})
+            .then((asset) => {
+                if (!asset) return;
+                objectUrl = URL.createObjectURL(new Blob([new Uint8Array(asset.bytes)], {type: asset.mime_type}));
+                if (disposed) {
+                    URL.revokeObjectURL(objectUrl);
+                } else {
+                    setSrc(objectUrl);
+                }
+            })
+            .catch(() => {
+                if (!disposed) setSrc(null);
+            });
+
+        return () => {
+            disposed = true;
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+        };
+    }, [appName, iconPath]);
+
+    if (!src) return null;
+
+    return (
+        <Box
+            component="img"
+            src={src}
+            alt=""
+            sx={{width: 46, height: 46, objectFit: 'contain', flexShrink: 0}}
+        />
+    );
+}
+
 export type ThemeModeSetting = 'light' | 'dark' | 'system';
 
 function App() {
@@ -188,6 +236,7 @@ function App() {
         actionType: string;
     } | null>(null);
     const [isVersionChangeProcessRunning, setIsVersionChangeProcessRunning] = useState<boolean>(false);
+    const [versionChangeError, setVersionChangeError] = useState<string | null>(null);
     const [isRunningAppConsoleOpen, setIsRunningAppConsoleOpen] = useState<boolean>(false);
     const [themeMode, setThemeMode] = useState<ThemeModeSetting>(() => {
         const savedTheme = localStorage.getItem('appThemeMode');
@@ -224,7 +273,47 @@ function App() {
     const prefersDarkMode = useMediaQuery('(prefers-color-scheme: dark)');
     const muiTheme = useMemo(() => {
         const mode: 'light' | 'dark' = themeMode === 'system' ? (prefersDarkMode ? 'dark' : 'light') : themeMode;
-        return createTheme({ palette: { mode } });
+        const isDark = mode === 'dark';
+        return createTheme({
+            palette: {
+                mode,
+                primary: {main: '#6366f1'},
+                success: {main: isDark ? '#34d399' : '#059669'},
+                warning: {main: isDark ? '#fbbf24' : '#d97706'},
+                background: {
+                    default: isDark ? '#0b0f17' : '#f4f6fb',
+                    paper: isDark ? '#121824' : '#ffffff',
+                },
+                divider: isDark ? 'rgba(148, 163, 184, 0.16)' : 'rgba(15, 23, 42, 0.10)',
+            },
+            shape: {borderRadius: 12},
+            typography: {
+                fontFamily: 'Inter, "Segoe UI", system-ui, sans-serif',
+                h5: {fontWeight: 720, letterSpacing: '-0.025em'},
+                h6: {fontWeight: 700, letterSpacing: '-0.015em'},
+                button: {fontWeight: 650, letterSpacing: 0, textTransform: 'none'},
+            },
+            components: {
+                MuiButton: {
+                    defaultProps: {disableElevation: true},
+                    styleOverrides: {root: {borderRadius: 10, minHeight: 38}},
+                },
+                MuiCard: {
+                    styleOverrides: {
+                        root: {
+                            borderRadius: 18,
+                            boxShadow: isDark
+                                ? '0 18px 50px rgba(0, 0, 0, 0.28)'
+                                : '0 18px 50px rgba(30, 41, 59, 0.07)',
+                        },
+                    },
+                },
+                MuiFormControl: {
+                    styleOverrides: {root: {'& .MuiOutlinedInput-root': {borderRadius: 10}}},
+                },
+                MuiTooltip: {defaultProps: {arrow: true}},
+            },
+        });
     }, [themeMode, prefersDarkMode]);
 
     const updateStatus = useCallback((newStatus: Partial<StatusState>) => {
@@ -347,11 +436,11 @@ function App() {
                 }
             });
             setSelectedTargetVersions(prev => ({...prev, ...newSelectedTargets}));
-            // Merge inlineLogUpdates but never overwrite completed entries
+            // Preserve the result of the most recent attempt while app data refreshes.
             setInlineUpdateLogs(prev => {
                 const merged = {...prev};
                 for (const [name, entry] of Object.entries(inlineLogUpdates)) {
-                    if (!completedAppsRef.current.has(name)) merged[name] = entry;
+                    if (!completedAppsRef.current.has(name) && !merged[name]?.failed) merged[name] = entry;
                 }
                 return merged;
             });
@@ -479,11 +568,12 @@ function App() {
         // Mark as confirming so the inline log shows a spinner
         setInlineUpdateLogs(prev => ({
             ...prev,
-            [params.appName]: {...(prev[params.appName] ?? {version: params.version, actionType: params.actionType}), isConfirming: true}
+            [params.appName]: {...(prev[params.appName] ?? {version: params.version, actionType: params.actionType}), isConfirming: true, completed: false, failed: false}
         }));
         setVersionChangeConsoleData(params);
         setStartingAppName(params.appName);
         setConsoleInitialMessage(`Initiating ${params.actionType} for '${params.appName}' to version '${params.version}'...`);
+        setVersionChangeError(null);
         setIsVersionChangeProcessRunning(true);
         setCurrentPage('versionChangeConsole');
 
@@ -493,7 +583,15 @@ function App() {
         await invokeTauriCommandWrapper<void>("update_to_version", {appName: params.appName, version: params.version, requirements: requirementsFile}, () => {},
             (errorMessage, rawError) => {
                 console.error(`Failed to invoke ${params.actionType.toLowerCase()}:`, rawError);
-                setConsoleInitialMessage(prev => `${prev}\nERROR (client-side): Failed to dispatch operation: ${errorMessage}`);
+                const operationError = `Update failed: ${errorMessage}`;
+                completedAppsRef.current.delete(params.appName);
+                setInlineUpdateLogs(prev => {
+                    const entry = prev[params.appName];
+                    if (!entry) return prev;
+                    return {...prev, [params.appName]: {...entry, isConfirming: false, completed: false, failed: true}};
+                });
+                setVersionChangeError(operationError);
+                setIsVersionChangeProcessRunning(false);
             }
         );
     };
@@ -527,14 +625,14 @@ function App() {
         if (startingAppName) setAppActionLoading(prev => ({...prev, [startingAppName]: false}));
         setStartingAppName(null);
         setVersionChangeConsoleData(null);
+        setVersionChangeError(null);
         setProfileChangeData(null);
 
-        // After a version change: clear version selector and mark log as completed (shows success state)
+        // Only a successful finish event may mark a version change as completed.
         if (wasVersionChange && appNameForVersionChange) {
-            setSelectedTargetVersions(prev => ({...prev, [appNameForVersionChange]: ''}));
             setInlineUpdateLogs(prev => {
                 const entry = prev[appNameForVersionChange];
-                if (entry) return {...prev, [appNameForVersionChange]: {...entry, isConfirming: false, completed: true}};
+                if (entry) return {...prev, [appNameForVersionChange]: {...entry, isConfirming: false}};
                 return prev;
             });
         }
@@ -635,7 +733,7 @@ function App() {
         pageContent = <ConsolePage title={t('Starting App: {{appName}}', {appName: startingAppName})} appName={startingAppName} initialMessage={consoleInitialMessage} onBack={handleBackFromConsole} isProcessing={isStartAppProcessRunning} onProcessComplete={() => setIsStartAppProcessRunning(false)} />;
     } else if (currentPage === 'versionChangeConsole' && versionChangeConsoleData && startingAppName) {
         const title = t('{{actionType}} App: {{appName}}', { actionType: t(versionChangeConsoleData.actionType), appName: startingAppName });
-        pageContent = <ConsolePage title={title} appName={startingAppName} initialMessage={consoleInitialMessage} onBack={handleBackFromConsole} isProcessing={isVersionChangeProcessRunning} onProcessComplete={() => setIsVersionChangeProcessRunning(false)} />;
+        pageContent = <ConsolePage title={title} appName={startingAppName} initialMessage={consoleInitialMessage} externalError={versionChangeError} onBack={handleBackFromConsole} isProcessing={isVersionChangeProcessRunning} onProcessComplete={() => setIsVersionChangeProcessRunning(false)} />;
     } else if (currentPage === 'runningAppConsole' && startingAppName) {
         pageContent = <ConsolePage title={t('Console: {{appName}}', {appName: startingAppName})} appName={startingAppName} initialMessage={consoleInitialMessage} onBack={handleBackFromConsole} isProcessing={isRunningAppConsoleOpen} onProcessComplete={() => setIsRunningAppConsoleOpen(false)} />;
     } else if (currentPage === 'profileChangeConsole' && profileChangeData && startingAppName) {
@@ -694,46 +792,65 @@ function App() {
         );
     } else {
         pageContent = (
-            <Container maxWidth="lg" sx={{py: 3}}>
-                <Box sx={{display: 'flex', justifyContent: 'flex-end', alignItems: 'center', mb: 2}}>
+            <Container maxWidth="lg" sx={{py: {xs: 2, md: 4}}}>
+                <Box component="header" sx={{display: 'flex', justifyContent: 'flex-end', alignItems: 'center', mb: 2}}>
                     <Tooltip title={t('Settings')}>
-                        <IconButton onClick={() => setCurrentPage('settings')} color="inherit"><SettingsIcon/></IconButton>
+                        <IconButton
+                            onClick={() => setCurrentPage('settings')}
+                            color="inherit"
+                            sx={{bgcolor: 'background.paper', border: 1, borderColor: 'divider', width: 42, height: 42}}
+                        >
+                            <SettingsIcon/>
+                        </IconButton>
                     </Tooltip>
                 </Box>
-                {status.messageLoading && <Box sx={{display: 'flex', alignItems: 'center', my: 2}}><CircularProgress size={24} sx={{mr: 1}}/><Typography>{t('Processing action...')}</Typography></Box>}
+                {status.messageLoading && (
+                    <Chip
+                        icon={<CircularProgress size={16}/>}
+                        label={t('Processing action...')}
+                        sx={{mb: 2, bgcolor: 'background.paper', border: 1, borderColor: 'divider'}}
+                    />
+                )}
                 <Snackbar open={snackbarOpen} autoHideDuration={6000} onClose={() => setSnackbarOpen(false)} anchorOrigin={{vertical: 'bottom', horizontal: 'center'}}>
                     <Alert onClose={() => setSnackbarOpen(false)} severity={snackbarSeverity} sx={{width: '100%'}}>{snackbarMessage}</Alert>
                 </Snackbar>
-                {status.loading && !apps && <Box sx={{display: 'flex', justifyContent: 'center', my: 3}}><CircularProgress/><Typography sx={{ml: 1}}>{t('Loading app...')}</Typography></Box>}
-                {!status.loading && apps?.length === 0 && <Typography sx={{my: 3, textAlign: 'center'}}>{t('No apps found.')}</Typography>}
+                {status.loading && !apps && (
+                    <Card variant="outlined" sx={{borderColor: 'divider', boxShadow: 'none'}}>
+                        <CardContent sx={{display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 220}}>
+                            <CircularProgress size={24}/><Typography sx={{ml: 1.5}} color="text.secondary">{t('Loading app...')}</Typography>
+                        </CardContent>
+                    </Card>
+                )}
+                {!status.loading && apps?.length === 0 && (
+                    <Card variant="outlined" sx={{borderColor: 'divider', boxShadow: 'none'}}>
+                        <CardContent sx={{py: 8, textAlign: 'center'}}><Typography color="text.secondary">{t('No apps found.')}</Typography></CardContent>
+                    </Card>
+                )}
                 {apps && apps.length > 0 && (
-                    <List>
+                    <Stack spacing={2.5}>
                         {apps.map((app) => {
                             const isEffectivelyInstalling = app.running && !app.installed;
                             const isThisAppLoading = appActionLoading[app.name] || false;
                             const disableRowActions = currentPage !== 'list' || status.messageLoading || isThisAppLoading;
                             return (
-                                <ListItem key={app.name} disablePadding sx={{mb: 2}}>
-                                    <Card variant="outlined" sx={{width: '100%', bgcolor: (app.running) ? 'action.selected' : 'background.paper'}}>
-                                        <CardContent>
-                                            <Typography variant="h6" component="div">
-                                                {app.name}
-                                                {app.installed && app.current_version && ` (${app.current_version})`}
-                                                {app.installed && app.current_profile && ` [${app.current_profile}]`}
-                                                {!app.installed && !isEffectivelyInstalling && <Typography component="span" color="text.secondary" sx={{ml: 1}}>{t('(Not Installed)')}</Typography>}
-                                                {isEffectivelyInstalling && <Typography component="span" color="info.main" sx={{ml: 1}}>{t('(Installing...)')}</Typography>}
-                                                {app.installed && app.running && <Typography component="span" color="success.main" sx={{ml: 1}}>{t('(Running)')}</Typography>}
-                                            </Typography>
-                                            <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{my: 1, flexWrap: 'wrap', alignItems: 'center'}}>
-                                                {app.installed ? (
-                                                    app.running ? (
-                                                        <>
-                                                            <Button variant="outlined" color="warning" size="small" startIcon={isThisAppLoading ? <CircularProgress size={16}/> : <StopCircle/>} onClick={() => handleStopApp(app.name)} disabled={disableRowActions}>{t("Stop App")}</Button>
-                                                            <Button variant="outlined" color="info" size="small" startIcon={<OpenInNew/>} onClick={() => handleOpenRunningAppConsole(app.name)} disabled={disableRowActions}>{t('Console')}</Button>
-                                                        </>
-                                                    ) : (
-                                                        <>
-                                                            <Button variant="outlined" color="success" size="small" startIcon={isThisAppLoading ? <CircularProgress size={16}/> : <PlayArrow/>} onClick={() => handleStartApp(app.name)} disabled={disableRowActions || !app.current_version}>{t("Start App")}</Button>
+                                <Card
+                                    key={app.name}
+                                    variant="outlined"
+                                    sx={{
+                                        width: '100%',
+                                        borderColor: app.running ? 'success.main' : 'divider',
+                                        bgcolor: 'background.paper',
+                                        overflow: 'visible',
+                                    }}
+                                >
+                                    <CardContent sx={{p: {xs: 2, sm: 3}, '&:last-child': {pb: {xs: 2, sm: 3}}}}>
+                                        <Stack direction={{xs: 'column', sm: 'row'}} spacing={2} sx={{justifyContent: 'space-between', alignItems: {xs: 'stretch', sm: 'flex-start'}}}>
+                                            <Stack direction="row" spacing={1.5} sx={{minWidth: 0, alignItems: 'center'}}>
+                                                <AppIcon appName={app.name} iconPath={app.icon}/>
+                                                <Box sx={{minWidth: 0}}>
+                                                    <Stack direction="row" spacing={1.5} useFlexGap sx={{alignItems: 'center', flexWrap: 'wrap'}}>
+                                                        <Typography variant="h6" noWrap>{app.name}</Typography>
+                                                        {app.installed && !app.running && (
                                                             <FormControlLabel
                                                                 sx={{m: 0}}
                                                                 control={(
@@ -744,23 +861,73 @@ function App() {
                                                                         onChange={(event) => handleMainConfigChange(AUTO_START_CONFIG_KEY, event.target.checked)}
                                                                     />
                                                                 )}
-                                                                label={t('Auto Start')}
+                                                                label={<Typography variant="body2" sx={{fontWeight: 600}}>{t('Auto Start')}</Typography>}
                                                             />
+                                                        )}
+                                                    </Stack>
+                                                    <Stack direction="row" spacing={0.75} useFlexGap sx={{mt: 0.75, flexWrap: 'wrap'}}>
+                                                        <Chip
+                                                            size="small"
+                                                            color={app.running ? 'success' : isEffectivelyInstalling ? 'info' : 'default'}
+                                                            variant={app.running || isEffectivelyInstalling ? 'filled' : 'outlined'}
+                                                            label={app.running && app.installed ? t('(Running)') : isEffectivelyInstalling ? t('(Installing...)') : app.installed ? t('Installed') : t('(Not Installed)')}
+                                                            sx={{fontWeight: 650}}
+                                                        />
+                                                        {app.installed && app.current_version && (
+                                                            <Chip size="small" variant="outlined" label={app.current_version}/>
+                                                        )}
+                                                        {app.installed && app.current_profile && (
+                                                            <Chip size="small" variant="outlined" label={app.current_profile}/>
+                                                        )}
+                                                    </Stack>
+                                                </Box>
+                                            </Stack>
+                                            <Stack
+                                                direction="row"
+                                                spacing={1}
+                                                useFlexGap
+                                                sx={{flexShrink: 0, flexWrap: 'wrap', justifyContent: {xs: 'flex-start', sm: 'flex-end'}}}
+                                            >
+                                                {app.installed ? (
+                                                    app.running ? (
+                                                        <>
+                                                            <Button variant="contained" color="warning" startIcon={isThisAppLoading ? <CircularProgress size={16}/> : <StopCircle/>} onClick={() => handleStopApp(app.name)} disabled={disableRowActions}>{t("Stop App")}</Button>
+                                                            <Button variant="outlined" color="info" size="small" startIcon={<OpenInNew/>} onClick={() => handleOpenRunningAppConsole(app.name)} disabled={disableRowActions}>{t('Console')}</Button>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Button variant="contained" color="success" startIcon={isThisAppLoading ? <CircularProgress size={16}/> : <PlayArrow/>} onClick={() => handleStartApp(app.name)} disabled={disableRowActions || !app.current_version}>{t("Start App")}</Button>
                                                         </>
                                                     )
                                                 ) : isEffectivelyInstalling ? (
                                                     <Button variant="outlined" color="info" size="small" startIcon={<OpenInNew/>} onClick={() => handleOpenRunningAppConsole(app.name)} disabled={disableRowActions}>{t('Console')}</Button>
                                                 ) : (
-                                                    <Button variant="contained" color="primary" size="small" startIcon={isThisAppLoading ? <CircularProgress size={16}/> : <Build/>} onClick={() => handleInstallClick(app)} disabled={disableRowActions}>{t("Install")}</Button>
+                                                    <Button variant="contained" color="primary" startIcon={isThisAppLoading ? <CircularProgress size={16}/> : <Build/>} endIcon={<KeyboardArrowRight/>} onClick={() => handleInstallClick(app)} disabled={disableRowActions}>{t("Install")}</Button>
                                                 )}
                                                 {app.show_add_defender && !hiddenDefenderButtons.has(app.name) && <Button variant="outlined" color="secondary" size="small" startIcon={isThisAppLoading && addingDefenderExclusionForApp === app.name ? <CircularProgress size={16}/> : <Build/>} onClick={() => handleAddDefenderExclusion(app.name)} disabled={disableRowActions}>{t("Add Defender Exclusion")}</Button>}
                                                 {app.installed && !app.running && app.profiles?.length > 1 && <Button variant="outlined" color="secondary" size="small" startIcon={isThisAppLoading ? <CircularProgress size={16}/> : <Cached/>} onClick={() => handleNavigateToChangeProfilePage(app)} disabled={disableRowActions}>{t("Change Profile")}</Button>}
-                                                {app.installed && <Button variant="outlined" color="error" size="small" startIcon={isThisAppLoading ? <CircularProgress size={16}/> : <Delete/>} onClick={() => handleDeleteClick(app.name)} disabled={disableRowActions || app.running}>{t("Delete")}</Button>}
+                                                {app.installed && (
+                                                    <Tooltip title={t('Delete')}>
+                                                        <span>
+                                                            <IconButton color="error" onClick={() => handleDeleteClick(app.name)} disabled={disableRowActions || app.running} sx={{border: 1, borderColor: 'divider', borderRadius: 2}}>
+                                                                {isThisAppLoading ? <CircularProgress size={18}/> : <Delete fontSize="small"/>}
+                                                            </IconButton>
+                                                        </span>
+                                                    </Tooltip>
+                                                )}
                                             </Stack>
-                                            {app.installed && !app.running && (
-                                                <Box sx={{mt: 2}}>
-                                                    <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{alignItems: 'center'}}>
-                                                        <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 230}}} disabled={!updateMethodConfig || disableRowActions}>
+                                        </Stack>
+                                        {app.installed && !app.running && (
+                                            <Box
+                                                sx={{
+                                                    mt: 2.5,
+                                                    p: {xs: 1.5, sm: 2},
+                                                    borderRadius: 3,
+                                                    bgcolor: theme => alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.075 : 0.045),
+                                                }}
+                                            >
+                                                <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{alignItems: {xs: 'stretch', sm: 'center'}}}>
+                                                        <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 220}}} disabled={!updateMethodConfig || disableRowActions}>
                                                             <InputLabel>{t('Update Method')}</InputLabel>
                                                             <Select
                                                                 value={typeof updateMethodConfig?.value === 'string' ? updateMethodConfig.value : ''}
@@ -773,59 +940,55 @@ function App() {
                                                             </Select>
                                                         </FormControl>
                                                         {app.available_versions.filter(v => v !== app.current_version).length > 0 ? (
-                                                            <>
-                                                                <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 200}}} disabled={disableRowActions}>
-                                                                    <InputLabel>{t('Change version...')}</InputLabel>
-                                                                    <Select
-                                                                        value={selectedTargetVersions[app.name] || ''}
-                                                                        label={t('Change version...')}
-                                                                        renderValue={(selected) => {
-                                                                            const selectedVersion = String(selected);
-                                                                            return selectedVersion ? `${selectedVersion} ${t(getVersionChannelLabelKey(selectedVersion))}` : t('Change version...');
-                                                                        }}
-                                                                        onChange={(e) => {
-                                                                            const newVer = e.target.value;
-                                                                            setSelectedTargetVersions(p => ({...p, [app.name]: newVer}));
-                                                                            handleVersionSelected(app.name, newVer, app.current_version);
-                                                                        }}
-                                                                    >
-                                                                        <MenuItem value=""><em>{t('Change version...')}</em></MenuItem>
-                                                                        {app.available_versions.filter(v => v !== app.current_version).map(v => <MenuItem key={v} value={v}>{v} {t(getVersionChannelLabelKey(v))}{compareVersions(v, app.current_version!) > 0 ? ` ${t('(Update)')}` : ` ${t('(Downgrade)')}`}</MenuItem>)}
-                                                                    </Select>
-                                                                </FormControl>
-                                                            </>
+                                                            <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 220}}} disabled={disableRowActions}>
+                                                                <InputLabel>{t('Change version...')}</InputLabel>
+                                                                <Select
+                                                                    value={selectedTargetVersions[app.name] || ''}
+                                                                    label={t('Change version...')}
+                                                                    renderValue={(selected) => {
+                                                                        const selectedVersion = String(selected);
+                                                                        return selectedVersion ? `${selectedVersion} ${t(getVersionChannelLabelKey(selectedVersion))}` : t('Change version...');
+                                                                    }}
+                                                                    onChange={(e) => {
+                                                                        const newVer = e.target.value;
+                                                                        setSelectedTargetVersions(p => ({...p, [app.name]: newVer}));
+                                                                        handleVersionSelected(app.name, newVer, app.current_version);
+                                                                    }}
+                                                                >
+                                                                    <MenuItem value=""><em>{t('Change version...')}</em></MenuItem>
+                                                                    {app.available_versions.filter(v => v !== app.current_version).map(v => <MenuItem key={v} value={v}>{v} {t(getVersionChannelLabelKey(v))}{compareVersions(v, app.current_version!) > 0 ? ` ${t('(Update)')}` : ` ${t('(Downgrade)')}`}</MenuItem>)}
+                                                                </Select>
+                                                            </FormControl>
                                                         ) : <Typography variant="caption">{t("No other versions found.")}</Typography>}
-                                                        <Tooltip title={t("Check for updates")}><span><IconButton onClick={() => handleCheckForUpdates(app.name)} disabled={disableRowActions} size="small">{isThisAppLoading && checkingUpdateForApp === app.name ? <CircularProgress size={20}/> : <Cached/>}</IconButton></span></Tooltip>
-                                                    </Stack>
-                                                    {/* Inline update log: shown whenever an entry exists; cleared only on cancel or new selection */}
-                                                    {inlineUpdateLogs[app.name] && (
-                                                        <UpdateLogPage
-                                                            appName={app.name}
-                                                            version={inlineUpdateLogs[app.name].version}
-                                                            actionType={inlineUpdateLogs[app.name].actionType}
-                                                            isConfirming={inlineUpdateLogs[app.name].isConfirming}
-                                                            completed={inlineUpdateLogs[app.name].completed}
-                                                            failed={inlineUpdateLogs[app.name].failed}
-                                                            onConfirm={handleConfirmVersionChange}
-                                                            onCancel={() => {
-                                                                completedAppsRef.current.delete(app.name);
-                                                                setSelectedTargetVersions(p => ({...p, [app.name]: ''}));
-                                                                setInlineUpdateLogs(prev => {
-                                                                    const next = {...prev};
-                                                                    delete next[app.name];
-                                                                    return next;
-                                                                });
-                                                            }}
-                                                        />
-                                                    )}
-                                                </Box>
-                                            )}
-                                        </CardContent>
-                                    </Card>
-                                </ListItem>
+                                                        <Tooltip title={t("Check for updates")}><span><IconButton onClick={() => handleCheckForUpdates(app.name)} disabled={disableRowActions} sx={{bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2}}>{isThisAppLoading && checkingUpdateForApp === app.name ? <CircularProgress size={20}/> : <Cached fontSize="small"/>}</IconButton></span></Tooltip>
+                                                </Stack>
+                                                {inlineUpdateLogs[app.name] && (
+                                                    <UpdateLogPage
+                                                        appName={app.name}
+                                                        version={inlineUpdateLogs[app.name].version}
+                                                        actionType={inlineUpdateLogs[app.name].actionType}
+                                                        isConfirming={inlineUpdateLogs[app.name].isConfirming}
+                                                        completed={inlineUpdateLogs[app.name].completed}
+                                                        failed={inlineUpdateLogs[app.name].failed}
+                                                        onConfirm={handleConfirmVersionChange}
+                                                        onCancel={() => {
+                                                            completedAppsRef.current.delete(app.name);
+                                                            setSelectedTargetVersions(p => ({...p, [app.name]: ''}));
+                                                            setInlineUpdateLogs(prev => {
+                                                                const next = {...prev};
+                                                                delete next[app.name];
+                                                                return next;
+                                                            });
+                                                        }}
+                                                    />
+                                                )}
+                                            </Box>
+                                        )}
+                                    </CardContent>
+                                </Card>
                             );
                         })}
-                    </List>
+                    </Stack>
                 )}
                 <Dialog open={isConfirmDeleteDialogOpen} onClose={handleCancelDelete}>
                     <DialogTitle>{t('Confirm Deletion')}</DialogTitle>

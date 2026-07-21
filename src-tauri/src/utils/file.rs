@@ -5,11 +5,28 @@ use std::{fs, io};
 use tracing::{debug, info};
 use walkdir::WalkDir;
 
-pub fn copy_dir_recursive_excluding_sync(
+pub fn copy_dir_recursive_filtered_sync<F>(
     src: &Path,
     dst: &Path,
     exclude: &[&str],
-) -> io::Result<()> {
+    should_exclude: &F,
+) -> io::Result<()>
+where
+    F: Fn(&Path) -> bool,
+{
+    copy_dir_recursive_filtered_inner(src, src, dst, exclude, should_exclude)
+}
+
+fn copy_dir_recursive_filtered_inner<F>(
+    root_src: &Path,
+    src: &Path,
+    dst: &Path,
+    exclude: &[&str],
+    should_exclude: &F,
+) -> io::Result<()>
+where
+    F: Fn(&Path) -> bool,
+{
     if !dst.exists() {
         fs::create_dir_all(dst)?;
     }
@@ -23,14 +40,85 @@ pub fn copy_dir_recursive_excluding_sync(
         if exclude.iter().any(|ex| file_name_os == *ex) {
             continue;
         }
+        let relative_path = src_path.strip_prefix(root_src).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Failed to make {} relative to {}: {}",
+                    src_path.display(),
+                    root_src.display(),
+                    error
+                ),
+            )
+        })?;
+        if should_exclude(relative_path) {
+            debug!("Skipping excluded source path {}", src_path.display());
+            continue;
+        }
         let dst_path = dst.join(file_name_os);
         if ty.is_dir() {
-            copy_dir_recursive_excluding_sync(&src_path, &dst_path, &[])?;
+            copy_dir_recursive_filtered_inner(
+                root_src,
+                &src_path,
+                &dst_path,
+                exclude,
+                should_exclude,
+            )?;
         } else {
-            fs::copy(&src_path, &dst_path)?;
+            fs::copy(&src_path, &dst_path).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "Failed to copy {} to {}: {}",
+                        src_path.display(),
+                        dst_path.display(),
+                        error
+                    ),
+                )
+            })?;
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::copy_dir_recursive_filtered_sync;
+    use std::{fs, time::SystemTime};
+
+    #[test]
+    fn filtered_copy_skips_git_ignored_directories() {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "pyappify-filtered-copy-{}-{unique}",
+            std::process::id()
+        ));
+        let source = root.join("source");
+        let destination = root.join("destination");
+
+        fs::create_dir_all(source.join("node_modules/package")).unwrap();
+        fs::write(source.join(".gitignore"), "node_modules/\n").unwrap();
+        fs::write(source.join("app.py"), "print('tracked')").unwrap();
+        fs::write(source.join("node_modules/package/index.js"), "ignored").unwrap();
+        let repository = git2::Repository::init(&source).unwrap();
+
+        copy_dir_recursive_filtered_sync(&source, &destination, &[".git"], &|relative| {
+            repository.status_should_ignore(relative).unwrap()
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(destination.join("app.py")).unwrap(),
+            "print('tracked')"
+        );
+        assert!(!destination.join("node_modules").exists());
+        assert!(!destination.join(".git").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 pub fn sync_delete_extra_files(working_dir: &Path, repo_dir: &Path) -> io::Result<()> {

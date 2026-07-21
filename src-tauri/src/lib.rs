@@ -11,8 +11,8 @@ mod submodule;
 mod utils;
 
 use crate::app_service::{
-    delete_app, get_update_notes, load_apps, setup_app, start_app, stop_app, update_to_version,
-    AUTO_START_CHECKED,
+    delete_app, get_app_icon, get_update_notes, load_apps, setup_app, start_app, stop_app,
+    update_to_version, AUTO_START_CHECKED,
 };
 use crate::config_manager::{
     get_config_payload, init_config_manager, save_configuration, update_config_item,
@@ -268,6 +268,7 @@ pub async fn run() {
                 start_app,
                 stop_app,
                 load_apps,
+                get_app_icon,
                 setup_app,
                 delete_app,
                 get_update_notes,

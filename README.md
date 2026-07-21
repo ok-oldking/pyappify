@@ -23,6 +23,7 @@ This method distributes the lightweight `PyAppify` launcher. The launcher will t
 ```yaml
 # pyappify.yml
 name: "pyappify-sample" # English only
+icon: "" # Optional image path relative to the app working directory, for example "assets/icon.png".
 profiles:
   - name: "release" 
     git_url: "https://github.com/ok-oldking/pyappify-action.git" # The repo url to clone. Must have tags for version management; semver is recommended.

@@ -797,6 +797,36 @@ pub async fn get_current_head_oid(repo_path: &Path) -> Result<Oid> {
     Ok(oid)
 }
 
+pub async fn get_revision_oid(repo_path: &Path, revision: &str) -> Result<Oid> {
+    let lock_arc = REPO_LOCKS
+        .entry(repo_path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone();
+    let _guard = lock_arc.lock().await;
+
+    let task_repo_path = repo_path.to_path_buf();
+    let revision_to_resolve = revision.to_string();
+    let oid = task::spawn_blocking(move || -> Result<Oid> {
+        let repo = open_repository(&task_repo_path)?;
+        let object = repo
+            .revparse_single(&revision_to_resolve)
+            .or_else(|_| repo.revparse_single(&format!("refs/tags/{revision_to_resolve}")))
+            .with_context(|| {
+                format!(
+                    "Revision '{}' not found locally in repo {}",
+                    revision_to_resolve,
+                    task_repo_path.display()
+                )
+            })?;
+        Ok(object
+            .peel_to_commit()
+            .map_or_else(|_| object.id(), |commit| commit.id()))
+    })
+    .await
+    .context("Task for get_revision_oid panicked or was cancelled")??;
+    Ok(oid)
+}
+
 pub async fn checkout_existing_revision(
     app_name: &str,
     repo_path: &Path,

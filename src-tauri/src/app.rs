@@ -16,6 +16,8 @@ pub const YML_FILE_NAME: &str = "pyappify.yml";
 pub struct App {
     pub name: String,
     #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
     pub current_version: Option<String>,
     #[serde(default, skip_serializing)]
     pub current_version_missing: bool,
@@ -197,6 +199,7 @@ pub fn update_app_from_yml(app: &mut App, file_path_str: &str) {
 
     apply_profile_inheritance(&mut parsed_app);
 
+    app.icon = parsed_app.icon;
     app.profiles = parsed_app.profiles;
 
     if app.get_profile(&app.current_profile).is_none() {
@@ -278,5 +281,22 @@ pub(crate) async fn load_app_config_from_json(app_name: &str) -> anyhow::Result<
                 e
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+
+    #[test]
+    fn icon_defaults_to_empty_when_omitted_from_yaml() {
+        let app: App = serde_yaml::from_str("name: example\n").unwrap();
+        assert!(app.icon.is_empty());
+    }
+
+    #[test]
+    fn reads_relative_icon_path_from_yaml() {
+        let app: App = serde_yaml::from_str("name: example\nicon: assets/icon.png\n").unwrap();
+        assert_eq!(app.icon, "assets/icon.png");
     }
 }

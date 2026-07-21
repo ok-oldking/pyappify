@@ -233,6 +233,7 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
             sys.refresh_processes(ProcessesToUpdate::All, true);
             app_from_disk.running = is_app_running(&sys, app_name);
             let current_profile = app_from_disk.current_profile.clone();
+            app_from_disk.icon = app_template.icon.clone();
             app_from_disk.profiles = app_template.profiles.clone();
             app_from_disk.current_profile = current_profile;
             app_from_disk
@@ -554,6 +555,90 @@ async fn get_app_by_name(app_name: &str) -> Result<App, Error> {
     Ok(app)
 }
 
+#[derive(serde::Serialize)]
+pub struct AppIconAsset {
+    bytes: Vec<u8>,
+    mime_type: &'static str,
+}
+
+fn icon_mime_type(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => Some("image/png"),
+        Some("jpg") | Some("jpeg") => Some("image/jpeg"),
+        Some("gif") => Some("image/gif"),
+        Some("webp") => Some("image/webp"),
+        Some("svg") => Some("image/svg+xml"),
+        Some("bmp") => Some("image/bmp"),
+        Some("ico") => Some("image/x-icon"),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+pub async fn get_app_icon(app_name: String) -> Result<Option<AppIconAsset>, Error> {
+    const MAX_ICON_BYTES: u64 = 5 * 1024 * 1024;
+
+    let app = get_app_by_name(&app_name).await?;
+    let configured_path = app.icon.trim();
+    if configured_path.is_empty() {
+        return Ok(None);
+    }
+
+    let relative_path = Path::new(configured_path);
+    if relative_path.is_absolute() {
+        warn!(
+            "Ignoring absolute icon path '{}' for app '{}'; icon paths must be relative.",
+            configured_path, app_name
+        );
+        return Ok(None);
+    }
+
+    let working_dir = get_app_working_dir_path(&app_name);
+    let Ok(canonical_working_dir) = tokio::fs::canonicalize(&working_dir).await else {
+        return Ok(None);
+    };
+    let candidate = working_dir.join(relative_path);
+    let Ok(canonical_icon_path) = tokio::fs::canonicalize(&candidate).await else {
+        return Ok(None);
+    };
+
+    if !canonical_icon_path.starts_with(&canonical_working_dir) {
+        warn!(
+            "Ignoring icon path '{}' for app '{}' because it escapes the working directory.",
+            configured_path, app_name
+        );
+        return Ok(None);
+    }
+
+    let Some(mime_type) = icon_mime_type(&canonical_icon_path) else {
+        warn!(
+            "Ignoring unsupported icon file '{}' for app '{}'.",
+            canonical_icon_path.display(),
+            app_name
+        );
+        return Ok(None);
+    };
+    let metadata = tokio::fs::metadata(&canonical_icon_path).await?;
+    if !metadata.is_file() || metadata.len() > MAX_ICON_BYTES {
+        warn!(
+            "Ignoring icon file '{}' for app '{}': it is not a file or exceeds 5 MiB.",
+            canonical_icon_path.display(),
+            app_name
+        );
+        return Ok(None);
+    }
+
+    Ok(Some(AppIconAsset {
+        bytes: tokio::fs::read(canonical_icon_path).await?,
+        mime_type,
+    }))
+}
+
 pub async fn update_working_from_repo(app_name: &str) -> Result<()> {
     let repo_path = path::get_app_repo_path(app_name);
     let working_dir_path = get_app_working_dir_path(app_name);
@@ -576,10 +661,28 @@ pub async fn update_working_from_repo(app_name: &str) -> Result<()> {
     let task_repo_path = repo_path.clone();
     let task_working_dir_path = working_dir_path.clone();
     task::spawn_blocking(move || -> Result<()> {
-        file::copy_dir_recursive_excluding_sync(
+        let repository = git2::Repository::open(&task_repo_path).with_context(|| {
+            format!(
+                "Failed to open repository at {} before synchronizing app files",
+                task_repo_path.display()
+            )
+        })?;
+        file::copy_dir_recursive_filtered_sync(
             &task_repo_path,
             &task_working_dir_path,
             &[".git"],
+            &|relative_path| match repository.status_should_ignore(relative_path) {
+                Ok(ignored) => ignored,
+                Err(error) => {
+                    warn!(
+                        "Could not determine Git ignore status for {} in {}: {}. Copying it.",
+                        relative_path.display(),
+                        task_repo_path.display(),
+                        error
+                    );
+                    false
+                }
+            },
         )?;
         file::sync_delete_extra_files(&task_working_dir_path, &task_repo_path)?;
         Ok(())
@@ -712,10 +815,12 @@ async fn rollback_to_previous_version(
     repo_path: &Path,
     previous_version: &str,
     previous_revision: Option<&str>,
+    reason: &str,
 ) -> Result<(), Error> {
     emit_info!(
         app_name,
-        "Pip dependency sync failed. Rolling back Git version to {}.",
+        "{} Rolling back Git version to {}.",
+        reason,
         previous_version
     );
 
@@ -796,6 +901,39 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
             None => (None, String::new()),
         }
     };
+
+    let repo_path = path::get_app_repo_path(app_name);
+    let mut previous_revision = git::get_current_head_oid(&repo_path)
+        .await
+        .map(|oid| oid.to_string())
+        .ok();
+
+    // A prior update may have checked out and copied a new version before failing to
+    // persist it. Restore the recorded version first so dependency comparison uses
+    // the actual old files rather than a partially applied update.
+    if let (Some(previous_version), Some(current_head)) =
+        (previous_version.as_deref(), previous_revision.as_deref())
+    {
+        match git::get_revision_oid(&repo_path, previous_version).await {
+            Ok(recorded_oid) if recorded_oid.to_string() != current_head => {
+                emit_info!(
+                    app_name,
+                    "Detected an unfinished previous update. Restoring recorded version {} before retrying.",
+                    previous_version
+                );
+                let restored_oid =
+                    git::checkout_existing_revision(app_name, &repo_path, previous_version).await?;
+                update_working_from_repo(app_name).await?;
+                previous_revision = Some(restored_oid.to_string());
+            }
+            Ok(_) => {}
+            Err(error) => debug!(
+                "Could not resolve recorded version '{}' before updating '{}': {}",
+                previous_version, app_name, error
+            ),
+        }
+    }
+
     let old_content = get_relevant_content(&old_requirements_spec, &working_dir_path);
     let update_note = if previous_version.as_deref() == Some(version) {
         Vec::new()
@@ -814,11 +952,6 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
         }
     };
 
-    let repo_path = path::get_app_repo_path(app_name);
-    let previous_revision = git::get_current_head_oid(&repo_path)
-        .await
-        .map(|oid| oid.to_string())
-        .ok();
     let commit_oid = git::checkout_version_tag(app_name, &repo_path, version).await?;
     emit_info!(
         app_name,
@@ -826,7 +959,27 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
         commit_oid,
         version
     );
-    update_working_from_repo(app_name).await?;
+    if let Err(sync_error) = update_working_from_repo(app_name).await {
+        if let Some(previous_version) = previous_version.as_deref() {
+            if let Err(rollback_error) = rollback_to_previous_version(
+                app_name,
+                &repo_path,
+                previous_version,
+                previous_revision.as_deref(),
+                "App file synchronization failed.",
+            )
+            .await
+            {
+                return Err(err!(
+                    "App file synchronization failed: {}. Rollback to previous version '{}' also failed: {}",
+                    sync_error,
+                    previous_version,
+                    rollback_error
+                ));
+            }
+        }
+        return Err(err!("App file synchronization failed: {}", sync_error));
+    }
     debug!("Updated working dir for app {}", app_name);
 
     let (new_requirements_spec, new_pip_args) = {
@@ -883,6 +1036,7 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
                     &repo_path,
                     previous_version,
                     previous_revision.as_deref(),
+                    "Pip dependency sync failed.",
                 )
                 .await
                 {
@@ -1328,11 +1482,29 @@ pub async fn periodically_update_all_apps_running_status(app_handle: AppHandle) 
 
 #[cfg(test)]
 mod tests {
-    use super::{get_update_target, resolve_current_version_state};
+    use super::{get_update_target, icon_mime_type, resolve_current_version_state};
     use crate::config_manager::{UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE};
+    use std::path::Path;
 
     fn versions(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn recognizes_supported_icon_formats_case_insensitively() {
+        assert_eq!(
+            icon_mime_type(Path::new("assets/app.PNG")),
+            Some("image/png")
+        );
+        assert_eq!(
+            icon_mime_type(Path::new("assets/app.jpeg")),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            icon_mime_type(Path::new("assets/app.svg")),
+            Some("image/svg+xml")
+        );
+        assert_eq!(icon_mime_type(Path::new("assets/app.txt")), None);
     }
 
     #[test]

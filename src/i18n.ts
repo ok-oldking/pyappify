@@ -7,6 +7,7 @@ const resources = {
     en: {
         translation: {
             "appMadeWith": "App made with {{name}}",
+            "Installed": "Installed",
             "defenderExclusionAdded": "Defender exclusion for '{{appName}}' added successfully.",
             "failedToAddExclusion": "Failed to add exclusion: {{errorMessage}}",
             "Confirm Deletion": "Confirm Deletion",
@@ -116,6 +117,7 @@ const resources = {
         translation: {
             "Confirm Deletion": "确认删除",
             "appMadeWith": "使用 {{name}} 打包",
+            "Installed": "已安装",
             "Settings": "设置",
             "Processing action...": "正在处理操作...",
             "Loading app...": "正在加载应用...",
@@ -226,6 +228,7 @@ const resources = {
         translation: {
             "Confirm Deletion": "確認刪除",
             "appMadeWith": "使用 {{name}} 打包",
+            "Installed": "已安裝",
             "Settings": "設定",
             "Processing action...": "正在處理操作...",
             "Loading app...": "正在載入應用程式...",
@@ -336,6 +339,7 @@ const resources = {
         translation: {
             "Confirm Deletion": "削除の確認",
             "appMadeWith": "{{name}} で作られたアプリ",
+            "Installed": "インストール済み",
             "Settings": "設定",
             "Processing action...": "アクションを処理中...",
             "Loading app...": "アプリを読み込み中...",
@@ -446,6 +450,7 @@ const resources = {
         translation: {
             "Confirm Deletion": "삭제 확인",
             "appMadeWith": "{{name}}(으)로 만든 앱",
+            "Installed": "설치됨",
             "Settings": "설정",
             "Processing action...": "작업 처리 중...",
             "Loading app...": "앱 로드 중...",
@@ -556,6 +561,7 @@ const resources = {
         translation: {
             "Confirm Deletion": "Confirmar Eliminación",
             "appMadeWith": "Aplicación hecha con {{name}}",
+            "Installed": "Instalada",
             "Settings": "Configuración",
             "Processing action...": "Procesando acción...",
             "Loading app...": "Cargando aplicación...",
