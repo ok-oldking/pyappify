@@ -193,12 +193,11 @@ impl AppConfig {
         );
 
         let locale = get_default_locale();
-        info!("System locale is: {}", locale);
-        let default_pip_url = if locale == "zh_CN" {
-            PIP_INDEX_URL_OPTION_ALIYUN.to_string()
-        } else {
-            PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT.to_string()
-        };
+        let default_pip_url = get_default_pip_url_for_locale(&locale).to_string();
+        info!(
+            "System locale is: {}, default pip URL is: {}",
+            locale, default_pip_url
+        );
 
         items.insert(
             PIP_INDEX_URL_CONFIG_KEY.to_string(),
@@ -568,6 +567,35 @@ pub fn update_config_item(
 
 pub fn get_default_locale() -> String {
     sys_locale::get_locale().map_or("en-US".to_string(), |locale| locale.replace('_', "-"))
+}
+
+fn get_default_pip_url_for_locale(locale: &str) -> &'static str {
+    if locale == "zh-CN" {
+        PIP_INDEX_URL_OPTION_ALIYUN
+    } else {
+        PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uses_aliyun_as_default_pip_url_for_simplified_chinese_locale() {
+        assert_eq!(
+            get_default_pip_url_for_locale("zh-CN"),
+            PIP_INDEX_URL_OPTION_ALIYUN
+        );
+    }
+
+    #[test]
+    fn uses_system_default_pip_url_for_other_locales() {
+        assert_eq!(
+            get_default_pip_url_for_locale("en-US"),
+            PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT
+        );
+    }
 }
 
 #[tauri::command]
