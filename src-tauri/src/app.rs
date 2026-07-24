@@ -20,6 +20,15 @@ fn default_update_method_fn() -> String {
     UPDATE_METHOD_OPTION_AUTO.to_string()
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppUpdateState {
+    #[default]
+    Idle,
+    Updating,
+    Failed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct App {
     pub name: String,
@@ -47,6 +56,12 @@ pub struct App {
     pub update_method: String,
     #[serde(default)]
     pub auto_start: bool,
+    #[serde(default)]
+    pub update_state: AppUpdateState,
+    #[serde(default)]
+    pub update_target_version: Option<String>,
+    #[serde(default)]
+    pub update_error: Option<String>,
     #[serde(default)]
     pub profiles: Vec<Profile>,
     #[serde(default)]
@@ -355,7 +370,7 @@ pub(crate) async fn load_app_config_from_json(app_name: &str) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{App, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_MANUAL};
+    use super::{App, AppUpdateState, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_MANUAL};
 
     #[test]
     fn icon_defaults_to_empty_when_omitted_from_yaml() {
@@ -375,10 +390,14 @@ mod tests {
 
         assert_eq!(app.update_method, UPDATE_METHOD_OPTION_AUTO);
         assert!(!app.auto_start);
+        assert_eq!(app.update_state, AppUpdateState::Idle);
+        assert_eq!(app.update_target_version, None);
+        assert_eq!(app.update_error, None);
 
         let saved = serde_json::to_value(app).unwrap();
         assert_eq!(saved["update_method"], UPDATE_METHOD_OPTION_AUTO);
         assert_eq!(saved["auto_start"], false);
+        assert_eq!(saved["update_state"], "idle");
     }
 
     #[test]

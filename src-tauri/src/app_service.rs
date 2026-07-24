@@ -1,6 +1,6 @@
 //src/app_service.rs
 use crate::app::{
-    App, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE,
+    App, AppUpdateState, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE,
     UPDATE_METHOD_OPTION_MANUAL,
 };
 use crate::emitter::get_app_handle;
@@ -17,8 +17,8 @@ use crate::{
         get_app_config_json_path, load_app_config_from_json, read_embedded_app,
         save_app_config_to_json, update_app_from_yml, Profile, YML_FILE_NAME,
     },
-    emit_error_finish, emit_info, emit_success_finish, emitter, err, execute_python, git,
-    python_env,
+    emit_error, emit_error_finish, emit_info, emit_success_finish, emitter, err, execute_python,
+    git, python_env,
     utils::path,
     utils::process,
 };
@@ -133,6 +133,49 @@ pub(crate) async fn get_app_lock(app_name: &str) -> Arc<Mutex<()>> {
         .entry(app_name.to_string())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
+}
+
+async fn persist_update_state(
+    app_name: &str,
+    state: AppUpdateState,
+    target_version: Option<String>,
+    update_error: Option<String>,
+) -> Result<()> {
+    let app_to_save = {
+        let mut apps = APPS.lock().await;
+        let app = apps
+            .get_mut(app_name)
+            .with_context(|| format!("App '{}' not found.", app_name))?;
+        app.update_state = state;
+        app.update_target_version = target_version;
+        app.update_error = update_error;
+        app.clone()
+    };
+
+    save_app_config_to_json(&app_to_save).await?;
+    emit_apps().await;
+    Ok(())
+}
+
+async fn ensure_app_is_ready_to_start(app_name: &str) -> Result<()> {
+    let apps = APPS.lock().await;
+    let app = apps
+        .get(app_name)
+        .with_context(|| format!("App '{}' not found.", app_name))?;
+
+    match app.update_state {
+        AppUpdateState::Idle => Ok(()),
+        AppUpdateState::Updating => bail!(
+            "App '{}' cannot be started while it is updating to {}.",
+            app_name,
+            app.update_target_version.as_deref().unwrap_or("another version")
+        ),
+        AppUpdateState::Failed => bail!(
+            "App '{}' cannot be started because its update to {} failed. Review the update console and retry the update.",
+            app_name,
+            app.update_target_version.as_deref().unwrap_or("another version")
+        ),
+    }
 }
 
 async fn cleanup_stale_app_directories(app_name: &str) -> Result<()> {
@@ -339,7 +382,59 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
             }
         }
 
-        if let Some(app) = app_clone_for_checks {
+        if let Some(mut app) = app_clone_for_checks {
+            let mut update_failed = false;
+            if app.update_state != AppUpdateState::Idle {
+                if let Some(retry_version) = app.update_target_version.clone() {
+                    info!(
+                        "Retrying persisted {:?} update for '{}' to '{}'.",
+                        app.update_state, app.name, retry_version
+                    );
+                    send_notification(
+                        app.name.clone(),
+                        format!(
+                            "Retrying the last interrupted or failed update to {}.",
+                            retry_version
+                        ),
+                    );
+                    match update_to_version(&app.name, &retry_version).await {
+                        Ok(()) => {
+                            send_notification(
+                                app.name.clone(),
+                                t!("message.version_update_success", version = retry_version),
+                            );
+                            if let Some(refreshed_app) = APPS.lock().await.get(&app.name).cloned() {
+                                app = refreshed_app;
+                            }
+                        }
+                        Err(error) => {
+                            error!(
+                                "Startup retry for app '{}' to '{}' failed: {}",
+                                app.name, retry_version, error
+                            );
+                            send_notification(
+                                app.name.clone(),
+                                format!(
+                                    "The retry to update to {} failed. Open the update console for details.",
+                                    retry_version
+                                ),
+                            );
+                            update_failed = true;
+                        }
+                    }
+                } else {
+                    warn!(
+                        "App '{}' has persisted update state {:?}, but no target version.",
+                        app.name, app.update_state
+                    );
+                    send_notification(
+                        app.name.clone(),
+                        "The previous update did not finish and has no retry target. Review the update console.",
+                    );
+                    update_failed = true;
+                }
+            }
+
             let update_method = app.effective_update_method().to_string();
             let auto_start = app.auto_start;
 
@@ -365,7 +460,7 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
             );
 
             info!("locale is {}", get_locale());
-            if app.installed && !app.available_versions.is_empty() {
+            if !update_failed && app.installed && !app.available_versions.is_empty() {
                 if update_available {
                     if current_version_missing {
                         info!(
@@ -392,12 +487,29 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                             app_name_clone.clone(),
                             t!("message.new_version_update", version = latest_version),
                         );
-                        update_to_version(&app_name_clone, &latest_version).await?;
-                        info!("Auto Update to version {} success.", &latest_version);
-                        send_notification(
-                            app_name_clone,
-                            t!("message.version_update_success", version = latest_version),
-                        );
+                        match update_to_version(&app_name_clone, &latest_version).await {
+                            Ok(()) => {
+                                info!("Auto Update to version {} success.", &latest_version);
+                                send_notification(
+                                    app_name_clone,
+                                    t!("message.version_update_success", version = latest_version),
+                                );
+                            }
+                            Err(error) => {
+                                error!(
+                                    "Auto update for app '{}' to '{}' failed: {}",
+                                    app.name, latest_version, error
+                                );
+                                send_notification(
+                                    app.name.clone(),
+                                    format!(
+                                        "Automatic update to {} failed. Open the update console for details.",
+                                        latest_version
+                                    ),
+                                );
+                                update_failed = true;
+                            }
+                        }
                     } else {
                         send_notification(
                             app_name_clone.clone(),
@@ -407,7 +519,12 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                 }
             }
 
-            if auto_start && app.installed && !app.available_versions.is_empty() {
+            if auto_start
+                && !update_failed
+                && app.update_state == AppUpdateState::Idle
+                && app.installed
+                && !app.available_versions.is_empty()
+            {
                 info!("Auto-starting app '{}'.", app.name);
                 let app_name_clone = app.name.clone();
                 drop(auto_start_guard);
@@ -913,6 +1030,92 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
     let app_dir_lock = get_app_lock(app_name).await;
     let _lock_guard = app_dir_lock.lock().await;
 
+    if let Err(state_error) = persist_update_state(
+        app_name,
+        AppUpdateState::Updating,
+        Some(version.to_string()),
+        None,
+    )
+    .await
+    {
+        let error_message = format!("Failed to record update progress: {}", state_error);
+        if let Err(failure_state_error) = persist_update_state(
+            app_name,
+            AppUpdateState::Failed,
+            Some(version.to_string()),
+            Some(error_message.clone()),
+        )
+        .await
+        {
+            error!(
+                "Failed to persist update failure state for '{}': {}",
+                app_name, failure_state_error
+            );
+            emit_apps().await;
+        }
+        emit_error!(app_name, "{}", error_message);
+        emit_error_finish!(app_name);
+        return Err(state_error.into());
+    }
+
+    match update_to_version_inner(app_name, version).await {
+        Ok(()) => match persist_update_state(app_name, AppUpdateState::Idle, None, None).await {
+            Ok(()) => {
+                emit_success_finish!(app_name);
+                Ok(())
+            }
+            Err(state_error) => {
+                let error_message = format!(
+                    "Update completed, but its state could not be saved: {}",
+                    state_error
+                );
+                if let Err(failure_state_error) = persist_update_state(
+                    app_name,
+                    AppUpdateState::Failed,
+                    Some(version.to_string()),
+                    Some(error_message.clone()),
+                )
+                .await
+                {
+                    error!(
+                        "Failed to persist update failure state for '{}': {}",
+                        app_name, failure_state_error
+                    );
+                    emit_apps().await;
+                }
+                emit_error!(app_name, "{}", error_message);
+                emit_error_finish!(app_name);
+                Err(state_error.into())
+            }
+        },
+        Err(error) => {
+            let error_message = error.to_string();
+            if let Err(state_error) = persist_update_state(
+                app_name,
+                AppUpdateState::Failed,
+                Some(version.to_string()),
+                Some(error_message.clone()),
+            )
+            .await
+            {
+                error!(
+                    "Failed to persist update failure state for '{}': {}",
+                    app_name, state_error
+                );
+            }
+            emit_error!(
+                app_name,
+                "Update to version {} failed: {}",
+                version,
+                error_message
+            );
+            emit_error_finish!(app_name);
+            Err(error)
+        }
+    }
+}
+
+async fn update_to_version_inner(app_name: &str, version: &str) -> Result<(), Error> {
     let working_dir_path = get_app_working_dir_path(app_name);
 
     let (previous_version, old_requirements_spec) = {
@@ -1105,8 +1308,6 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
     }
 
     emit_info!(app_name, "Updated {} to version {}", app_name, version);
-    emit_success_finish!(app_name);
-    emit_apps().await;
     Ok(())
 }
 
@@ -1218,8 +1419,10 @@ async fn check_running_on_start(app_name: &str, working_dir: &Path) -> Result<()
 pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Error> {
     *AUTO_START_CHECKED.lock().await = true;
     info!("Attempting to start app: {}", app_name);
+    ensure_app_is_ready_to_start(&app_name).await?;
     let app_dir_lock = get_app_lock(&app_name).await;
     let _guard = app_dir_lock.lock().await;
+    ensure_app_is_ready_to_start(&app_name).await?;
 
     if !check_python_env_exists(&app_name) {
         warn!(

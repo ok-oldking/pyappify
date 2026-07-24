@@ -1,12 +1,9 @@
-import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {listen, UnlistenFn} from "@tauri-apps/api/event";
+import React, {useEffect, useRef} from 'react';
 import {openUrl} from '@tauri-apps/plugin-opener';
 import {Alert, Box, Button, CircularProgress, Container, Link, Paper, Typography} from "@mui/material";
 import {useTranslation} from 'react-i18next';
 
-const MAX_LOGS = 500;
-
-type MessagePayload = {
+export type MessagePayload = {
     message: string;
     app_name: string;
     update?: boolean;
@@ -17,12 +14,9 @@ type MessagePayload = {
 interface ConsolePageProps {
     title: string;
     appName: string;
-    initialMessage?: string;
-    initialMessageIsError?: boolean;
-    externalError?: string | null;
+    logs: MessagePayload[];
     onBack: () => void;
     isProcessing: boolean;
-    onProcessComplete: () => void;
 }
 
 const renderMessageWithClickableLinks = (message: string) => {
@@ -59,88 +53,15 @@ const renderMessageWithClickableLinks = (message: string) => {
 const ConsolePage: React.FC<ConsolePageProps> = ({
                                                      title,
                                                      appName,
-                                                     initialMessage,
-                                                     initialMessageIsError = false,
-                                                     externalError,
+                                                     logs,
                                                      onBack,
-                                                     isProcessing: initialIsProcessing,
-                                                     onProcessComplete
+                                                     isProcessing,
                                                  }) => {
     const {t} = useTranslation();
-    const [logs, setLogs] = useState<MessagePayload[]>([]);
     const consoleBodyRef = useRef<null | HTMLDivElement>(null);
-    const [internalIsProcessing, setInternalIsProcessing] = useState(initialIsProcessing);
-    const [processCompletedWithError, setProcessCompletedWithError] = useState<boolean | null>(null);
-
-    useEffect(() => {
-        setInternalIsProcessing(initialIsProcessing);
-    }, [initialIsProcessing]);
-
-    const addLog = useCallback((logEntry: MessagePayload) => {
-        setLogs(prevLogs => {
-            let newLogsArray;
-            if (logEntry.update && prevLogs.length > 0 && prevLogs[prevLogs.length - 1].app_name === logEntry.app_name) {
-                newLogsArray = [...prevLogs];
-                newLogsArray[newLogsArray.length - 1] = logEntry;
-            } else {
-                newLogsArray = [...prevLogs, logEntry];
-            }
-
-            if (newLogsArray.length > MAX_LOGS) {
-                return newLogsArray.slice(newLogsArray.length - MAX_LOGS);
-            }
-            return newLogsArray;
-        });
-    }, []);
-
-    useEffect(() => {
-        if (initialMessage) {
-            initialMessage.split('\n').forEach(msgPart => {
-                if (msgPart.trim() !== "") {
-                    addLog({
-                        message: msgPart,
-                        app_name: appName,
-                        error: initialMessageIsError,
-                    });
-                }
-            });
-        }
-    }, [initialMessage, initialMessageIsError, appName, addLog]);
-
-    useEffect(() => {
-        if (!externalError) return;
-        addLog({message: externalError, app_name: appName, error: true});
-        setInternalIsProcessing(false);
-        setProcessCompletedWithError(true);
-    }, [externalError, appName, addLog]);
-
-    useEffect(() => {
-        const unlistenPromises: Promise<UnlistenFn>[] = [];
-
-        unlistenPromises.push(listen<MessagePayload>("app-log", (event) => {
-            const eventData = event.payload;
-
-            if (eventData.app_name === appName) {
-                addLog(eventData);
-
-                if (eventData.finished) {
-                    setInternalIsProcessing(false);
-                    setProcessCompletedWithError(!!eventData.error);
-                    onProcessComplete();
-                }
-            }
-        }));
-
-        return () => {
-            Promise.all(unlistenPromises).then(unlisteners => {
-                unlisteners.forEach(unlistenFn => {
-                    if (typeof unlistenFn === 'function') {
-                        unlistenFn();
-                    }
-                });
-            }).catch(err => console.error("Error during unlisten cleanup in ConsolePage:", err));
-        };
-    }, [appName, addLog, onProcessComplete]);
+    const lastFinishedLog = [...logs].reverse().find(log => log.finished);
+    const internalIsProcessing = isProcessing && !lastFinishedLog;
+    const processCompletedWithError = lastFinishedLog ? !!lastFinishedLog.error : null;
 
     useEffect(() => {
         if (consoleBodyRef.current) {
@@ -187,7 +108,7 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
                 }}
                 ref={consoleBodyRef}
             >
-                {logs.map((logPayload, index) => (
+                {logs.filter(logPayload => !logPayload.finished || !!logPayload.message).map((logPayload, index) => (
                     <Typography
                         key={index}
                         component="div"

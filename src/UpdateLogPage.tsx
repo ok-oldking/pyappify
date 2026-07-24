@@ -15,6 +15,7 @@ interface UpdateLogPanelProps {
     failed?: boolean;
     onConfirm: (params: { appName: string, version: string, actionType: string }) => void;
     onCancel: () => void;
+    onOpenConsole: () => void;
 }
 
 const sendOsNotification = (title: string, body: string) => {
@@ -32,6 +33,7 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
                                                           failed = false,
                                                           onConfirm,
                                                           onCancel,
+                                                          onOpenConsole,
                                                       }) => {
     const {t} = useTranslation();
     const [notes, setNotes] = useState<string | null>(null);
@@ -123,10 +125,25 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
     return (
         <Box sx={{mt: 2, border: 1, borderColor, borderRadius: 1, p: 2}}>
             <Stack direction="row" spacing={0.5} sx={{mb: 0.5, alignItems: 'center'}}>
-                {titleIcon}
-                <Typography variant="subtitle1" sx={{fontWeight: 'bold', color: titleColor}}>
-                    {pageTitle}
-                </Typography>
+                {isConfirming || failed ? (
+                    <Button
+                        variant="text"
+                        size="small"
+                        color={failed ? 'error' : 'info'}
+                        startIcon={titleIcon}
+                        onClick={onOpenConsole}
+                        sx={{fontWeight: 'bold', color: titleColor}}
+                    >
+                        {pageTitle}
+                    </Button>
+                ) : (
+                    <>
+                        {titleIcon}
+                        <Typography variant="subtitle1" sx={{fontWeight: 'bold', color: titleColor}}>
+                            {pageTitle}
+                        </Typography>
+                    </>
+                )}
             </Stack>
 
             {notesLoading && (
@@ -156,8 +173,8 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
                 </Paper>
             )}
 
-            {/* Buttons: hidden while confirming/completed; only Cancel shown on failure */}
-            {!notesLoading && !completed && !isConfirming && (
+            {/* Updating and failed states reopen the console from the status button above. */}
+            {!notesLoading && !completed && !isConfirming && !failed && (
                 <Stack direction="row" spacing={1} sx={{mt: 2, justifyContent: 'flex-end'}}>
                     <Button
                         variant="outlined"
@@ -166,17 +183,15 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
                     >
                         {t('Cancel')}
                     </Button>
-                    {!failed && (
-                        <Button
-                            variant="contained"
-                            size="small"
-                            color={actionType === 'Update' ? 'success' : 'warning'}
-                            onClick={handleConfirm}
-                            disabled={notesLoading || !!notesError}
-                        >
-                            {confirmButtonText}
-                        </Button>
-                    )}
+                    <Button
+                        variant="contained"
+                        size="small"
+                        color={actionType === 'Update' ? 'success' : 'warning'}
+                        onClick={handleConfirm}
+                        disabled={notesLoading || !!notesError}
+                    >
+                        {confirmButtonText}
+                    </Button>
                 </Stack>
             )}
         </Box>

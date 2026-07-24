@@ -5,7 +5,7 @@ import {invoke} from "@tauri-apps/api/core";
 import {listen, UnlistenFn} from "@tauri-apps/api/event";
 import {getVersion} from '@tauri-apps/api/app';
 import UpdateLogPage from "./UpdateLogPage";
-import ConsolePage from "./ConsolePage.tsx";
+import ConsolePage, {type MessagePayload} from "./ConsolePage.tsx";
 import SettingsPage from "./SettingsPage.tsx";
 
 import {
@@ -70,6 +70,9 @@ interface App {
     installed: boolean;
     update_method: string;
     auto_start: boolean;
+    update_state: 'idle' | 'updating' | 'failed';
+    update_target_version: string | null;
+    update_error: string | null;
     profiles: Profile[];
     current_profile: string;
     show_add_defender: boolean;
@@ -161,6 +164,21 @@ type InlineUpdateLogState = {
     failed?: boolean;
 };
 
+const MAX_CONSOLE_LOGS = 500;
+const CONSOLE_LOG_STORAGE_KEY = 'pyappifyConsoleLogs';
+
+const loadConsoleLogs = (): Record<string, MessagePayload[]> => {
+    try {
+        const stored = localStorage.getItem(CONSOLE_LOG_STORAGE_KEY);
+        if (!stored) return {};
+        const parsed = JSON.parse(stored);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (error) {
+        console.warn('Failed to restore console logs:', error);
+        return {};
+    }
+};
+
 type AppIconAsset = {
     bytes: number[];
     mime_type: string;
@@ -223,17 +241,18 @@ function App() {
     // Tracks app names whose inline log is in 'completed' state — updated synchronously (not via useEffect)
     // so the apps event listener can always read the correct value before React re-renders.
     const completedAppsRef = useRef<Set<string>>(new Set());
+    const appUpdateStatesRef = useRef<Record<string, App['update_state']>>({});
+    const activeUpdateAppsRef = useRef<Set<string>>(new Set());
     const [isInstallProcessRunning, setIsInstallProcessRunning] = useState<boolean>(false);
     const [isStartAppProcessRunning, setIsStartAppProcessRunning] = useState<boolean>(false);
     const [startingAppName, setStartingAppName] = useState<string | null>(null);
-    const [consoleInitialMessage, setConsoleInitialMessage] = useState<string | undefined>(undefined);
+    const [consoleLogs, setConsoleLogs] = useState<Record<string, MessagePayload[]>>(loadConsoleLogs);
     const [versionChangeConsoleData, setVersionChangeConsoleData] = useState<{
         appName: string;
         version: string;
         actionType: string;
     } | null>(null);
     const [isVersionChangeProcessRunning, setIsVersionChangeProcessRunning] = useState<boolean>(false);
-    const [versionChangeError, setVersionChangeError] = useState<string | null>(null);
     const [isRunningAppConsoleOpen, setIsRunningAppConsoleOpen] = useState<boolean>(false);
     const [themeMode, setThemeMode] = useState<ThemeModeSetting>(() => {
         const savedTheme = localStorage.getItem('appThemeMode');
@@ -265,6 +284,48 @@ function App() {
     useEffect(() => {
         localStorage.setItem('appThemeMode', themeMode);
     }, [themeMode]);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(CONSOLE_LOG_STORAGE_KEY, JSON.stringify(consoleLogs));
+        } catch (error) {
+            console.warn('Failed to persist console logs:', error);
+        }
+    }, [consoleLogs]);
+
+    const addConsoleLog = useCallback((logEntry: MessagePayload) => {
+        setConsoleLogs(previous => {
+            const appLogs = previous[logEntry.app_name] ?? [];
+            let nextAppLogs: MessagePayload[];
+            if (logEntry.update && appLogs.length > 0) {
+                nextAppLogs = [...appLogs];
+                nextAppLogs[nextAppLogs.length - 1] = logEntry;
+            } else {
+                nextAppLogs = [...appLogs, logEntry];
+            }
+            if (nextAppLogs.length > MAX_CONSOLE_LOGS) {
+                nextAppLogs = nextAppLogs.slice(-MAX_CONSOLE_LOGS);
+            }
+            return {...previous, [logEntry.app_name]: nextAppLogs};
+        });
+    }, []);
+
+    const beginConsoleSession = useCallback((appName: string, message: string) => {
+        setConsoleLogs(previous => ({
+            ...previous,
+            [appName]: [{message, app_name: appName}],
+        }));
+    }, []);
+
+    const ensureActiveConsoleSession = useCallback((appName: string, message: string) => {
+        setConsoleLogs(previous => {
+            const existingLogs = previous[appName] ?? [];
+            const hasActiveSession = existingLogs.length > 0 && !existingLogs.some(log => log.finished);
+            return hasActiveSession
+                ? previous
+                : {...previous, [appName]: [{message, app_name: appName}]};
+        });
+    }, []);
 
     const prefersDarkMode = useMediaQuery('(prefers-color-scheme: dark)');
     const muiTheme = useMemo(() => {
@@ -339,14 +400,15 @@ function App() {
         clearMessages();
         setAppActionLoading(prev => ({...prev, [appName]: true}));
         setStartingAppName(appName);
-        setConsoleInitialMessage(`Attempting to start app: ${appName}...`);
+        beginConsoleSession(appName, `Attempting to start app: ${appName}...`);
         setIsStartAppProcessRunning(true);
         setCurrentPage('startConsole');
 
         await invokeTauriCommandWrapper<void>("start_app", {appName}, () => {},
             (errorMessage, rawError) => {
                 console.error(`Failed to start app ${appName}:`, rawError);
-                setConsoleInitialMessage(prev => `${prev}\nERROR (client-side): Failed to dispatch start operation: ${errorMessage}`);
+                addConsoleLog({message: `ERROR: Failed to start app: ${errorMessage}`, app_name: appName, error: true, finished: true});
+                setIsStartAppProcessRunning(false);
             }
         );
     };
@@ -355,14 +417,15 @@ function App() {
         clearMessages();
         setAppActionLoading(prev => ({...prev, [appName]: true}));
         setStartingAppName(appName);
-        setConsoleInitialMessage(`Initiating install for '${appName}' with profile '${profileName}'...`);
+        beginConsoleSession(appName, `Initiating install for '${appName}' with profile '${profileName}'...`);
         setIsInstallProcessRunning(true);
         setCurrentPage('installConsole');
 
         await invokeTauriCommandWrapper<void>("setup_app", {appName, profileName}, () => {},
             (errorMessage, rawError) => {
                 console.error(`Failed to invoke setup_app for ${appName} with profile ${profileName}:`, rawError);
-                setConsoleInitialMessage(prev => `${prev}\nERROR (client-side): Failed to dispatch install operation: ${errorMessage}`);
+                addConsoleLog({message: `ERROR: Failed to install app: ${errorMessage}`, app_name: appName, error: true, finished: true});
+                setIsInstallProcessRunning(false);
             }
         );
     };
@@ -391,10 +454,37 @@ function App() {
 
         unlistenPromises.push(listen<App[]>("apps", (event) => {
             const newApps = event.payload;
+            newApps.forEach(app => {
+                const previousUpdateState = appUpdateStatesRef.current[app.name];
+                if (app.update_state === 'updating' && previousUpdateState !== 'updating') {
+                    activeUpdateAppsRef.current.add(app.name);
+                    ensureActiveConsoleSession(
+                        app.name,
+                        `Updating '${app.name}' to version '${app.update_target_version ?? 'unknown'}'...`,
+                    );
+                }
+                appUpdateStatesRef.current[app.name] = app.update_state;
+            });
             setApps(newApps);
             const newSelectedTargets: Record<string, string> = {};
             const inlineLogUpdates: Record<string, InlineUpdateLogState> = {};
             newApps.forEach(app => {
+                if (app.update_state !== 'idle' && app.update_target_version) {
+                    const currentVersion = app.current_version;
+                    const comparison = currentVersion
+                        ? compareVersions(app.update_target_version, currentVersion)
+                        : 0;
+                    const actionType = comparison > 0 ? 'Update' : comparison < 0 ? 'Downgrade' : 'Set';
+                    newSelectedTargets[app.name] = app.update_target_version;
+                    inlineLogUpdates[app.name] = {
+                        version: app.update_target_version,
+                        actionType,
+                        isConfirming: app.update_state === 'updating',
+                        completed: false,
+                        failed: app.update_state === 'failed',
+                    };
+                    return;
+                }
                 if (!app.installed || app.running) {
                     if (selectedTargetVersionsRef.current[app.name]) newSelectedTargets[app.name] = '';
                     return;
@@ -427,7 +517,12 @@ function App() {
             setInlineUpdateLogs(prev => {
                 const merged = {...prev};
                 for (const [name, entry] of Object.entries(inlineLogUpdates)) {
-                    if (!completedAppsRef.current.has(name) && !merged[name]?.failed) merged[name] = entry;
+                    if (entry.isConfirming || entry.failed) {
+                        completedAppsRef.current.delete(name);
+                        merged[name] = entry;
+                    } else if (!completedAppsRef.current.has(name) && !merged[name]?.failed) {
+                        merged[name] = entry;
+                    }
                 }
                 return merged;
             });
@@ -450,24 +545,36 @@ function App() {
             error?: boolean;
         }>("app-log", (event) => {
             const {app_name, finished, error} = event.payload;
-            setInlineUpdateLogs(prev => {
-                const entry = prev[app_name];
-                if (!entry || entry.completed) return prev;
-                if (finished) {
-                    if (error) {
-                        completedAppsRef.current.delete(app_name); // failed — not completed
-                        return {...prev, [app_name]: {...entry, isConfirming: false, failed: true}};
-                    } else {
-                        completedAppsRef.current.add(app_name); // mark completed immediately
-                        return {...prev, [app_name]: {...entry, isConfirming: false, completed: true, failed: false}};
+            addConsoleLog(event.payload);
+            const isUpdateEvent = activeUpdateAppsRef.current.has(app_name);
+            if (isUpdateEvent) {
+                setInlineUpdateLogs(prev => {
+                    const entry = prev[app_name];
+                    if (!entry || entry.completed) return prev;
+                    if (finished) {
+                        if (error) {
+                            completedAppsRef.current.delete(app_name); // failed — not completed
+                            return {...prev, [app_name]: {...entry, isConfirming: false, failed: true}};
+                        } else {
+                            completedAppsRef.current.add(app_name); // mark completed immediately
+                            return {...prev, [app_name]: {...entry, isConfirming: false, completed: true, failed: false}};
+                        }
+                    } else if (!entry.isConfirming) {
+                        return {...prev, [app_name]: {...entry, isConfirming: true, failed: false}};
                     }
-                } else if (!entry.isConfirming) {
-                    return {...prev, [app_name]: {...entry, isConfirming: true, failed: false}};
+                    return prev;
+                });
+                if (finished && !error) {
+                    setSelectedTargetVersions(prev => ({...prev, [app_name]: ''}));
                 }
-                return prev;
-            });
-            if (finished && !error) {
-                setSelectedTargetVersions(prev => ({...prev, [app_name]: ''}));
+                if (finished) activeUpdateAppsRef.current.delete(app_name);
+            }
+            if (finished) {
+                setIsInstallProcessRunning(false);
+                setIsStartAppProcessRunning(false);
+                setIsVersionChangeProcessRunning(false);
+                setIsRunningAppConsoleOpen(false);
+                setIsProfileChangeProcessRunning(false);
             }
         }));
 
@@ -483,7 +590,7 @@ function App() {
         return () => {
             Promise.all(unlistenPromises).then(unlisteners => unlisteners.forEach(fn => fn()));
         };
-    }, [updateStatus]);
+    }, [addConsoleLog, ensureActiveConsoleSession, updateStatus]);
 
     const handleDeleteApp = async (appName: string) => {
         clearMessages();
@@ -551,6 +658,7 @@ function App() {
 
     const handleConfirmVersionChange = async (params: { appName: string, version: string, actionType: string }) => {
         clearMessages();
+        activeUpdateAppsRef.current.add(params.appName);
         setAppActionLoading(prev => ({...prev, [params.appName]: true}));
         // Mark as confirming so the inline log shows a spinner
         setInlineUpdateLogs(prev => ({
@@ -559,8 +667,7 @@ function App() {
         }));
         setVersionChangeConsoleData(params);
         setStartingAppName(params.appName);
-        setConsoleInitialMessage(`Initiating ${params.actionType} for '${params.appName}' to version '${params.version}'...`);
-        setVersionChangeError(null);
+        beginConsoleSession(params.appName, `Initiating ${params.actionType} for '${params.appName}' to version '${params.version}'...`);
         setIsVersionChangeProcessRunning(true);
         setCurrentPage('versionChangeConsole');
 
@@ -577,7 +684,7 @@ function App() {
                     if (!entry) return prev;
                     return {...prev, [params.appName]: {...entry, isConfirming: false, completed: false, failed: true}};
                 });
-                setVersionChangeError(operationError);
+                addConsoleLog({message: operationError, app_name: params.appName, error: true, finished: true});
                 setIsVersionChangeProcessRunning(false);
             }
         );
@@ -588,13 +695,37 @@ function App() {
         setStartingAppName(appName);
         const app = apps?.find(a => a.name === appName);
         const consoleTitle = (app?.running && !app?.installed) ? `Installation console for: ${appName}` : `Console for running app: ${appName}`;
-        setConsoleInitialMessage(consoleTitle);
+        setConsoleLogs(previous => previous[appName]?.length
+            ? previous
+            : {...previous, [appName]: [{message: consoleTitle, app_name: appName}]});
         setIsRunningAppConsoleOpen(true);
         setCurrentPage('runningAppConsole');
     };
 
+    const handleOpenUpdateConsole = (appName: string) => {
+        const app = apps?.find(candidate => candidate.name === appName);
+        const entry = inlineUpdateLogs[appName];
+        const version = app?.update_target_version ?? entry?.version;
+        if (!version) return;
+        const actionType = entry?.actionType ?? 'Update';
+        setStartingAppName(appName);
+        setVersionChangeConsoleData({appName, version, actionType});
+        setIsVersionChangeProcessRunning(app?.update_state === 'updating');
+        setConsoleLogs(previous => previous[appName]?.length
+            ? previous
+            : {
+                ...previous,
+                [appName]: [{
+                    message: app?.update_error ?? `${actionType} to ${version}`,
+                    app_name: appName,
+                    error: app?.update_state === 'failed',
+                    finished: app?.update_state === 'failed',
+                }],
+            });
+        setCurrentPage('versionChangeConsole');
+    };
+
     const resetConsoleStates = () => {
-        setConsoleInitialMessage(undefined);
         setIsInstallProcessRunning(false);
         setIsStartAppProcessRunning(false);
         setIsVersionChangeProcessRunning(false);
@@ -603,8 +734,6 @@ function App() {
     }
 
     const handleBackFromConsole = async () => {
-        const wasVersionChange = currentPage === 'versionChangeConsole';
-        const appNameForVersionChange = versionChangeConsoleData?.appName;
         setCurrentPage('list');
         resetConsoleStates();
         clearMessages();
@@ -612,17 +741,7 @@ function App() {
         if (startingAppName) setAppActionLoading(prev => ({...prev, [startingAppName]: false}));
         setStartingAppName(null);
         setVersionChangeConsoleData(null);
-        setVersionChangeError(null);
         setProfileChangeData(null);
-
-        // Only a successful finish event may mark a version change as completed.
-        if (wasVersionChange && appNameForVersionChange) {
-            setInlineUpdateLogs(prev => {
-                const entry = prev[appNameForVersionChange];
-                if (entry) return {...prev, [appNameForVersionChange]: {...entry, isConfirming: false}};
-                return prev;
-            });
-        }
 
         updateStatus({loading: true, info: t("Refreshing app...")});
         await invokeTauriCommandWrapper<App[]>("load_apps", undefined,
@@ -651,14 +770,15 @@ function App() {
         setAppActionLoading(prev => ({...prev, [appName]: true}));
         setStartingAppName(appName);
         setProfileChangeData({appName, newProfile: newProfileName});
-        setConsoleInitialMessage(`Initiating profile change for '${appName}' to '${newProfileName}'...`);
+        beginConsoleSession(appName, `Initiating profile change for '${appName}' to '${newProfileName}'...`);
         setIsProfileChangeProcessRunning(true);
         setCurrentPage('profileChangeConsole');
 
         await invokeTauriCommandWrapper<void>("setup_app", {appName, profileName: newProfileName}, () => {},
             (errorMessage, rawError) => {
                 console.error(`Failed to invoke setup_app for profile change:`, rawError);
-                setConsoleInitialMessage(prev => `${prev}\nERROR (client-side): Failed to dispatch operation: ${errorMessage}`);
+                addConsoleLog({message: `ERROR: Failed to change profile: ${errorMessage}`, app_name: appName, error: true, finished: true});
+                setIsProfileChangeProcessRunning(false);
             }
         );
     };
@@ -712,16 +832,16 @@ function App() {
     let pageContent;
 
     if (currentPage === 'installConsole' && startingAppName) {
-        pageContent = <ConsolePage title={t('Installing App: {{appName}}', {appName: startingAppName})} appName={startingAppName} initialMessage={consoleInitialMessage} onBack={handleBackFromConsole} isProcessing={isInstallProcessRunning} onProcessComplete={() => setIsInstallProcessRunning(false)} />;
+        pageContent = <ConsolePage title={t('Installing App: {{appName}}', {appName: startingAppName})} appName={startingAppName} logs={consoleLogs[startingAppName] ?? []} onBack={handleBackFromConsole} isProcessing={isInstallProcessRunning}/>;
     } else if (currentPage === 'startConsole' && startingAppName) {
-        pageContent = <ConsolePage title={t('Starting App: {{appName}}', {appName: startingAppName})} appName={startingAppName} initialMessage={consoleInitialMessage} onBack={handleBackFromConsole} isProcessing={isStartAppProcessRunning} onProcessComplete={() => setIsStartAppProcessRunning(false)} />;
+        pageContent = <ConsolePage title={t('Starting App: {{appName}}', {appName: startingAppName})} appName={startingAppName} logs={consoleLogs[startingAppName] ?? []} onBack={handleBackFromConsole} isProcessing={isStartAppProcessRunning}/>;
     } else if (currentPage === 'versionChangeConsole' && versionChangeConsoleData && startingAppName) {
         const title = t('{{actionType}} App: {{appName}}', { actionType: t(versionChangeConsoleData.actionType), appName: startingAppName });
-        pageContent = <ConsolePage title={title} appName={startingAppName} initialMessage={consoleInitialMessage} externalError={versionChangeError} onBack={handleBackFromConsole} isProcessing={isVersionChangeProcessRunning} onProcessComplete={() => setIsVersionChangeProcessRunning(false)} />;
+        pageContent = <ConsolePage title={title} appName={startingAppName} logs={consoleLogs[startingAppName] ?? []} onBack={handleBackFromConsole} isProcessing={isVersionChangeProcessRunning}/>;
     } else if (currentPage === 'runningAppConsole' && startingAppName) {
-        pageContent = <ConsolePage title={t('Console: {{appName}}', {appName: startingAppName})} appName={startingAppName} initialMessage={consoleInitialMessage} onBack={handleBackFromConsole} isProcessing={isRunningAppConsoleOpen} onProcessComplete={() => setIsRunningAppConsoleOpen(false)} />;
+        pageContent = <ConsolePage title={t('Console: {{appName}}', {appName: startingAppName})} appName={startingAppName} logs={consoleLogs[startingAppName] ?? []} onBack={handleBackFromConsole} isProcessing={isRunningAppConsoleOpen}/>;
     } else if (currentPage === 'profileChangeConsole' && profileChangeData && startingAppName) {
-        pageContent = <ConsolePage title={t("Changing Profile: {{appName}} to '{{newProfile}}'", { appName: profileChangeData.appName, newProfile: profileChangeData.newProfile })} appName={startingAppName} initialMessage={consoleInitialMessage} onBack={handleBackFromConsole} isProcessing={isProfileChangeProcessRunning} onProcessComplete={() => setIsProfileChangeProcessRunning(false)} />;
+        pageContent = <ConsolePage title={t("Changing Profile: {{appName}} to '{{newProfile}}'", { appName: profileChangeData.appName, newProfile: profileChangeData.newProfile })} appName={startingAppName} logs={consoleLogs[startingAppName] ?? []} onBack={handleBackFromConsole} isProcessing={isProfileChangeProcessRunning}/>;
     } else if (currentPage === 'settings') {
         pageContent = <SettingsPage currentTheme={themeMode} onChangeTheme={setThemeMode} onBack={() => setCurrentPage('list')} updateStatus={updateStatus} clearMessages={clearMessages} />;
     } else if (currentPage === 'profileChooser' && profileChoiceApp) {
@@ -815,7 +935,8 @@ function App() {
                         {apps.map((app) => {
                             const isEffectivelyInstalling = app.running && !app.installed;
                             const isThisAppLoading = appActionLoading[app.name] || false;
-                            const disableRowActions = currentPage !== 'list' || status.messageLoading || isThisAppLoading;
+                            const updateBlocksActions = app.update_state !== 'idle';
+                            const disableRowActions = currentPage !== 'list' || status.messageLoading || isThisAppLoading || updateBlocksActions;
                             return (
                                 <Card
                                     key={app.name}
@@ -862,6 +983,12 @@ function App() {
                                                         )}
                                                         {app.installed && app.current_profile && (
                                                             <Chip size="small" variant="outlined" label={app.current_profile}/>
+                                                        )}
+                                                        {app.update_state === 'updating' && (
+                                                            <Chip size="small" color="info" icon={<CircularProgress size={14}/>} label={t('Updating...')}/>
+                                                        )}
+                                                        {app.update_state === 'failed' && (
+                                                            <Chip size="small" color="error" label={t('Update failed')}/>
                                                         )}
                                                     </Stack>
                                                 </Box>
@@ -955,6 +1082,7 @@ function App() {
                                                         completed={inlineUpdateLogs[app.name].completed}
                                                         failed={inlineUpdateLogs[app.name].failed}
                                                         onConfirm={handleConfirmVersionChange}
+                                                        onOpenConsole={() => handleOpenUpdateConsole(app.name)}
                                                         onCancel={() => {
                                                             completedAppsRef.current.delete(app.name);
                                                             setSelectedTargetVersions(p => ({...p, [app.name]: ''}));
