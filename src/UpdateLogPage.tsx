@@ -5,15 +5,16 @@ import {Alert, Box, Button, CircularProgress, Paper, Stack, Typography} from "@m
 import {useTranslation} from 'react-i18next';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlineOutlined';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutlineOutlined';
+import type {VersionActionType} from './updateProgress';
 
 interface UpdateLogPanelProps {
     appName: string;
     version: string;
-    actionType: string;
+    actionType: VersionActionType;
     isConfirming?: boolean;
     completed?: boolean;
     failed?: boolean;
-    onConfirm: (params: { appName: string, version: string, actionType: string }) => void;
+    onConfirm: (params: { appName: string, version: string, actionType: VersionActionType }) => void;
     onCancel: () => void;
     onOpenConsole: () => void;
 }
@@ -92,8 +93,13 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
         onConfirm({appName, version, actionType});
     };
 
+    const progressTranslationKey = actionType === 'Upgrade'
+        ? 'Upgrading...'
+        : actionType === 'Downgrade'
+            ? 'Downgrading...'
+            : 'Setting...';
     const confirmButtonText = isConfirming
-        ? t(`${actionType}ing...`)
+        ? t(progressTranslationKey)
         : t('Confirm {{actionType}}', {actionType: t(actionType)});
 
     let pageTitle: string;
@@ -112,7 +118,7 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
         titleColor = 'error.main';
         titleIcon = <ErrorOutlineIcon fontSize="small" color="error"/>;
     } else if (isConfirming) {
-        pageTitle = `${t(`${actionType}ing...`)}: ${version}`;
+        pageTitle = `${t(progressTranslationKey)}: ${version}`;
         borderColor = 'info.main';
         titleColor = 'info.main';
         titleIcon = <CircularProgress size={14}/>;
@@ -186,7 +192,7 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
                     <Button
                         variant="contained"
                         size="small"
-                        color={actionType === 'Update' ? 'success' : 'warning'}
+                        color={actionType === 'Upgrade' ? 'success' : 'warning'}
                         onClick={handleConfirm}
                         disabled={notesLoading || !!notesError}
                     >

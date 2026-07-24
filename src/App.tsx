@@ -7,6 +7,7 @@ import {getVersion} from '@tauri-apps/api/app';
 import UpdateLogPage from "./UpdateLogPage";
 import ConsolePage, {type MessagePayload} from "./ConsolePage.tsx";
 import SettingsPage from "./SettingsPage.tsx";
+import {calculateVersionChangeProgress, type VersionActionType} from "./updateProgress";
 
 import {
     Alert,
@@ -132,6 +133,23 @@ const getVersionChannelLabelKey = (version: string): string => (
     isReleaseVersion(version) ? 'Release Version' : 'Test Version'
 );
 
+const getVersionActionType = (
+    targetVersion: string,
+    currentVersion: string | null,
+    sameVersionAction: VersionActionType = 'Set',
+): VersionActionType => {
+    if (!targetVersion) return sameVersionAction;
+    if (!currentVersion) return sameVersionAction;
+    const comparison = compareVersions(targetVersion, currentVersion);
+    return comparison > 0 ? 'Upgrade' : comparison < 0 ? 'Downgrade' : sameVersionAction;
+};
+
+const getVersionActionProgressKey = (actionType: VersionActionType): string => {
+    if (actionType === 'Upgrade') return 'Upgrading...';
+    if (actionType === 'Downgrade') return 'Downgrading...';
+    return 'Setting...';
+};
+
 type StatusState = {
     loading?: boolean;
     error?: string | null;
@@ -158,7 +176,7 @@ type Page =
 
 type InlineUpdateLogState = {
     version: string;
-    actionType: string;
+    actionType: VersionActionType;
     isConfirming: boolean;
     completed?: boolean;
     failed?: boolean;
@@ -250,7 +268,7 @@ function App() {
     const [versionChangeConsoleData, setVersionChangeConsoleData] = useState<{
         appName: string;
         version: string;
-        actionType: string;
+        actionType: VersionActionType;
     } | null>(null);
     const [isVersionChangeProcessRunning, setIsVersionChangeProcessRunning] = useState<boolean>(false);
     const [isRunningAppConsoleOpen, setIsRunningAppConsoleOpen] = useState<boolean>(false);
@@ -458,9 +476,14 @@ function App() {
                 const previousUpdateState = appUpdateStatesRef.current[app.name];
                 if (app.update_state === 'updating' && previousUpdateState !== 'updating') {
                     activeUpdateAppsRef.current.add(app.name);
+                    const actionType = getVersionActionType(
+                        app.update_target_version ?? '',
+                        app.current_version,
+                        'Upgrade',
+                    );
                     ensureActiveConsoleSession(
                         app.name,
-                        `Updating '${app.name}' to version '${app.update_target_version ?? 'unknown'}'...`,
+                        `${getVersionActionProgressKey(actionType)} '${app.name}' to version '${app.update_target_version ?? 'unknown'}'`,
                     );
                 }
                 appUpdateStatesRef.current[app.name] = app.update_state;
@@ -470,11 +493,11 @@ function App() {
             const inlineLogUpdates: Record<string, InlineUpdateLogState> = {};
             newApps.forEach(app => {
                 if (app.update_state !== 'idle' && app.update_target_version) {
-                    const currentVersion = app.current_version;
-                    const comparison = currentVersion
-                        ? compareVersions(app.update_target_version, currentVersion)
-                        : 0;
-                    const actionType = comparison > 0 ? 'Update' : comparison < 0 ? 'Downgrade' : 'Set';
+                    const actionType = getVersionActionType(
+                        app.update_target_version,
+                        app.current_version,
+                        'Upgrade',
+                    );
                     newSelectedTargets[app.name] = app.update_target_version;
                     inlineLogUpdates[app.name] = {
                         version: app.update_target_version,
@@ -503,7 +526,7 @@ function App() {
                     // Auto-select latest version: show update log inline
                     inlineLogUpdates[app.name] = {
                         version: latestVersion,
-                        actionType: 'Update',
+                        actionType: 'Upgrade',
                         isConfirming: false,
                     };
                 } else if (currentSelection && app.available_versions.includes(currentSelection) && currentSelection !== app.current_version) {
@@ -647,16 +670,11 @@ function App() {
             });
             return;
         }
-        let actionType = "Set";
-        if (currentAppVersion) {
-            const comparison = compareVersions(targetVersion, currentAppVersion);
-            if (comparison > 0) actionType = "Update";
-            else if (comparison < 0) actionType = "Downgrade";
-        }
+        const actionType = getVersionActionType(targetVersion, currentAppVersion);
         setInlineUpdateLogs(prev => ({...prev, [appName]: {version: targetVersion, actionType, isConfirming: false}}));
     };
 
-    const handleConfirmVersionChange = async (params: { appName: string, version: string, actionType: string }) => {
+    const handleConfirmVersionChange = async (params: { appName: string, version: string, actionType: VersionActionType }) => {
         clearMessages();
         activeUpdateAppsRef.current.add(params.appName);
         setAppActionLoading(prev => ({...prev, [params.appName]: true}));
@@ -677,7 +695,7 @@ function App() {
         await invokeTauriCommandWrapper<void>("update_to_version", {appName: params.appName, version: params.version, requirements: requirementsFile}, () => {},
             (errorMessage, rawError) => {
                 console.error(`Failed to invoke ${params.actionType.toLowerCase()}:`, rawError);
-                const operationError = `Update failed: ${errorMessage}`;
+                const operationError = `Upgrade failed: ${errorMessage}`;
                 completedAppsRef.current.delete(params.appName);
                 setInlineUpdateLogs(prev => {
                     const entry = prev[params.appName];
@@ -707,7 +725,7 @@ function App() {
         const entry = inlineUpdateLogs[appName];
         const version = app?.update_target_version ?? entry?.version;
         if (!version) return;
-        const actionType = entry?.actionType ?? 'Update';
+        const actionType = entry?.actionType ?? 'Upgrade';
         setStartingAppName(appName);
         setVersionChangeConsoleData({appName, version, actionType});
         setIsVersionChangeProcessRunning(app?.update_state === 'updating');
@@ -829,6 +847,19 @@ function App() {
         setAppActionLoading(prev => ({...prev, [appName]: false}));
     };
 
+    const versionChangeProgress = useMemo(() => {
+        if (!startingAppName || !versionChangeConsoleData) return undefined;
+        return calculateVersionChangeProgress(
+            consoleLogs[startingAppName] ?? [],
+            isVersionChangeProcessRunning,
+        );
+    }, [
+        consoleLogs,
+        isVersionChangeProcessRunning,
+        startingAppName,
+        versionChangeConsoleData,
+    ]);
+
     let pageContent;
 
     if (currentPage === 'installConsole' && startingAppName) {
@@ -837,7 +868,7 @@ function App() {
         pageContent = <ConsolePage title={t('Starting App: {{appName}}', {appName: startingAppName})} appName={startingAppName} logs={consoleLogs[startingAppName] ?? []} onBack={handleBackFromConsole} isProcessing={isStartAppProcessRunning}/>;
     } else if (currentPage === 'versionChangeConsole' && versionChangeConsoleData && startingAppName) {
         const title = t('{{actionType}} App: {{appName}}', { actionType: t(versionChangeConsoleData.actionType), appName: startingAppName });
-        pageContent = <ConsolePage title={title} appName={startingAppName} logs={consoleLogs[startingAppName] ?? []} onBack={handleBackFromConsole} isProcessing={isVersionChangeProcessRunning}/>;
+        pageContent = <ConsolePage title={title} appName={startingAppName} logs={consoleLogs[startingAppName] ?? []} onBack={handleBackFromConsole} isProcessing={isVersionChangeProcessRunning} progress={versionChangeProgress} progressAction={t(versionChangeConsoleData.actionType)}/>;
     } else if (currentPage === 'runningAppConsole' && startingAppName) {
         pageContent = <ConsolePage title={t('Console: {{appName}}', {appName: startingAppName})} appName={startingAppName} logs={consoleLogs[startingAppName] ?? []} onBack={handleBackFromConsole} isProcessing={isRunningAppConsoleOpen}/>;
     } else if (currentPage === 'profileChangeConsole' && profileChangeData && startingAppName) {
@@ -908,13 +939,6 @@ function App() {
                         </IconButton>
                     </Tooltip>
                 </Box>
-                {status.messageLoading && (
-                    <Chip
-                        icon={<CircularProgress size={16}/>}
-                        label={t('Processing action...')}
-                        sx={{mb: 2, bgcolor: 'background.paper', border: 1, borderColor: 'divider'}}
-                    />
-                )}
                 <Snackbar open={snackbarOpen} autoHideDuration={6000} onClose={() => setSnackbarOpen(false)} anchorOrigin={{vertical: 'bottom', horizontal: 'center'}}>
                     <Alert onClose={() => setSnackbarOpen(false)} severity={snackbarSeverity} sx={{width: '100%'}}>{snackbarMessage}</Alert>
                 </Snackbar>
@@ -936,6 +960,11 @@ function App() {
                             const isEffectivelyInstalling = app.running && !app.installed;
                             const isThisAppLoading = appActionLoading[app.name] || false;
                             const updateBlocksActions = app.update_state !== 'idle';
+                            const persistedActionType = getVersionActionType(
+                                app.update_target_version ?? '',
+                                app.current_version,
+                                'Upgrade',
+                            );
                             const disableRowActions = currentPage !== 'list' || status.messageLoading || isThisAppLoading || updateBlocksActions;
                             return (
                                 <Card
@@ -985,10 +1014,10 @@ function App() {
                                                             <Chip size="small" variant="outlined" label={app.current_profile}/>
                                                         )}
                                                         {app.update_state === 'updating' && (
-                                                            <Chip size="small" color="info" icon={<CircularProgress size={14}/>} label={t('Updating...')}/>
+                                                            <Chip size="small" color="info" icon={<CircularProgress size={14}/>} label={t(getVersionActionProgressKey(persistedActionType))}/>
                                                         )}
                                                         {app.update_state === 'failed' && (
-                                                            <Chip size="small" color="error" label={t('Update failed')}/>
+                                                            <Chip size="small" color="error" label={t(`${persistedActionType} failed`)}/>
                                                         )}
                                                     </Stack>
                                                 </Box>
@@ -1067,7 +1096,7 @@ function App() {
                                                                     }}
                                                                 >
                                                                     <MenuItem value=""><em>{t('Change version...')}</em></MenuItem>
-                                                                    {app.available_versions.filter(v => v !== app.current_version).map(v => <MenuItem key={v} value={v}>{v} {t(getVersionChannelLabelKey(v))}{compareVersions(v, app.current_version!) > 0 ? ` ${t('(Update)')}` : ` ${t('(Downgrade)')}`}</MenuItem>)}
+                                                                    {app.available_versions.filter(v => v !== app.current_version).map(v => <MenuItem key={v} value={v}>{v} {t(getVersionChannelLabelKey(v))}{compareVersions(v, app.current_version!) > 0 ? ` ${t('(Upgrade)')}` : ` ${t('(Downgrade)')}`}</MenuItem>)}
                                                                 </Select>
                                                             </FormControl>
                                                         ) : <Typography variant="caption">{t("No other versions found.")}</Typography>}
