@@ -45,12 +45,12 @@ const languageNames: { [key: string]: string } = { 'en': 'English', 'zh-CN': 'ç®
 
 const getPipIndexUrlName = (url: string, t: (key: string) => string) => {
     if (url === '') return t('System Default');
-    if (url.includes('pypi.org')) return 'PyPI';
-    if (url.includes('tsinghua')) return 'Tsinghua';
-    if (url.includes('aliyun')) return 'Aliyun';
-    if (url.includes('ustc')) return 'USTC';
-    if (url.includes('huaweicloud')) return 'Huawei Cloud';
-    if (url.includes('tencent')) return 'Tencent Cloud';
+    if (url.includes('pypi.org')) return t('PyPI');
+    if (url.includes('tsinghua')) return t('Tsinghua');
+    if (url.includes('aliyun')) return t('Aliyun');
+    if (url.includes('ustc')) return t('USTC');
+    if (url.includes('huaweicloud')) return t('Huawei Cloud');
+    if (url.includes('tencent')) return t('Tencent Cloud');
     return url;
 };
 
