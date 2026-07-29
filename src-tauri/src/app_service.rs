@@ -1030,6 +1030,8 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
     let app_dir_lock = get_app_lock(app_name).await;
     let _lock_guard = app_dir_lock.lock().await;
 
+    ensure_app_stopped_for_update(app_name).await?;
+
     if let Err(state_error) = persist_update_state(
         app_name,
         AppUpdateState::Updating,
@@ -1113,6 +1115,29 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
             Err(error)
         }
     }
+}
+
+async fn ensure_app_stopped_for_update(app_name: &str) -> Result<(), Error> {
+    let app_base_path = get_app_base_path(app_name);
+    let running_pids = task::spawn_blocking(move || {
+        let mut system = System::new();
+        system.refresh_processes(ProcessesToUpdate::All, true);
+        process::get_pids_related_to_app_dir(&system, &app_base_path)
+    })
+    .await?;
+    if !running_pids.is_empty() {
+        let pid_list = running_pids
+            .iter()
+            .map(|pid| pid.as_u32().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(err!(
+            "Cannot update '{}': the application is still running (PID {}). Stop it completely and retry.",
+            app_name,
+            pid_list
+        ));
+    }
+    Ok(())
 }
 
 async fn update_to_version_inner(app_name: &str, version: &str) -> Result<(), Error> {

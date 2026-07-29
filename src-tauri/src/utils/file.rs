@@ -2,8 +2,57 @@ use crate::utils::command::new_cmd;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::{fs, io};
+use std::{thread, time::Duration};
 use tracing::{debug, info};
 use walkdir::WalkDir;
+
+const COPY_RETRY_ATTEMPTS: usize = 12;
+const COPY_RETRY_DELAY: Duration = Duration::from_millis(250);
+
+fn is_retryable_copy_error(error: &io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION and
+        // ERROR_USER_MAPPED_FILE. Windows can retain an image mapping briefly
+        // after its process exits, so an immediate replacement may fail.
+        matches!(error.raw_os_error(), Some(32 | 33 | 1224))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
+}
+
+fn copy_file_with_retry(src: &Path, dst: &Path) -> io::Result<u64> {
+    for attempt in 1..=COPY_RETRY_ATTEMPTS {
+        match fs::copy(src, dst) {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) if is_retryable_copy_error(&error) && attempt < COPY_RETRY_ATTEMPTS => {
+                debug!(
+                    "Destination {} is temporarily in use; retrying copy ({}/{})",
+                    dst.display(),
+                    attempt,
+                    COPY_RETRY_ATTEMPTS
+                );
+                thread::sleep(COPY_RETRY_DELAY);
+            }
+            Err(error) if is_retryable_copy_error(&error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "{} is still in use by another process after {} attempts: {}. Stop the application and any process using this file, then retry",
+                        dst.display(),
+                        COPY_RETRY_ATTEMPTS,
+                        error
+                    ),
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("copy retry loop always returns")
+}
 
 pub fn copy_dir_recursive_filtered_sync<F>(
     src: &Path,
@@ -65,7 +114,7 @@ where
                 should_exclude,
             )?;
         } else {
-            fs::copy(&src_path, &dst_path).map_err(|error| {
+            copy_file_with_retry(&src_path, &dst_path).map_err(|error| {
                 io::Error::new(
                     error.kind(),
                     format!(
@@ -84,7 +133,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::copy_dir_recursive_filtered_sync;
+    #[cfg(windows)]
+    use super::is_retryable_copy_error;
+    #[cfg(windows)]
+    use std::io;
     use std::{fs, time::SystemTime};
+
+    #[cfg(windows)]
+    #[test]
+    fn retries_windows_file_mapping_and_lock_errors() {
+        for code in [32, 33, 1224] {
+            assert!(is_retryable_copy_error(&io::Error::from_raw_os_error(code)));
+        }
+        assert!(!is_retryable_copy_error(&io::Error::from_raw_os_error(5)));
+    }
 
     #[test]
     fn filtered_copy_skips_git_ignored_directories() {
