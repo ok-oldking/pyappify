@@ -58,3 +58,22 @@ This method uses the PyAppify GitHub Action to bundle the launcher, your code, a
 ### Workflow Example
 
 refer to the docs at [https://github.com/ok-oldking/pyappify-action](https://github.com/ok-oldking/pyappify-action)
+
+## Startup arguments
+
+PyAppify checks the repository for newer release tags when it starts. Manual-update mode shows a desktop notification when a newer release is available; automatic modes notify and then update before starting the application.
+
+Automatic application startup waits 10 seconds. Turning off **Auto Start** during that window cancels the pending start.
+
+The startup behavior can be overridden for the current launcher process without changing `app.json`:
+
+```text
+pyappify.exe -c start --auto-start true --update-method auto
+```
+
+Supported options:
+
+* `-a, --auto-start <true|false>` temporarily overrides Auto Start. `-c start` implies `true` when this option is omitted.
+* `-u, --update-method <manual|auto|auto-pre-release>` temporarily overrides the update method.
+
+The equivalent environment variables are `PYAPPIFY_AUTO_START` and `PYAPPIFY_UPDATE_METHOD`. Command-line options take precedence. These overrides apply only to the current run and are never written to the saved configuration.

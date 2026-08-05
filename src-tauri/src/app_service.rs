@@ -31,7 +31,10 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+        Arc,
+    },
 };
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::{AppHandle, Manager};
@@ -44,6 +47,20 @@ pub static APPS: Lazy<Mutex<HashMap<String, App>>> = Lazy::new(|| Mutex::new(Has
 pub static APP_DIR_LOCKS: Lazy<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 pub static AUTO_START_CHECKED: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
+static AUTO_START_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StartupOverrides {
+    pub auto_start: Option<bool>,
+    pub update_method: Option<String>,
+}
+
+pub static STARTUP_OVERRIDES: Lazy<Mutex<StartupOverrides>> =
+    Lazy::new(|| Mutex::new(StartupOverrides::default()));
+
+pub async fn set_startup_overrides(overrides: StartupOverrides) {
+    *STARTUP_OVERRIDES.lock().await = overrides;
+}
 
 fn check_python_env_exists(app_name: &str) -> bool {
     let python_path = get_python_dir(app_name);
@@ -119,6 +136,15 @@ fn get_update_target<'a>(
 
 pub async fn get_apps_as_vec() -> Vec<App> {
     let mut apps_vec: Vec<App> = APPS.lock().await.values().cloned().collect();
+    let startup_overrides = STARTUP_OVERRIDES.lock().await.clone();
+    for app in &mut apps_vec {
+        if let Some(auto_start) = startup_overrides.auto_start {
+            app.auto_start = auto_start;
+        }
+        if let Some(update_method) = &startup_overrides.update_method {
+            app.update_method = update_method.clone();
+        }
+    }
     apps_vec.sort_unstable_by(|a, b| {
         b.running
             .cmp(&a.running)
@@ -383,6 +409,7 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
         }
 
         if let Some(mut app) = app_clone_for_checks {
+            let startup_overrides = STARTUP_OVERRIDES.lock().await.clone();
             let mut update_failed = false;
             if app.update_state != AppUpdateState::Idle {
                 if let Some(retry_version) = app.update_target_version.clone() {
@@ -435,8 +462,11 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                 }
             }
 
-            let update_method = app.effective_update_method().to_string();
-            let auto_start = app.auto_start;
+            let update_method = startup_overrides
+                .update_method
+                .clone()
+                .unwrap_or_else(|| app.effective_update_method().to_string());
+            let auto_start = startup_overrides.auto_start.unwrap_or(app.auto_start);
 
             let latest_update_version =
                 get_update_target(&app.available_versions, &update_method).cloned();
@@ -525,12 +555,36 @@ pub async fn load_apps() -> Result<Vec<App>, Error> {
                 && app.installed
                 && !app.available_versions.is_empty()
             {
-                info!("Auto-starting app '{}'.", app.name);
+                info!("Scheduling auto-start for '{}' in 10 seconds.", app.name);
                 let app_name_clone = app.name.clone();
+                let auto_start_override = startup_overrides.auto_start;
+                AUTO_START_CANCELLED.store(false, AtomicOrdering::SeqCst);
                 drop(auto_start_guard);
                 if let Some(app_handle) = get_app_handle() {
                     let app_handle_clone = app_handle.clone();
                     tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+
+                        let should_start = if AUTO_START_CANCELLED.load(AtomicOrdering::SeqCst) {
+                            false
+                        } else {
+                            APPS.lock()
+                                .await
+                                .get(&app_name_clone)
+                                .is_some_and(|current_app| {
+                                    auto_start_override.unwrap_or(current_app.auto_start)
+                                        && current_app.installed
+                                        && !current_app.available_versions.is_empty()
+                                        && current_app.update_state == AppUpdateState::Idle
+                                })
+                        };
+
+                        if !should_start {
+                            info!("Cancelled delayed auto-start for '{}'.", app_name_clone);
+                            return;
+                        }
+
+                        info!("Auto-starting app '{}' after delay.", app_name_clone);
                         if let Err(e) = start_app(app_handle_clone, app_name_clone.clone()).await {
                             error!("Auto-start for app '{}' failed: {:?}", app_name_clone, e);
                         }
@@ -655,10 +709,15 @@ pub async fn update_app_preferences(
         ) {
             return Err(err!("Unsupported update method: {}", update_method));
         }
+        STARTUP_OVERRIDES.lock().await.update_method = None;
         app.update_method = update_method;
     }
 
     if let Some(auto_start) = auto_start {
+        STARTUP_OVERRIDES.lock().await.auto_start = None;
+        if !auto_start {
+            AUTO_START_CANCELLED.store(true, AtomicOrdering::SeqCst);
+        }
         app.auto_start = auto_start;
     }
 
@@ -1442,6 +1501,7 @@ async fn check_running_on_start(app_name: &str, working_dir: &Path) -> Result<()
 
 #[tauri::command]
 pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Error> {
+    AUTO_START_CANCELLED.store(true, AtomicOrdering::SeqCst);
     *AUTO_START_CHECKED.lock().await = true;
     info!("Attempting to start app: {}", app_name);
     ensure_app_is_ready_to_start(&app_name).await?;
@@ -1755,6 +1815,9 @@ pub async fn watch_app_config_changes() {
                 let mut apps = APPS.lock().await;
                 if let Some(app) = apps.get_mut(&app_name) {
                     if app.update_method != update_method || app.auto_start != auto_start {
+                        if app.auto_start && !auto_start {
+                            AUTO_START_CANCELLED.store(true, AtomicOrdering::SeqCst);
+                        }
                         app.update_method = update_method;
                         app.auto_start = auto_start;
                         true

@@ -10,9 +10,13 @@ mod runas;
 mod submodule;
 mod utils;
 
+use crate::app::{
+    UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE, UPDATE_METHOD_OPTION_MANUAL,
+};
 use crate::app_service::{
-    delete_app, get_app_icon, get_update_notes, load_apps, setup_app, start_app, stop_app,
-    update_app_preferences, update_to_version, AUTO_START_CHECKED,
+    delete_app, get_app_icon, get_update_notes, load_apps, set_startup_overrides, setup_app,
+    start_app, stop_app, update_app_preferences, update_to_version, StartupOverrides,
+    AUTO_START_CHECKED,
 };
 use crate::config_manager::{
     get_config_payload, init_config_manager, save_configuration, update_config_item,
@@ -28,52 +32,120 @@ use tracing::info;
 extern crate rust_i18n;
 i18n!("locales", fallback = "en");
 
-fn has_cli_command() -> bool {
-    let args: Vec<String> = env::args().collect();
-    let mut has_command_flag = false;
-    let mut i = 1;
-    while i < args.len() {
-        if args[i].as_str() == "-c" {
-            has_command_flag = true;
-            break;
-        }
-        i += 1;
-    }
-    has_command_flag || env::var("PYAPPIFY_COMMAND").is_ok()
+#[derive(Clone, Debug, Default, PartialEq)]
+struct CommandLineOptions {
+    command: Option<String>,
+    profile_name: Option<String>,
+    auto_start: Option<bool>,
+    update_method: Option<String>,
 }
 
-async fn handle_command_line() {
+fn parse_bool_argument(value: &str) -> Option<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_update_method_argument(value: &str) -> Option<String> {
+    match value.to_ascii_uppercase().replace('-', "_").as_str() {
+        "MANUAL" | UPDATE_METHOD_OPTION_MANUAL => Some(UPDATE_METHOD_OPTION_MANUAL.to_string()),
+        "AUTO" | UPDATE_METHOD_OPTION_AUTO => Some(UPDATE_METHOD_OPTION_AUTO.to_string()),
+        "AUTO_PRE_RELEASE" | "PRERELEASE" | UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE => {
+            Some(UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE.to_string())
+        }
+        _ => None,
+    }
+}
+
+fn parse_command_line(args: &[String]) -> Result<CommandLineOptions, String> {
+    let mut options = CommandLineOptions::default();
+    let mut i = 1;
+    while i < args.len() {
+        let flag = args[i].as_str();
+        let value = match flag {
+            "-c" | "--command" | "-p" | "--profile" | "-a" | "--auto-start" | "-u"
+            | "--update-method" => args
+                .get(i + 1)
+                .ok_or_else(|| format!("Missing value for {}", flag))?,
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+
+        match flag {
+            "-c" | "--command" => options.command = Some(value.clone()),
+            "-p" | "--profile" => options.profile_name = Some(value.clone()),
+            "-a" | "--auto-start" => {
+                options.auto_start = Some(parse_bool_argument(value).ok_or_else(|| {
+                    format!(
+                        "Invalid auto-start value '{}'; expected true or false",
+                        value
+                    )
+                })?);
+            }
+            "-u" | "--update-method" => {
+                options.update_method =
+                    Some(parse_update_method_argument(value).ok_or_else(|| {
+                        format!(
+                        "Invalid update method '{}'; expected manual, auto, or auto-pre-release",
+                        value
+                    )
+                    })?);
+            }
+            _ => unreachable!(),
+        }
+        i += 2;
+    }
+
+    if options.command.is_none() {
+        options.command = env::var("PYAPPIFY_COMMAND").ok();
+    }
+    if options.profile_name.is_none() {
+        options.profile_name = env::var("PYAPPIFY_PROFILE_NAME").ok();
+    }
+    if options.auto_start.is_none() {
+        options.auto_start = env::var("PYAPPIFY_AUTO_START")
+            .ok()
+            .map(|value| {
+                parse_bool_argument(&value).ok_or_else(|| {
+                    format!(
+                        "Invalid PYAPPIFY_AUTO_START value '{}'; expected true or false",
+                        value
+                    )
+                })
+            })
+            .transpose()?;
+    }
+    if options.update_method.is_none() {
+        options.update_method = env::var("PYAPPIFY_UPDATE_METHOD")
+            .ok()
+            .map(|value| {
+                parse_update_method_argument(&value)
+                    .ok_or_else(|| format!("Invalid PYAPPIFY_UPDATE_METHOD value '{}'", value))
+            })
+            .transpose()?;
+    }
+
+    if options.command.as_deref() == Some("start") && options.auto_start.is_none() {
+        options.auto_start = Some(true);
+    }
+
+    Ok(options)
+}
+
+fn has_cli_command(options: &CommandLineOptions) -> bool {
+    options.command.as_deref() == Some("setup")
+}
+
+async fn handle_command_line(options: CommandLineOptions) {
     {
         let mut auto_start_lock = AUTO_START_CHECKED.lock().await;
         *auto_start_lock = true;
     }
-    let args: Vec<String> = env::args().collect();
-    let mut command = None;
-    let mut profile_name = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "-c" => {
-                command = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "-p" => {
-                profile_name = args.get(i + 1).cloned();
-                i += 2;
-            }
-            _ => i += 1,
-        }
-    }
-
-    if command.is_none() {
-        command = env::var("PYAPPIFY_COMMAND").ok();
-    }
-    if profile_name.is_none() {
-        profile_name = env::var("PYAPPIFY_PROFILE_NAME").ok();
-    }
-
-    if let (Some(cmd), Some(p_name)) = (command, profile_name) {
+    if let (Some(cmd), Some(p_name)) = (options.command, options.profile_name) {
         if cmd == "setup" {
             let apps = match load_apps().await {
                 Ok(apps) => apps,
@@ -115,6 +187,18 @@ async fn show_main_window(window: tauri::Window) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub async fn run() {
+    let command_line_options = match parse_command_line(&env::args().collect::<Vec<_>>()) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{}", error);
+            std::process::exit(2);
+        }
+    };
+    set_startup_overrides(StartupOverrides {
+        auto_start: command_line_options.auto_start,
+        update_method: command_line_options.update_method.clone(),
+    })
+    .await;
     #[cfg(debug_assertions)]
     {
         if let Ok(current_dir) = std::env::current_dir() {
@@ -235,14 +319,14 @@ pub async fn run() {
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", cwd);
     }
 
-    if has_cli_command() {
+    if has_cli_command(&command_line_options) {
         info!("running in cli");
         let context = tauri::generate_context!();
         let app = tauri::Builder::default()
             .build(context)
             .expect("error while building tauri application in CLI mode");
         init_config_manager(app.handle());
-        handle_command_line().await;
+        handle_command_line(command_line_options).await;
     } else {
         info!("running with tauri ui");
         tauri::Builder::default()
@@ -283,5 +367,57 @@ pub async fn run() {
             ])
             .run(tauri::generate_context!())
             .expect("error while running tauri application");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_command_line, CommandLineOptions};
+    use crate::app::{UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE, UPDATE_METHOD_OPTION_MANUAL};
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_temporary_startup_overrides() {
+        let parsed = parse_command_line(&args(&[
+            "pyappify",
+            "-c",
+            "start",
+            "--auto-start",
+            "false",
+            "--update-method",
+            "auto-pre-release",
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            parsed,
+            CommandLineOptions {
+                command: Some("start".to_string()),
+                profile_name: None,
+                auto_start: Some(false),
+                update_method: Some(UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE.to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn start_command_enables_auto_start_unless_explicitly_overridden() {
+        let parsed =
+            parse_command_line(&args(&["pyappify", "--command", "start", "-u", "manual"])).unwrap();
+
+        assert_eq!(parsed.auto_start, Some(true));
+        assert_eq!(
+            parsed.update_method.as_deref(),
+            Some(UPDATE_METHOD_OPTION_MANUAL)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_startup_override_values() {
+        let error = parse_command_line(&args(&["pyappify", "-a", "sometimes"])).unwrap_err();
+        assert!(error.contains("Invalid auto-start value"));
     }
 }
