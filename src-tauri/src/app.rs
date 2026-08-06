@@ -20,6 +20,10 @@ fn default_update_method_fn() -> String {
     UPDATE_METHOD_OPTION_AUTO.to_string()
 }
 
+fn default_auto_start_fn() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum AppUpdateState {
@@ -54,7 +58,7 @@ pub struct App {
     pub installed: bool,
     #[serde(default = "default_update_method_fn")]
     pub update_method: String,
-    #[serde(default)]
+    #[serde(default = "default_auto_start_fn")]
     pub auto_start: bool,
     #[serde(default)]
     pub update_state: AppUpdateState,
@@ -389,14 +393,14 @@ mod tests {
         let app: App = serde_json::from_str(r#"{"name":"example"}"#).unwrap();
 
         assert_eq!(app.update_method, UPDATE_METHOD_OPTION_AUTO);
-        assert!(!app.auto_start);
+        assert!(app.auto_start);
         assert_eq!(app.update_state, AppUpdateState::Idle);
         assert_eq!(app.update_target_version, None);
         assert_eq!(app.update_error, None);
 
         let saved = serde_json::to_value(app).unwrap();
         assert_eq!(saved["update_method"], UPDATE_METHOD_OPTION_AUTO);
-        assert_eq!(saved["auto_start"], false);
+        assert_eq!(saved["auto_start"], true);
         assert_eq!(saved["update_state"], "idle");
     }
 
