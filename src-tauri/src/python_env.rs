@@ -517,7 +517,6 @@ pub async fn install_requirements(
     requirements: &str,
     project_dir: &Path,
     pip_args: &str,
-    no_deps: bool,
 ) -> Result<(), Error> {
     let python_exe = get_python_exe(app_name, false);
     if !python_exe.exists() {
@@ -538,23 +537,16 @@ pub async fn install_requirements(
         let index_url = config.get_effective_pip_index_url();
         (cache_dir, index_url)
     };
-    let no_deps_desc = if no_deps { " --no-deps" } else { "" };
     let pip_install_desc;
     if requirements.ends_with(".txt") {
         let requirements_path = project_dir.join(requirements);
         pip_install_desc = format!(
-            "{} -m pip install{} -r {}",
+            "{} -m pip install -r {}",
             python_exe.display(),
-            no_deps_desc,
             requirements_path.display()
         );
     } else {
-        pip_install_desc = format!(
-            "{} -m pip install{} {}",
-            python_exe.display(),
-            no_deps_desc,
-            requirements
-        );
+        pip_install_desc = format!("{} -m pip install {}", python_exe.display(), requirements);
     }
     let mut pip_install_cmd = new_cmd(python_exe);
     pip_install_cmd
@@ -563,9 +555,6 @@ pub async fn install_requirements(
         .arg("pip")
         .arg("install")
         .arg("--no-warn-script-location");
-    if no_deps {
-        pip_install_cmd.arg("--no-deps");
-    }
     pip_install_cmd.clear_python_envs();
     let mut use_config_index_url = true;
     if !pip_args.is_empty() {
@@ -623,7 +612,6 @@ pub async fn install_requirements(
     _requirements: &str,
     _project_dir: &Path,
     _pip_args: &str,
-    _no_deps: bool,
 ) -> Result<(), Error> {
     err!("install_requirements is only implemented for Windows.")
 }
