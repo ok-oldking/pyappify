@@ -30,12 +30,16 @@ profiles:
     main_script: "main.py" # If ending with .py, will use python venv to run. Otherwise, will search in the working dir and the venv's Script/bin path.
     requires_python: "3.12" # Supports python 3.7 - 3.13.
     requirements: "requirements.txt"  # Supports a requirements.txt file or pyproject.toml like .[dev,docs].
-    pip_args: "--index-url https://mirrors.cloud.tencent.com/pypi/simple" # Optional pip arguments.
+    pip_args: "--no-deps --index-url https://mirrors.cloud.tencent.com/pypi/simple" # Optional pip arguments; use --no-deps to skip dependency installation.
 
   - name: "debug" # Optional Another profile.
     main_script: "main_debug.py" # You can omit other properties; they will default to the values from the first profile.
     pip_args: "-i https://mirrors.aliyun.com/pypi/simple" # Optional pip arguments.
 ```
+
+`pip_args` accepts arguments passed directly to `pip install`. For example, set
+`pip_args: "--no-deps"` when packages listed in the requirements file should be
+installed without their dependencies.
 
 3. You can test the launcher by double-clicking the pyappify.exe and install python with the GUI. You can then package the files for offline or online distribution.
 
