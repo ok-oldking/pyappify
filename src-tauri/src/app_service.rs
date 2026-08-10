@@ -955,11 +955,18 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<(), Error> 
     let requirements = &profile_settings_for_setup.requirements;
     let python_version_spec = &profile_settings_for_setup.requires_python;
     let pip_args = &profile_settings_for_setup.pip_args;
+    let no_deps = profile_settings_for_setup.no_deps;
     python_env::setup_python_env(app_name.to_string(), &python_version_spec).await?;
 
     if !requirements.is_empty() {
-        python_env::install_requirements(app_name, requirements, &working_dir_path, pip_args)
-            .await?;
+        python_env::install_requirements(
+            app_name,
+            requirements,
+            &working_dir_path,
+            pip_args,
+            no_deps,
+        )
+        .await?;
     } else {
         info!(
             "No reqs in profile '{}' of {}. Skipping sync.",
@@ -1293,14 +1300,14 @@ async fn update_to_version_inner(app_name: &str, version: &str) -> Result<(), Er
     }
     debug!("Updated working dir for app {}", app_name);
 
-    let (new_requirements_spec, new_pip_args) = {
+    let (new_requirements_spec, new_pip_args, new_no_deps) = {
         let yml_path = working_dir_path.join(YML_FILE_NAME);
         let mut temp_app = read_embedded_app();
         temp_app.name = app_name.to_string();
         update_app_from_yml(&mut temp_app, &yml_path.to_string_lossy());
         match temp_app.get_profile("default") {
-            Some(p) => (p.requirements.clone(), p.pip_args.clone()),
-            None => (String::new(), String::new()),
+            Some(p) => (p.requirements.clone(), p.pip_args.clone(), p.no_deps),
+            None => (String::new(), String::new(), false),
         }
     };
     let new_content = get_relevant_content(&new_requirements_spec, &working_dir_path);
@@ -1334,6 +1341,7 @@ async fn update_to_version_inner(app_name: &str, version: &str) -> Result<(), Er
             &new_requirements_spec,
             &working_dir_path,
             &new_pip_args,
+            new_no_deps,
         )
         .await
         {
@@ -1592,6 +1600,7 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
             &profile_to_run_with.requirements,
             &working_dir,
             &profile_to_run_with.pip_args,
+            profile_to_run_with.no_deps,
         )
         .await?;
     }
@@ -1925,6 +1934,7 @@ mod tests {
             git_url: String::new(),
             requires_python: String::new(),
             pip_args: String::new(),
+            no_deps: false,
         };
         let env = build_python_execution_environment(
             "example",

@@ -139,6 +139,8 @@ pub struct Profile {
     pub requires_python: String,
     #[serde(default)]
     pub pip_args: String,
+    #[serde(default)]
+    pub no_deps: bool,
 }
 
 impl Profile {
@@ -382,6 +384,17 @@ mod tests {
     fn reads_relative_icon_path_from_yaml() {
         let app: App = serde_yaml::from_str("name: example\nicon: assets/icon.png\n").unwrap();
         assert_eq!(app.icon, "assets/icon.png");
+    }
+
+    #[test]
+    fn profile_no_deps_defaults_to_false_and_accepts_yaml_key() {
+        let app: App = serde_yaml::from_str(
+            "name: example\nprofiles:\n  - name: default\n  - name: isolated\n    no_deps: true\n",
+        )
+        .unwrap();
+
+        assert!(!app.profiles[0].no_deps);
+        assert!(app.profiles[1].no_deps);
     }
 
     #[test]

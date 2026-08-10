@@ -6,6 +6,7 @@ profiles:
     main_script: "main.py" # if ending with .py will use python venv to run, else will search in the working dir and the venv's Script/bin path
     requires_python: "3.12" # supports python 3.7 - 3.13
     requirements: "requirements.txt"  # support using a *.txt or pyproject.toml's .[dev,docs]
+    no_deps: false # optional; add --no-deps to pip install
     pip_args: "--index-url https://mirrors.cloud.tencent.com/pypi/simple" # optional
 
   - name: "debug" # can use Unicode chars
