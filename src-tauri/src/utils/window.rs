@@ -4,6 +4,7 @@ use crate::utils::error::Error;
 use crate::utils::path::get_start_dir;
 use std::env;
 use std::fs;
+use std::path::Path;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, Manager, WebviewWindow, Window, WindowEvent, Wry};
@@ -89,6 +90,14 @@ fn show_window(window: WebviewWindow) {
     window.set_focus().unwrap();
 }
 
+fn build_startup_shortcut(
+    exe_path: &Path,
+) -> Result<shortcuts_rs::ShellLink, shortcuts_rs::MSLinkError> {
+    // Launch PyAppify normally so the saved Auto Start preference remains authoritative.
+    // Older shortcuts used `-c start`, which forced the child app to run at every login.
+    shortcuts_rs::ShellLink::new(exe_path, None, None, None)
+}
+
 #[tauri::command]
 pub async fn create_startup_shortcut(app_handle: AppHandle, name: String) -> Result<(), Error> {
     let shortcut_dir = get_start_dir(app_handle);
@@ -97,10 +106,22 @@ pub async fn create_startup_shortcut(app_handle: AppHandle, name: String) -> Res
 
     let shortcut_path = shortcut_dir.join(format!("{}.lnk", name));
     let exe_path = env::current_exe()?;
-    let args = format!("-c start -n {}", name);
 
-    let link = shortcuts_rs::ShellLink::new(&exe_path, Some(args), None, None)?;
+    let link = build_startup_shortcut(&exe_path)?;
     link.create_lnk(&shortcut_path)?;
     info!("created shortcut at {shortcut_path:?}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_startup_shortcut;
+
+    #[test]
+    fn startup_shortcut_does_not_force_start_the_child_app() {
+        let exe_path = std::env::current_exe().unwrap();
+        let shortcut = build_startup_shortcut(&exe_path).unwrap();
+
+        assert_eq!(shortcut.arguments(), &None);
+    }
 }

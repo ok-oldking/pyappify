@@ -8,13 +8,16 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::vec::Vec;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, error, info, warn};
 
 pub const YML_FILE_NAME: &str = "pyappify.yml";
 pub const UPDATE_METHOD_OPTION_MANUAL: &str = "MANUAL_UPDATE";
 pub const UPDATE_METHOD_OPTION_AUTO: &str = "AUTO_UPDATE";
 pub const UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE: &str = "AUTO_UPDATE_PRE_RELEASE";
+static APP_JSON_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn default_update_method_fn() -> String {
     UPDATE_METHOD_OPTION_AUTO.to_string()
@@ -276,7 +279,7 @@ pub(crate) async fn save_app_config_to_json(app: &App) -> anyhow::Result<()> {
             )
         })?;
     }
-    tokio::fs::write(&config_path, json_data)
+    write_file_atomically(&config_path, json_data.as_bytes())
         .await
         .with_context(|| format!("Failed to write app.json for {}", app.name))?;
     debug!(
@@ -285,6 +288,66 @@ pub(crate) async fn save_app_config_to_json(app: &App) -> anyhow::Result<()> {
         config_path.display()
     );
     Ok(())
+}
+
+async fn write_file_atomically(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    let sequence = APP_JSON_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp_path = path.with_file_name(format!(".app.json.{}.{sequence}.tmp", std::process::id()));
+
+    let write_result = async {
+        let mut temp_file = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .await?;
+        temp_file.write_all(contents).await?;
+        temp_file.flush().await?;
+        temp_file.sync_all().await?;
+        drop(temp_file);
+
+        replace_file(&temp_path, path)?;
+        Ok::<(), std::io::Error>(())
+    }
+    .await;
+
+    if write_result.is_err() {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+    }
+    write_result?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination_wide: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let moved = unsafe {
+        MoveFileExW(
+            source_wide.as_ptr(),
+            destination_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+
+    if moved == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
 }
 
 pub(crate) async fn load_app_config_from_json(app_name: &str) -> anyhow::Result<Option<App>> {
@@ -370,7 +433,44 @@ pub(crate) async fn load_app_config_from_json(app_name: &str) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{App, AppUpdateState, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_MANUAL};
+    use super::{
+        write_file_atomically, App, AppUpdateState, UPDATE_METHOD_OPTION_AUTO,
+        UPDATE_METHOD_OPTION_MANUAL,
+    };
+
+    #[tokio::test]
+    async fn atomically_replaces_existing_app_json() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "pyappify-atomic-app-json-{}-{unique}",
+            std::process::id()
+        ));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let config_path = root.join("app.json");
+        tokio::fs::write(&config_path, br#"{"name":"old"}"#)
+            .await
+            .unwrap();
+
+        write_file_atomically(&config_path, br#"{"name":"new"}"#)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(&config_path).await.unwrap(),
+            r#"{"name":"new"}"#
+        );
+        assert_eq!(
+            std::fs::read_dir(&root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .count(),
+            1
+        );
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
 
     #[test]
     fn icon_defaults_to_empty_when_omitted_from_yaml() {

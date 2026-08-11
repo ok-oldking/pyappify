@@ -129,7 +129,17 @@ fn parse_command_line(args: &[String]) -> Result<CommandLineOptions, String> {
             .transpose()?;
     }
 
-    if options.command.as_deref() == Some("start") && options.auto_start.is_none() {
+    // Existing PyAppify startup shortcuts used `-c start -n <app>`. Do not let that
+    // legacy marker override a user's saved Auto Start preference. Explicit modern
+    // `-c start` invocations still retain their documented force-start behavior.
+    let is_legacy_startup_shortcut = options.command.as_deref() == Some("start")
+        && args
+            .windows(2)
+            .any(|pair| pair[0] == "-n" && !pair[1].is_empty());
+    if options.command.as_deref() == Some("start")
+        && options.auto_start.is_none()
+        && !is_legacy_startup_shortcut
+    {
         options.auto_start = Some(true);
     }
 
@@ -413,6 +423,14 @@ mod tests {
             parsed.update_method.as_deref(),
             Some(UPDATE_METHOD_OPTION_MANUAL)
         );
+    }
+
+    #[test]
+    fn legacy_startup_shortcut_respects_saved_auto_start() {
+        let parsed =
+            parse_command_line(&args(&["pyappify", "-c", "start", "-n", "example"])).unwrap();
+
+        assert_eq!(parsed.auto_start, None);
     }
 
     #[test]

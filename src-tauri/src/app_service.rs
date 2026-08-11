@@ -35,6 +35,7 @@ use std::{
         atomic::{AtomicBool, Ordering as AtomicOrdering},
         Arc,
     },
+    time::{SystemTime, UNIX_EPOCH},
 };
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::{AppHandle, Manager};
@@ -315,7 +316,19 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
             save_app_config_to_json(app_template).await?;
             app_template.clone()
         }
-        Err(e) => return Err(e.into()),
+        Err(e) if is_invalid_json_error(&e) => {
+            let config_path = get_app_config_json_path(app_name);
+            let backup_path = backup_invalid_app_config(&config_path).await?;
+            warn!(
+                "app.json for '{}' is not valid JSON: {}. Backed it up to '{}' and regenerated it from the embedded template.",
+                app_name,
+                e,
+                backup_path.display()
+            );
+            save_app_config_to_json(app_template).await?;
+            app_template.clone()
+        }
+        Err(e) => return Err(e),
     };
 
     if app.installed && !check_python_env_exists(app_name) {
@@ -354,6 +367,33 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
     load_app_details(&mut app).await?;
     save_app_config_to_json(&app).await?;
     Ok(app)
+}
+
+fn is_invalid_json_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<serde_json::Error>())
+        .is_some_and(|json_error| json_error.is_syntax() || json_error.is_eof())
+}
+
+async fn backup_invalid_app_config(config_path: &Path) -> Result<PathBuf> {
+    let unique_suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let backup_path = config_path.with_file_name(format!("app.json.invalid-{unique_suffix}.bak"));
+
+    tokio::fs::copy(config_path, &backup_path)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to back up invalid app.json from '{}' to '{}'",
+                config_path.display(),
+                backup_path.display()
+            )
+        })?;
+
+    Ok(backup_path)
 }
 
 #[tauri::command]
@@ -1891,14 +1931,64 @@ pub async fn periodically_update_all_apps_running_status(app_handle: AppHandle) 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_python_execution_environment, get_update_target, icon_mime_type,
-        parse_app_preferences, resolve_current_version_state,
+        backup_invalid_app_config, build_python_execution_environment, get_update_target,
+        icon_mime_type, is_invalid_json_error, parse_app_preferences,
+        resolve_current_version_state,
     };
     use crate::app::{Profile, UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE};
     use std::path::Path;
 
     fn versions(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn identifies_only_json_syntax_and_eof_errors_as_regeneratable() {
+        let syntax_error =
+            anyhow::Error::new(serde_json::from_str::<serde_json::Value>("{").unwrap_err());
+        assert!(is_invalid_json_error(&syntax_error));
+
+        let data_error = anyhow::Error::new(
+            serde_json::from_str::<std::collections::HashMap<String, String>>(
+                r#"{"preference":1}"#,
+            )
+            .unwrap_err(),
+        );
+        assert!(!is_invalid_json_error(&data_error));
+    }
+
+    #[tokio::test]
+    async fn backs_up_invalid_app_json_without_changing_the_original() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "pyappify-invalid-app-json-{}-{unique}",
+            std::process::id()
+        ));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let config_path = root.join("app.json");
+        tokio::fs::write(&config_path, "{invalid").await.unwrap();
+
+        let backup_path = backup_invalid_app_config(&config_path).await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(&config_path).await.unwrap(),
+            "{invalid"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&backup_path).await.unwrap(),
+            "{invalid"
+        );
+        assert_eq!(backup_path.parent(), Some(root.as_path()));
+        assert!(backup_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("app.json.invalid-"));
+
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
 
     #[test]
