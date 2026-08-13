@@ -166,8 +166,6 @@ const UPDATE_METHOD_OPTIONS = [
 type Page =
     'list'
     | 'installConsole'
-    | 'startConsole'
-    | 'versionChangeConsole'
     | 'runningAppConsole'
     | 'settings'
     | 'profileChooser'
@@ -181,6 +179,8 @@ type InlineUpdateLogState = {
     completed?: boolean;
     failed?: boolean;
 };
+
+type InlineConsoleKind = 'start' | 'update';
 
 const MAX_CONSOLE_LOGS = 500;
 const CONSOLE_LOG_STORAGE_KEY = 'pyappifyConsoleLogs';
@@ -256,6 +256,7 @@ function App() {
     const [currentPage, setCurrentPage] = useState<Page>('list');
     // Per-app inline update log state: keyed by app name
     const [inlineUpdateLogs, setInlineUpdateLogs] = useState<Record<string, InlineUpdateLogState>>({});
+    const [inlineConsoles, setInlineConsoles] = useState<Record<string, InlineConsoleKind>>({});
     // Tracks app names whose inline log is in 'completed' state — updated synchronously (not via useEffect)
     // so the apps event listener can always read the correct value before React re-renders.
     const completedAppsRef = useRef<Set<string>>(new Set());
@@ -265,12 +266,6 @@ function App() {
     const [isStartAppProcessRunning, setIsStartAppProcessRunning] = useState<boolean>(false);
     const [startingAppName, setStartingAppName] = useState<string | null>(null);
     const [consoleLogs, setConsoleLogs] = useState<Record<string, MessagePayload[]>>(loadConsoleLogs);
-    const [versionChangeConsoleData, setVersionChangeConsoleData] = useState<{
-        appName: string;
-        version: string;
-        actionType: VersionActionType;
-    } | null>(null);
-    const [isVersionChangeProcessRunning, setIsVersionChangeProcessRunning] = useState<boolean>(false);
     const [isRunningAppConsoleOpen, setIsRunningAppConsoleOpen] = useState<boolean>(false);
     const [themeMode, setThemeMode] = useState<ThemeModeSetting>(() => {
         const savedTheme = localStorage.getItem('appThemeMode');
@@ -420,7 +415,7 @@ function App() {
         setStartingAppName(appName);
         beginConsoleSession(appName, `Attempting to start app: ${appName}...`);
         setIsStartAppProcessRunning(true);
-        setCurrentPage('startConsole');
+        setInlineConsoles(prev => ({...prev, [appName]: 'start'}));
 
         await invokeTauriCommandWrapper<void>("start_app", {appName}, () => {},
             (errorMessage, rawError) => {
@@ -476,6 +471,7 @@ function App() {
                 const previousUpdateState = appUpdateStatesRef.current[app.name];
                 if (app.update_state === 'updating' && previousUpdateState !== 'updating') {
                     activeUpdateAppsRef.current.add(app.name);
+                    setInlineConsoles(prev => ({...prev, [app.name]: 'update'}));
                     const actionType = getVersionActionType(
                         app.update_target_version ?? '',
                         app.current_version,
@@ -593,9 +589,9 @@ function App() {
                 if (finished) activeUpdateAppsRef.current.delete(app_name);
             }
             if (finished) {
+                setAppActionLoading(prev => ({...prev, [app_name]: false}));
                 setIsInstallProcessRunning(false);
                 setIsStartAppProcessRunning(false);
-                setIsVersionChangeProcessRunning(false);
                 setIsRunningAppConsoleOpen(false);
                 setIsProfileChangeProcessRunning(false);
             }
@@ -683,11 +679,9 @@ function App() {
             ...prev,
             [params.appName]: {...(prev[params.appName] ?? {version: params.version, actionType: params.actionType}), isConfirming: true, completed: false, failed: false}
         }));
-        setVersionChangeConsoleData(params);
         setStartingAppName(params.appName);
         beginConsoleSession(params.appName, `Initiating ${params.actionType} for '${params.appName}' to version '${params.version}'...`);
-        setIsVersionChangeProcessRunning(true);
-        setCurrentPage('versionChangeConsole');
+        setInlineConsoles(prev => ({...prev, [params.appName]: 'update'}));
 
         const app = apps?.find(a => a.name === params.appName);
         const requirementsFile = app?.profiles?.find(p => p.name === app.current_profile)?.requirements || "requirements.txt";
@@ -703,7 +697,6 @@ function App() {
                     return {...prev, [params.appName]: {...entry, isConfirming: false, completed: false, failed: true}};
                 });
                 addConsoleLog({message: operationError, app_name: params.appName, error: true, finished: true});
-                setIsVersionChangeProcessRunning(false);
             }
         );
     };
@@ -727,8 +720,6 @@ function App() {
         if (!version) return;
         const actionType = entry?.actionType ?? 'Upgrade';
         setStartingAppName(appName);
-        setVersionChangeConsoleData({appName, version, actionType});
-        setIsVersionChangeProcessRunning(app?.update_state === 'updating');
         setConsoleLogs(previous => previous[appName]?.length
             ? previous
             : {
@@ -740,13 +731,31 @@ function App() {
                     finished: app?.update_state === 'failed',
                 }],
             });
-        setCurrentPage('versionChangeConsole');
+        setInlineConsoles(prev => ({...prev, [appName]: 'update'}));
+    };
+
+    const handleCloseInlineConsole = async (appName: string) => {
+        setInlineConsoles(prev => {
+            const next = {...prev};
+            delete next[appName];
+            return next;
+        });
+        setAppActionLoading(prev => ({...prev, [appName]: false}));
+        if (startingAppName === appName) {
+            setStartingAppName(null);
+            setIsStartAppProcessRunning(false);
+        }
+        await invokeTauriCommandWrapper<App[]>("load_apps", undefined, () => {},
+            (errorMessage, rawError) => {
+                console.error("Failed to reload apps:", rawError);
+                updateStatus({error: `Failed to reload apps: ${errorMessage}`});
+            }
+        );
     };
 
     const resetConsoleStates = () => {
         setIsInstallProcessRunning(false);
         setIsStartAppProcessRunning(false);
-        setIsVersionChangeProcessRunning(false);
         setIsRunningAppConsoleOpen(false);
         setIsProfileChangeProcessRunning(false);
     }
@@ -758,7 +767,6 @@ function App() {
         updateStatus({messageLoading: false});
         if (startingAppName) setAppActionLoading(prev => ({...prev, [startingAppName]: false}));
         setStartingAppName(null);
-        setVersionChangeConsoleData(null);
         setProfileChangeData(null);
 
         updateStatus({loading: true, info: t("Refreshing app...")});
@@ -847,28 +855,10 @@ function App() {
         setAppActionLoading(prev => ({...prev, [appName]: false}));
     };
 
-    const versionChangeProgress = useMemo(() => {
-        if (!startingAppName || !versionChangeConsoleData) return undefined;
-        return calculateVersionChangeProgress(
-            consoleLogs[startingAppName] ?? [],
-            isVersionChangeProcessRunning,
-        );
-    }, [
-        consoleLogs,
-        isVersionChangeProcessRunning,
-        startingAppName,
-        versionChangeConsoleData,
-    ]);
-
     let pageContent;
 
     if (currentPage === 'installConsole' && startingAppName) {
         pageContent = <ConsolePage title={t('Installing App: {{appName}}', {appName: startingAppName})} appName={startingAppName} logs={consoleLogs[startingAppName] ?? []} onBack={handleBackFromConsole} isProcessing={isInstallProcessRunning}/>;
-    } else if (currentPage === 'startConsole' && startingAppName) {
-        pageContent = <ConsolePage title={t('Starting App: {{appName}}', {appName: startingAppName})} appName={startingAppName} logs={consoleLogs[startingAppName] ?? []} onBack={handleBackFromConsole} isProcessing={isStartAppProcessRunning}/>;
-    } else if (currentPage === 'versionChangeConsole' && versionChangeConsoleData && startingAppName) {
-        const title = t('{{actionType}} App: {{appName}}', { actionType: t(versionChangeConsoleData.actionType), appName: startingAppName });
-        pageContent = <ConsolePage title={title} appName={startingAppName} logs={consoleLogs[startingAppName] ?? []} onBack={handleBackFromConsole} isProcessing={isVersionChangeProcessRunning} progress={versionChangeProgress} progressAction={t(versionChangeConsoleData.actionType)}/>;
     } else if (currentPage === 'runningAppConsole' && startingAppName) {
         pageContent = <ConsolePage title={t('Console: {{appName}}', {appName: startingAppName})} appName={startingAppName} logs={consoleLogs[startingAppName] ?? []} onBack={handleBackFromConsole} isProcessing={isRunningAppConsoleOpen}/>;
     } else if (currentPage === 'profileChangeConsole' && profileChangeData && startingAppName) {
@@ -966,6 +956,16 @@ function App() {
                                 'Upgrade',
                             );
                             const disableRowActions = currentPage !== 'list' || status.messageLoading || isThisAppLoading || updateBlocksActions;
+                            const disableUpdateControls = currentPage !== 'list' || status.messageLoading || isThisAppLoading || app.update_state === 'updating';
+                            const inlineConsoleKind = inlineConsoles[app.name];
+                            const inlineUpdateEntry = inlineUpdateLogs[app.name];
+                            const inlineUpdateAction = inlineUpdateEntry?.actionType ?? persistedActionType;
+                            const inlineConsoleProgress = inlineConsoleKind === 'update'
+                                ? calculateVersionChangeProgress(
+                                    consoleLogs[app.name] ?? [],
+                                    app.update_state === 'updating' || !!inlineUpdateEntry?.isConfirming,
+                                )
+                                : undefined;
                             return (
                                 <Card
                                     key={app.name}
@@ -1057,7 +1057,7 @@ function App() {
                                                 )}
                                             </Stack>
                                         </Stack>
-                                        {app.installed && !app.running && (
+                                        {app.installed && (!app.running || !!inlineConsoleKind) && (
                                             <Box
                                                 sx={{
                                                     mt: 2.5,
@@ -1066,8 +1066,9 @@ function App() {
                                                     bgcolor: theme => alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.075 : 0.045),
                                                 }}
                                             >
-                                                <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{alignItems: {xs: 'stretch', sm: 'center'}}}>
-                                                        <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 220}}} disabled={disableRowActions}>
+                                                {!app.running && (
+                                                    <Stack direction={{xs: 'column', sm: 'row'}} spacing={1} sx={{alignItems: {xs: 'stretch', sm: 'center'}}}>
+                                                        <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 220}}} disabled={disableUpdateControls}>
                                                             <InputLabel>{t('Update Method')}</InputLabel>
                                                             <Select
                                                                 value={app.update_method}
@@ -1080,7 +1081,7 @@ function App() {
                                                             </Select>
                                                         </FormControl>
                                                         {app.available_versions.filter(v => v !== app.current_version).length > 0 ? (
-                                                            <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 220}}} disabled={disableRowActions}>
+                                                            <FormControl size="small" sx={{minWidth: {xs: '100%', sm: 220}}} disabled={disableUpdateControls}>
                                                                 <InputLabel>{t('Change version...')}</InputLabel>
                                                                 <Select
                                                                     value={selectedTargetVersions[app.name] || ''}
@@ -1101,15 +1102,31 @@ function App() {
                                                             </FormControl>
                                                         ) : <Typography variant="caption">{t("No other versions found.")}</Typography>}
                                                         <Tooltip title={t("Check for updates")}><span><IconButton onClick={() => handleCheckForUpdates(app.name)} disabled={disableRowActions} sx={{bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2}}>{isThisAppLoading && checkingUpdateForApp === app.name ? <CircularProgress size={20}/> : <Cached fontSize="small"/>}</IconButton></span></Tooltip>
-                                                </Stack>
-                                                {inlineUpdateLogs[app.name] && (
+                                                    </Stack>
+                                                )}
+                                                {inlineConsoleKind ? (
+                                                    <ConsolePage
+                                                        inline
+                                                        title={inlineConsoleKind === 'start'
+                                                            ? t('Starting App: {{appName}}', {appName: app.name})
+                                                            : t('{{actionType}} App: {{appName}}', {actionType: t(inlineUpdateAction), appName: app.name})}
+                                                        appName={app.name}
+                                                        logs={consoleLogs[app.name] ?? []}
+                                                        onBack={() => handleCloseInlineConsole(app.name)}
+                                                        isProcessing={inlineConsoleKind === 'start'
+                                                            ? isStartAppProcessRunning && startingAppName === app.name
+                                                            : app.update_state === 'updating' || !!inlineUpdateEntry?.isConfirming}
+                                                        progress={inlineConsoleProgress}
+                                                        progressAction={inlineConsoleKind === 'update' ? t(inlineUpdateAction) : undefined}
+                                                    />
+                                                ) : inlineUpdateEntry && (
                                                     <UpdateLogPage
                                                         appName={app.name}
-                                                        version={inlineUpdateLogs[app.name].version}
-                                                        actionType={inlineUpdateLogs[app.name].actionType}
-                                                        isConfirming={inlineUpdateLogs[app.name].isConfirming}
-                                                        completed={inlineUpdateLogs[app.name].completed}
-                                                        failed={inlineUpdateLogs[app.name].failed}
+                                                        version={inlineUpdateEntry.version}
+                                                        actionType={inlineUpdateEntry.actionType}
+                                                        isConfirming={inlineUpdateEntry.isConfirming}
+                                                        completed={inlineUpdateEntry.completed}
+                                                        failed={inlineUpdateEntry.failed}
                                                         onConfirm={handleConfirmVersionChange}
                                                         onOpenConsole={() => handleOpenUpdateConsole(app.name)}
                                                         onCancel={() => {

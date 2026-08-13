@@ -20,6 +20,7 @@ interface ConsolePageProps {
     isProcessing: boolean;
     progress?: VersionChangeProgress;
     progressAction?: string;
+    inline?: boolean;
 }
 
 const renderMessageWithClickableLinks = (message: string) => {
@@ -61,6 +62,7 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
                                                      isProcessing,
                                                      progress,
                                                      progressAction,
+                                                     inline = false,
                                                  }) => {
     const {t} = useTranslation();
     const consoleBodyRef = useRef<null | HTMLDivElement>(null);
@@ -94,11 +96,12 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
     };
 
     return (
-        <Container maxWidth="lg" sx={{
-            py: 3,
+        <Container maxWidth={inline ? false : "lg"} disableGutters={inline} sx={{
+            py: inline ? 0 : 3,
+            mt: inline ? 2 : 0,
             display: 'flex',
             flexDirection: 'column',
-            height: 'calc(100vh - 48px)'
+            height: inline ? 'auto' : 'calc(100vh - 48px)'
         }}>
             <Box sx={{mb: 2}}>
                 <Typography variant="h5" component="h2" gutterBottom>
@@ -142,7 +145,9 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
             <Paper
                 elevation={3}
                 sx={{
-                    flexGrow: 1,
+                    flexGrow: inline ? 0 : 1,
+                    minHeight: inline ? 220 : undefined,
+                    maxHeight: inline ? 360 : undefined,
                     overflow: 'auto',
                     p: 2,
                     fontFamily: 'monospace',
