@@ -65,8 +65,8 @@ pub fn get_start_dir(app_handle: AppHandle) -> PathBuf {
 }
 
 fn strip_extended_path_prefix(path_str: &str) -> String {
-    if path_str.starts_with("\\\\?\\") {
-        path_str[4..].to_string()
+    if let Some(stripped) = path_str.strip_prefix("\\\\?\\") {
+        stripped.to_string()
     } else {
         path_str.to_string()
     }

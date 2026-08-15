@@ -35,7 +35,7 @@ unsafe fn win_runas(cmd: *const c_ushort, args: *const c_ushort, show: bool) -> 
     sei.lpParameters = args;
     sei.nShow = if show { SW_NORMAL } else { SW_HIDE } as _;
 
-    if ShellExecuteExW(&mut sei) == 0 || sei.hProcess == ptr::null_mut() as _ {
+    if ShellExecuteExW(&mut sei) == 0 || ptr::eq(sei.hProcess, ptr::null_mut()) {
         return !0;
     }
 
@@ -53,7 +53,7 @@ pub fn runas_impl(cmd: &Command) -> io::Result<ExitStatus> {
     for arg in cmd.args.iter() {
         let arg = arg.to_string_lossy();
         params.push(' ');
-        if arg.len() == 0 {
+        if arg.is_empty() {
             params.push_str("\"\"");
         } else if arg.find(&[' ', '\t', '"'][..]).is_none() {
             params.push_str(&arg);
@@ -80,7 +80,7 @@ pub fn runas_impl(cmd: &Command) -> io::Result<ExitStatus> {
         .collect::<Vec<_>>();
 
     unsafe {
-        Ok(mem::transmute(win_runas(
+        Ok(mem::transmute::<u32, ExitStatus>(win_runas(
             file.as_ptr(),
             params.as_ptr(),
             !cmd.hide,

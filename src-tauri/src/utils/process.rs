@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command as StdCommand;
 use sysinfo::{Pid, Process, System};
 use tokio::process::Command as TokioCommand;
@@ -73,7 +73,7 @@ pub fn is_process_related_to_app_dir(process: &Process, app_dir_canonical: &Path
     false
 }
 
-pub fn get_pids_related_to_app_dir(sys: &System, app_dir_canonical: &PathBuf) -> Vec<Pid> {
+pub fn get_pids_related_to_app_dir(sys: &System, app_dir_canonical: &Path) -> Vec<Pid> {
     let mut related_pids = Vec::new();
     for (pid, process) in sys.processes() {
         if is_process_related_to_app_dir(process, app_dir_canonical) {

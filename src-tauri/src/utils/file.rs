@@ -130,59 +130,6 @@ where
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::copy_dir_recursive_filtered_sync;
-    #[cfg(windows)]
-    use super::is_retryable_copy_error;
-    #[cfg(windows)]
-    use std::io;
-    use std::{fs, time::SystemTime};
-
-    #[cfg(windows)]
-    #[test]
-    fn retries_windows_file_mapping_and_lock_errors() {
-        for code in [32, 33, 1224] {
-            assert!(is_retryable_copy_error(&io::Error::from_raw_os_error(code)));
-        }
-        assert!(!is_retryable_copy_error(&io::Error::from_raw_os_error(5)));
-    }
-
-    #[test]
-    fn filtered_copy_skips_git_ignored_directories() {
-        let unique = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "pyappify-filtered-copy-{}-{unique}",
-            std::process::id()
-        ));
-        let source = root.join("source");
-        let destination = root.join("destination");
-
-        fs::create_dir_all(source.join("node_modules/package")).unwrap();
-        fs::write(source.join(".gitignore"), "node_modules/\n").unwrap();
-        fs::write(source.join("app.py"), "print('tracked')").unwrap();
-        fs::write(source.join("node_modules/package/index.js"), "ignored").unwrap();
-        let repository = git2::Repository::init(&source).unwrap();
-
-        copy_dir_recursive_filtered_sync(&source, &destination, &[".git"], &|relative| {
-            repository.status_should_ignore(relative).unwrap()
-        })
-        .unwrap();
-
-        assert_eq!(
-            fs::read_to_string(destination.join("app.py")).unwrap(),
-            "print('tracked')"
-        );
-        assert!(!destination.join("node_modules").exists());
-        assert!(!destination.join(".git").exists());
-
-        fs::remove_dir_all(root).unwrap();
-    }
-}
-
 pub fn sync_delete_extra_files(working_dir: &Path, repo_dir: &Path) -> io::Result<()> {
     let mut paths_to_delete: Vec<PathBuf> = Vec::new();
 
@@ -210,8 +157,7 @@ pub fn sync_delete_extra_files(working_dir: &Path, repo_dir: &Path) -> io::Resul
     });
 
     for entry_res in walker {
-        let entry = entry_res
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Walkdir error: {}", e)))?;
+        let entry = entry_res.map_err(|e| io::Error::other(format!("Walkdir error: {}", e)))?;
         let working_path = entry.path();
 
         if working_path == working_dir {
@@ -289,4 +235,57 @@ pub async fn delete_dir_if_exist(working_dir_path: &Path) -> Result<()> {
     }
 
     result.with_context(|| format!("Failed to remove dir {}", working_dir_path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::copy_dir_recursive_filtered_sync;
+    #[cfg(windows)]
+    use super::is_retryable_copy_error;
+    #[cfg(windows)]
+    use std::io;
+    use std::{fs, time::SystemTime};
+
+    #[cfg(windows)]
+    #[test]
+    fn retries_windows_file_mapping_and_lock_errors() {
+        for code in [32, 33, 1224] {
+            assert!(is_retryable_copy_error(&io::Error::from_raw_os_error(code)));
+        }
+        assert!(!is_retryable_copy_error(&io::Error::from_raw_os_error(5)));
+    }
+
+    #[test]
+    fn filtered_copy_skips_git_ignored_directories() {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "pyappify-filtered-copy-{}-{unique}",
+            std::process::id()
+        ));
+        let source = root.join("source");
+        let destination = root.join("destination");
+
+        fs::create_dir_all(source.join("node_modules/package")).unwrap();
+        fs::write(source.join(".gitignore"), "node_modules/\n").unwrap();
+        fs::write(source.join("app.py"), "print('tracked')").unwrap();
+        fs::write(source.join("node_modules/package/index.js"), "ignored").unwrap();
+        let repository = git2::Repository::init(&source).unwrap();
+
+        copy_dir_recursive_filtered_sync(&source, &destination, &[".git"], &|relative| {
+            repository.status_should_ignore(relative).unwrap()
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(destination.join("app.py")).unwrap(),
+            "print('tracked')"
+        );
+        assert!(!destination.join("node_modules").exists());
+        assert!(!destination.join(".git").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }

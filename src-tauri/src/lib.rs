@@ -14,7 +14,7 @@ use crate::app::{
     UPDATE_METHOD_OPTION_AUTO, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE, UPDATE_METHOD_OPTION_MANUAL,
 };
 use crate::app_service::{
-    delete_app, get_app_icon, get_update_notes, load_apps, set_startup_overrides, setup_app,
+    delete_app, get_app_icon, get_update_notes, load_app, set_startup_overrides, setup_app,
     start_app, stop_app, update_app_preferences, update_to_version, StartupOverrides,
     AUTO_START_CHECKED,
 };
@@ -157,33 +157,28 @@ async fn handle_command_line(options: CommandLineOptions) {
     }
     if let (Some(cmd), Some(p_name)) = (options.command, options.profile_name) {
         if cmd == "setup" {
-            let apps = match load_apps().await {
-                Ok(apps) => apps,
+            let app = match load_app().await {
+                Ok(app) => app,
                 Err(e) => {
-                    eprintln!("Failed to load apps: {:?}", e);
+                    eprintln!("Failed to load app: {:?}", e);
                     std::process::exit(1);
                 }
             };
 
-            if let Some(app) = apps.first() {
-                let a_name = &app.name;
-                println!(
-                    "Command-line mode: Setting up app '{}' with profile '{}'.",
-                    a_name, p_name
-                );
-                match setup_app(a_name, &p_name).await {
-                    Ok(_path) => {
-                        println!("Setup successful.");
-                        std::process::exit(0);
-                    }
-                    Err(e) => {
-                        eprintln!("Setup failed: {:?}", e);
-                        std::process::exit(1);
-                    }
+            let app_name = &app.name;
+            println!(
+                "Command-line mode: Setting up app '{}' with profile '{}'.",
+                app_name, p_name
+            );
+            match setup_app(app_name, &p_name).await {
+                Ok(()) => {
+                    println!("Setup successful.");
+                    std::process::exit(0);
                 }
-            } else {
-                eprintln!("No apps found to set up.");
-                std::process::exit(1);
+                Err(e) => {
+                    eprintln!("Setup failed: {:?}", e);
+                    std::process::exit(1);
+                }
             }
         }
     }
@@ -348,11 +343,11 @@ pub async fn run() {
             .plugin(tauri_plugin_opener::init())
             .plugin(tauri_plugin_notification::init())
             .setup(|app| {
-                window::create_system_tray(&app).unwrap();
+                window::create_system_tray(app).unwrap();
                 let app_handle = app.handle();
                 emitter::init_app_handle(app_handle.clone());
-                init_config_manager(&app_handle);
-                tokio::spawn(app_service::periodically_update_all_apps_running_status(
+                init_config_manager(app_handle);
+                tokio::spawn(app_service::periodically_update_app_running_status(
                     app_handle.clone(),
                 ));
                 tokio::spawn(app_service::watch_app_config_changes());
@@ -362,7 +357,7 @@ pub async fn run() {
                 show_main_window,
                 start_app,
                 stop_app,
-                load_apps,
+                load_app,
                 get_app_icon,
                 setup_app,
                 delete_app,

@@ -1,13 +1,13 @@
 # PyAppify
 
-A modern Python packaging tool to create distributable applications with built-in updating, inspired by `uv`. It solves many common drawbacks found in tools like PyInstaller and Nuitka.
+A modern Python packaging tool that turns one Python project into a distributable, self-updating application, inspired by `uv`. It solves many common drawbacks found in tools like PyInstaller and Nuitka.
 ![img.png](readme/img_1.png)
 ## Features
 
 *   **Lightweight Launcher**: The GUI launcher is built in Rust and is only ~3MB zipped.
 *   **Dynamic Setup**: On first launch, the application clones your code from a Git repository, downloads an isolated Python environment, and installs dependencies using `pip`.
 *   **Universal Compatibility**: Supports all Python libraries without special configuration.
-*   **Robust App Management**: The GUI provides industry-level upgrading and downgrading backed by Git and `pip`, with auto-generated update notes.
+*   **Focused App Management**: Each launcher manages one embedded application, with Git- and `pip`-backed upgrades, downgrades, and auto-generated update notes.
 *   **Blazing-Fast Updates**: Typical incremental take about one second.
 *   **Multiple Profiles**: Define and allow users to switch between different application profiles (e.g., CPU vs. CUDA versions) with unique entry points and dependencies.
 *   **CI/CD Integration**: A dedicated GitHub Action can pre-build a full package with all dependencies included for offline distribution.
@@ -48,6 +48,8 @@ installed without their dependencies.
 * data (python, venv, dependencies, git repo, include if you want the offline full package.)
 * logs(pyappify logs and your console log, auto rotate, can be deleted.)
 * cache(pip cache etc, can be deleted.)
+
+For compatibility with existing installations, application state remains under `data/apps/<app-name>/`. Other directories already present under `data/apps/` are left untouched, but the launcher loads only the application embedded in its `pyappify.yml`.
 
 
 ## Quick Start: Pre-packaged Release with GitHub Actions

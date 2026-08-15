@@ -2,7 +2,7 @@
 use crate::config_manager::GLOBAL_CONFIG_STATE;
 use crate::utils::defender::is_defender_excluded;
 use crate::utils::path;
-use crate::utils::path::{get_app_base_path, get_app_working_dir_path};
+use crate::utils::path::get_app_base_path;
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -196,15 +196,6 @@ pub fn read_embedded_app() -> App {
     let yml_content = fs::read_to_string("pyappify.yml")
         .unwrap_or_else(|_| include_str!("../assets/pyappify.yml").to_string());
     let mut app: App = serde_yaml::from_str(&yml_content).expect("Failed to parse pyappify.yml");
-    let working_pyappify = get_app_working_dir_path(app.name.as_str());
-    let working_pyappify_contents = fs::read_to_string(working_pyappify);
-    if let Ok(contents) = working_pyappify_contents {
-        if let Ok(new_app) = serde_yaml::from_str(&contents) {
-            app = new_app;
-        } else {
-            error!("error!: Failed to parse working dir pyappify.yml");
-        }
-    }
     apply_profile_inheritance(&mut app);
     app.normalize_preferences();
     if app.current_profile.is_empty() {

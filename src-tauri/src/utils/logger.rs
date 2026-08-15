@@ -26,7 +26,7 @@ pub struct LoggerBuilder {
 impl LoggerBuilder {
     pub fn new() -> Self {
         LoggerBuilder {
-            log_dir: get_log_dir().into(),
+            log_dir: get_log_dir(),
             file_prefix: DEFAULT_FILE_PREFIX.into(),
             default_level: DEFAULT_LEVEL.into(),
         }

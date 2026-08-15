@@ -56,7 +56,7 @@ fn get_filename_from_url(url_string: &str) -> Result<String> {
         Url::parse(url_string).with_context(|| format!("Failed to parse URL: '{}'", url_string))?;
     parsed_url
         .path_segments()
-        .and_then(|segments| segments.last())
+        .and_then(|mut segments| segments.next_back())
         .filter(|segment| !segment.is_empty())
         .map(|segment| segment.to_string())
         .ok_or_else(|| anyhow!("No filename found in the URL path of '{}'", url_string))
@@ -64,7 +64,7 @@ fn get_filename_from_url(url_string: &str) -> Result<String> {
 
 #[cfg(target_os = "windows")]
 async fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(PathBuf, String)> {
-    let install_dir = PathBuf::from(get_python_dir(app_name));
+    let install_dir = get_python_dir(app_name);
     fs::create_dir_all(&install_dir).with_context(|| {
         format!(
             "Failed to create install directory at {}",
@@ -537,17 +537,16 @@ pub async fn install_requirements(
         let index_url = config.get_effective_pip_index_url();
         (cache_dir, index_url)
     };
-    let pip_install_desc;
-    if requirements.ends_with(".txt") {
+    let pip_install_desc = if requirements.ends_with(".txt") {
         let requirements_path = project_dir.join(requirements);
-        pip_install_desc = format!(
+        format!(
             "{} -m pip install -r {}",
             python_exe.display(),
             requirements_path.display()
-        );
+        )
     } else {
-        pip_install_desc = format!("{} -m pip install {}", python_exe.display(), requirements);
-    }
+        format!("{} -m pip install {}", python_exe.display(), requirements)
+    };
     let mut pip_install_cmd = new_cmd(python_exe);
     pip_install_cmd
         .current_dir(project_dir)
@@ -697,15 +696,13 @@ pub fn clean_python_install(app_name: &str, path: &Path) -> io::Result<()> {
         {
             let file_path = entry.path();
 
-            if entry.file_type().is_dir() {
-                if entry.file_name().to_string_lossy().starts_with('~') {
-                    fs::remove_dir_all(file_path)?;
-                    emit_info!(
-                        app_name,
-                        "Cleaned up temp directory {}",
-                        file_path.display()
-                    );
-                }
+            if entry.file_type().is_dir() && entry.file_name().to_string_lossy().starts_with('~') {
+                fs::remove_dir_all(file_path)?;
+                emit_info!(
+                    app_name,
+                    "Cleaned up temp directory {}",
+                    file_path.display()
+                );
             }
         }
     }

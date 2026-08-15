@@ -13,8 +13,8 @@ use security_framework_sys::authorization::{
     AuthorizationCreate, AuthorizationExecuteWithPrivileges, AuthorizationFree, AuthorizationRef,
 };
 
-use crate::impl_unix::runas_impl as runas_sudo_impl;
-use crate::Command;
+use super::impl_unix::runas_impl as runas_sudo_impl;
+use crate::runas::Command;
 
 fn find_exe<P: AsRef<Path>>(exe_name: P) -> Option<PathBuf> {
     let exe_name = exe_name.as_ref().as_os_str();

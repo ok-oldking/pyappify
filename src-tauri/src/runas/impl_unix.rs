@@ -2,7 +2,7 @@ use std::io;
 use std::process;
 use std::process::ExitStatus;
 
-use crate::Command;
+use crate::runas::Command;
 
 pub fn runas_impl(cmd: &Command) -> io::Result<ExitStatus> {
     match which::which("sudo") {

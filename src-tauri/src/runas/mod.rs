@@ -13,7 +13,7 @@
 //! the environment variables are always the ones of the initial system session on
 //! OS X if the GUI mode is used.
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use runas::Command;
 //!
 //! let status = Command::new("rm")
@@ -44,8 +44,10 @@ mod impl_windows;
 pub struct Command {
     command: OsString,
     args: Vec<OsString>,
+    #[cfg(unix)]
     force_prompt: bool,
     hide: bool,
+    #[cfg(target_os = "macos")]
     gui: bool,
 }
 
@@ -54,7 +56,7 @@ pub struct Command {
 ///
 /// Example:
 ///
-/// ```rust,no_run
+/// ```rust,ignore
 /// use runas::Command;
 /// let status = Command::new("cmd").status();
 /// ```
@@ -68,7 +70,9 @@ impl Command {
             command: program.as_ref().to_os_string(),
             args: vec![],
             hide: false,
+            #[cfg(target_os = "macos")]
             gui: false,
+            #[cfg(unix)]
             force_prompt: true,
         }
     }
@@ -80,7 +84,6 @@ impl Command {
     }
 
     /// Add multiple arguments to pass to the program.
-
     pub fn args<S: AsRef<OsStr>>(&mut self, args: &[S]) -> &mut Command {
         for arg in args {
             self.arg(arg);
@@ -101,6 +104,7 @@ impl Command {
     /// is always a GUI element.
     ///
     /// If the preferred mode is not available it falls back to the other automatically.
+    #[cfg(target_os = "macos")]
     pub fn gui(&mut self, val: bool) -> &mut Command {
         self.gui = val;
         self
@@ -108,6 +112,7 @@ impl Command {
 
     /// Can disable the prompt forcing for supported platforms.  Mostly this allows sudo
     /// on unix platforms to not prompt for a password.
+    #[cfg(unix)]
     pub fn force_prompt(&mut self, val: bool) -> &mut Command {
         self.force_prompt = val;
         self
@@ -117,7 +122,7 @@ impl Command {
     /// collecting its exit status.
     pub fn status(&mut self) -> io::Result<ExitStatus> {
         #[cfg(all(unix, target_os = "macos"))]
-        use crate::impl_darwin::runas_impl;
+        use self::impl_darwin::runas_impl;
         #[cfg(all(unix, not(target_os = "macos")))]
         use impl_unix::runas_impl;
         #[cfg(windows)]
