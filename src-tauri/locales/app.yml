@@ -1,4 +1,11 @@
 _version: 2
+message.app_launcher_name:
+  en: "%{app_name} Launcher"
+  zh-CN: "%{app_name} 启动器"
+  zh-TW: "%{app_name} 啟動器"
+  es: "Lanzador de %{app_name}"
+  ja: "%{app_name} ランチャー"
+  ko: "%{app_name} 런처"
 message.new_version:
   en: "New version available %{version}, please choose whether to update, or enable auto update in settings."
   zh-CN: "发现新版本 %{version}, 请选择是否更新, 或在设置中打开自动更新."

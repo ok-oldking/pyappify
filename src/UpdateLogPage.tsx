@@ -179,8 +179,8 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
                 </Paper>
             )}
 
-            {/* Updating and failed states reopen the console from the status button above. */}
-            {!notesLoading && !completed && !isConfirming && !failed && (
+            {/* Failed updates can be confirmed again so the user can retry. */}
+            {!notesLoading && !completed && !isConfirming && (
                 <Stack direction="row" spacing={1} sx={{mt: 2, justifyContent: 'flex-end'}}>
                     <Button
                         variant="outlined"

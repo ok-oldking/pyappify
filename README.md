@@ -81,7 +81,7 @@ Supported options:
 
 * `-a, --auto-start <true|false>` temporarily overrides Auto Start. `-c start` implies `true` when this option is omitted.
 * `-u, --update-method <manual|auto|auto-pre-release>` temporarily overrides the update method.
-* `--update-to-version <version>` (also `--update_to_version`) starts the launcher and updates the managed application to the requested tag. If the launcher is already running, the request is forwarded to that process.
+* `--update-to-version <version>` (also `--update_to_version`) starts the launcher, stops the managed Python process if it is running, and updates the application to the requested tag. If the launcher is already running, the request is forwarded to that process.
 
 Version history is available as a headless JSON command:
 

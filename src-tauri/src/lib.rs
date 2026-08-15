@@ -287,6 +287,9 @@ async fn execute_update_request(options: &CommandLineOptions) -> Result<String, 
     let app = load_app()
         .await
         .map_err(|error| format!("Failed to load app: {error}"))?;
+    stop_app(app.name.clone())
+        .await
+        .map_err(|error| format!("Failed to stop {} before updating: {error}", app.name))?;
     update_to_version(&app.name, version)
         .await
         .map_err(|error| format!("Failed to update to version {version}: {error}"))?;

@@ -2,6 +2,7 @@
 use crate::emitter::get_app_handle;
 use crate::utils::error::Error;
 use crate::utils::path::get_start_dir;
+use rust_i18n::t;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::menu::{Menu, MenuItem};
@@ -206,6 +207,22 @@ pub async fn update_app_shortcuts(
         run_as_admin,
     )?;
 
+    let launcher_target = std::env::current_exe()?;
+    let launcher_working_dir = launcher_target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("The launcher executable has no parent directory"))?;
+    let launcher_name = t!("message.app_launcher_name", app_name = app_name).to_string();
+    let launcher_shortcut_path = shortcut_dir.join(format!("{}.lnk", launcher_name));
+    write_app_shortcut(
+        &launcher_shortcut_path,
+        &launcher_target,
+        None,
+        launcher_working_dir,
+        &launcher_name,
+        None,
+        false,
+    )?;
+
     let desktop_dir = match app_handle.path().desktop_dir() {
         Ok(path) => path,
         Err(error) => {
@@ -223,6 +240,16 @@ pub async fn update_app_shortcuts(
             &app_name,
             icon_path.as_deref(),
             run_as_admin,
+        )?;
+        let desktop_launcher_shortcut = desktop_dir.join(format!("{}.lnk", launcher_name));
+        write_app_shortcut(
+            &desktop_launcher_shortcut,
+            &launcher_target,
+            None,
+            launcher_working_dir,
+            &launcher_name,
+            None,
+            false,
         )?;
     } else {
         info!(
