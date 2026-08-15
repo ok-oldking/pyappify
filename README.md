@@ -81,5 +81,14 @@ Supported options:
 
 * `-a, --auto-start <true|false>` temporarily overrides Auto Start. `-c start` implies `true` when this option is omitted.
 * `-u, --update-method <manual|auto|auto-pre-release>` temporarily overrides the update method.
+* `--update-to-version <version>` (also `--update_to_version`) starts the launcher and updates the managed application to the requested tag. If the launcher is already running, the request is forwarded to that process.
+
+Version history is available as a headless JSON command:
+
+```text
+pyappify.exe --get-version-list --number-versions 10 --release-only true
+```
+
+`number_versions` defaults to `10`, and `release_only` defaults to `true`. Hyphenated and underscored spellings are accepted. Each returned entry contains `version`, `previous_version`, and `update_note`; the notes are the commits between that version and the preceding filtered version. Use `--release-only false` (or `--include-prerelease`) to include prerelease tags.
 
 The equivalent environment variables are `PYAPPIFY_AUTO_START` and `PYAPPIFY_UPDATE_METHOD`. Command-line options take precedence. These overrides apply only to the current run and are never written to the saved configuration.

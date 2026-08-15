@@ -17,6 +17,15 @@ use std::sync::{Arc, OnceLock};
 use tokio::{sync::Mutex, task};
 use tracing::{debug, info, warn};
 
+const MAX_UPDATE_NOTE_LINES: usize = 10;
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct VersionHistoryEntry {
+    pub version: String,
+    pub previous_version: Option<String>,
+    pub update_note: Vec<String>,
+}
+
 static REPO_LOCKS: Lazy<DashMap<PathBuf, Arc<Mutex<()>>>> = Lazy::new(DashMap::new);
 static GIT_CONFIG_INITIALIZED: OnceLock<()> = OnceLock::new();
 
@@ -228,6 +237,110 @@ fn get_sorted_tags_by_time(repo: &Repository) -> Result<Vec<String>> {
 
     let sorted_tags = version_tags.into_iter().map(|(_, tag)| tag).collect();
     Ok(sorted_tags)
+}
+
+fn collect_commit_messages_between_tags(
+    repo: &Repository,
+    previous_tag: Option<&str>,
+    target_tag: &str,
+) -> Result<Vec<String>> {
+    let target_commit = repo
+        .revparse_single(&format!("refs/tags/{target_tag}"))
+        .with_context(|| format!("Failed to resolve target version tag '{target_tag}'"))?
+        .peel_to_commit()
+        .with_context(|| format!("Failed to peel target version tag '{target_tag}'"))?;
+
+    let mut revwalk = repo.revwalk().context("Failed to create revwalk")?;
+    revwalk
+        .push(target_commit.id())
+        .with_context(|| format!("Failed to walk target version tag '{target_tag}'"))?;
+    if let Some(previous_tag) = previous_tag {
+        let previous_commit = repo
+            .revparse_single(&format!("refs/tags/{previous_tag}"))
+            .with_context(|| format!("Failed to resolve previous version tag '{previous_tag}'"))?
+            .peel_to_commit()
+            .with_context(|| format!("Failed to peel previous version tag '{previous_tag}'"))?;
+        revwalk
+            .hide(previous_commit.id())
+            .with_context(|| format!("Failed to hide previous version tag '{previous_tag}'"))?;
+    }
+    revwalk
+        .set_sorting(Sort::TIME)
+        .context("Failed to sort version update commits")?;
+
+    let mut messages = Vec::new();
+    let mut seen_messages = HashSet::new();
+    'revwalk: for oid in revwalk {
+        let oid = oid.context("Error iterating version update commits")?;
+        let commit = repo
+            .find_commit(oid)
+            .with_context(|| format!("Failed to find commit {oid}"))?;
+        if commit.parent_count() > 1 {
+            continue;
+        }
+        if let Ok(full_message) = commit.message() {
+            for line in full_message
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+            {
+                if seen_messages.insert(line.to_string()) {
+                    messages.push(line.to_string());
+                    if messages.len() >= MAX_UPDATE_NOTE_LINES {
+                        break 'revwalk;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(messages)
+}
+
+fn build_version_history(
+    repo: &Repository,
+    number_versions: usize,
+    release_only: bool,
+) -> Result<Vec<VersionHistoryEntry>> {
+    let tags = get_sorted_tags_by_time(repo)?
+        .into_iter()
+        .filter(|tag| !release_only || is_release_version(tag))
+        .collect::<Vec<_>>();
+
+    tags.iter()
+        .take(number_versions)
+        .enumerate()
+        .map(|(index, version)| {
+            let previous_version = tags.get(index + 1).cloned();
+            let update_note =
+                collect_commit_messages_between_tags(repo, previous_version.as_deref(), version)?;
+            Ok(VersionHistoryEntry {
+                version: version.clone(),
+                previous_version,
+                update_note,
+            })
+        })
+        .collect()
+}
+
+pub async fn get_version_history(
+    repo_path: &Path,
+    number_versions: usize,
+    release_only: bool,
+) -> Result<Vec<VersionHistoryEntry>> {
+    let lock_arc = REPO_LOCKS
+        .entry(repo_path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone();
+    let _guard = lock_arc.lock().await;
+    let repo_path = repo_path.to_path_buf();
+
+    task::spawn_blocking(move || {
+        let repo = open_repository(&repo_path)?;
+        build_version_history(&repo, number_versions, release_only)
+    })
+    .await
+    .context("Task for get_version_history panicked or was cancelled")?
 }
 
 fn collect_remote_tag_names(
@@ -511,7 +624,6 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
                         });
 
                     emit_update_info!(app_name_for_task, "");
-                    println!();
                     fetch_result?;
                     prune_deleted_local_tags_from_remote(&repo, "origin", &app_name_for_task)?;
                     emit_info!(app_name_for_task, "Fetch complete.");
@@ -724,7 +836,6 @@ pub async fn checkout_version_tag(
                 )
             });
         emit_update_info!(app_name_for_task, "");
-        println!();
         fetch_result?;
         prune_deleted_local_tags_from_remote(&repo, "origin", &app_name_for_task)?;
 
@@ -1020,8 +1131,39 @@ pub async fn get_commit_messages_for_version_diff(
 
 #[cfg(test)]
 mod tests {
-    use super::{compare_version_tags, is_release_version, is_version_tag};
+    use super::{build_version_history, compare_version_tags, is_release_version, is_version_tag};
+    use git2::{Repository, Signature};
     use std::cmp::Ordering;
+
+    fn commit_and_tag(repo: &Repository, root: &std::path::Path, tag: &str, message: &str) {
+        let file_path = root.join("history.txt");
+        std::fs::write(&file_path, format!("{tag}\n")).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("history.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let signature = Signature::now("PyAppify Test", "test@example.com").unwrap();
+        let parent = repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .map(|oid| repo.find_commit(oid).unwrap());
+        let parents = parent.iter().collect::<Vec<_>>();
+        let commit_id = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                message,
+                &tree,
+                &parents,
+            )
+            .unwrap();
+        let commit = repo.find_commit(commit_id).unwrap();
+        repo.tag_lightweight(tag, commit.as_object(), false)
+            .unwrap();
+    }
 
     #[test]
     fn compares_release_and_prerelease_versions() {
@@ -1049,5 +1191,38 @@ mod tests {
         assert!(!is_release_version("v1.5.0.beta"));
         assert!(is_version_tag("v1.5.0.beta"));
         assert!(!is_version_tag("7fa243f331892d478c4e450f6215495ca3b48258"));
+    }
+
+    #[test]
+    fn version_history_compares_each_version_to_the_previous_filtered_version() {
+        let root = std::env::temp_dir().join(format!(
+            "pyappify-version-history-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let repo = Repository::init(&root).unwrap();
+        commit_and_tag(&repo, &root, "v1.0.0", "initial release");
+        commit_and_tag(&repo, &root, "v1.1.0-beta.1", "beta change");
+        commit_and_tag(&repo, &root, "v1.1.0", "release change");
+
+        let releases = build_version_history(&repo, 2, true).unwrap();
+        assert_eq!(releases[0].version, "v1.1.0");
+        assert_eq!(releases[0].previous_version.as_deref(), Some("v1.0.0"));
+        assert_eq!(
+            releases[0].update_note,
+            vec!["release change", "beta change"]
+        );
+
+        let all_versions = build_version_history(&repo, 2, false).unwrap();
+        assert_eq!(
+            all_versions[0].previous_version.as_deref(),
+            Some("v1.1.0-beta.1")
+        );
+        assert_eq!(all_versions[0].update_note, vec!["release change"]);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

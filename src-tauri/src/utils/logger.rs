@@ -21,6 +21,7 @@ pub struct LoggerBuilder {
     log_dir: PathBuf,
     file_prefix: String,
     default_level: String,
+    stdout: bool,
 }
 
 impl LoggerBuilder {
@@ -29,6 +30,7 @@ impl LoggerBuilder {
             log_dir: get_log_dir(),
             file_prefix: DEFAULT_FILE_PREFIX.into(),
             default_level: DEFAULT_LEVEL.into(),
+            stdout: true,
         }
     }
 
@@ -44,6 +46,11 @@ impl LoggerBuilder {
 
     pub fn default_level(mut self, level: impl Into<String>) -> Self {
         self.default_level = level.into();
+        self
+    }
+
+    pub fn stdout(mut self, enabled: bool) -> Self {
+        self.stdout = enabled;
         self
     }
 
@@ -76,11 +83,15 @@ impl LoggerBuilder {
         let filter = EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new(&self.default_level));
 
-        registry()
-            .with(filter)
-            .with(file_layer)
-            .with(stdout_layer)
-            .try_init()?;
+        if self.stdout {
+            registry()
+                .with(filter)
+                .with(file_layer)
+                .with(stdout_layer)
+                .try_init()?;
+        } else {
+            registry().with(filter).with(file_layer).try_init()?;
+        }
         Ok(())
     }
 }

@@ -45,6 +45,7 @@ use tracing::{debug, error, info, warn};
 
 pub static APP: Lazy<Mutex<Option<App>>> = Lazy::new(|| Mutex::new(None));
 static APP_DIR_LOCK: Lazy<Arc<Mutex<()>>> = Lazy::new(|| Arc::new(Mutex::new(())));
+static APP_LOAD_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 pub static AUTO_START_CHECKED: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
 static AUTO_START_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -358,6 +359,7 @@ async fn backup_invalid_app_config(config_path: &Path) -> Result<PathBuf> {
 
 #[tauri::command]
 pub async fn load_app() -> Result<App, Error> {
+    let _load_guard = APP_LOAD_LOCK.lock().await;
     {
         let app = APP.lock().await.clone();
         if app.is_some() {
@@ -710,6 +712,17 @@ pub async fn get_update_notes(app_name: String, version: String) -> Result<Vec<S
         app.name, version, messages
     );
     Ok(messages)
+}
+
+pub async fn get_version_list(
+    number_versions: usize,
+    release_only: bool,
+) -> Result<Vec<git::VersionHistoryEntry>, Error> {
+    let app = get_app().await.ok_or_else(|| err!("App is not loaded."))?;
+    let app_lock = get_app_lock(&app.name).await?;
+    let _guard = app_lock.lock().await;
+    ensure_repository(&app).await?;
+    Ok(git::get_version_history(&app.get_repo_path(), number_versions, release_only).await?)
 }
 
 async fn get_app_by_name(app_name: &str) -> Result<App, Error> {
