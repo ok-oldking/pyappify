@@ -1,6 +1,7 @@
 import React, {useEffect, useRef} from 'react';
 import {openUrl} from '@tauri-apps/plugin-opener';
 import {Alert, Box, Button, CircularProgress, Container, LinearProgress, Link, Paper, Typography} from "@mui/material";
+import {alpha} from '@mui/material/styles';
 import {useTranslation} from 'react-i18next';
 import type {VersionChangeProgress} from './updateProgress';
 
@@ -101,7 +102,10 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
             mt: inline ? 2 : 0,
             display: 'flex',
             flexDirection: 'column',
-            height: inline ? 'auto' : 'calc(100vh - 48px)'
+            height: inline ? 'auto' : 'calc(100vh - 48px)',
+            flex: inline ? '1 1 auto' : undefined,
+            minHeight: inline ? 0 : undefined,
+            overflow: inline ? 'hidden' : 'visible',
         }}>
             <Box sx={{mb: 2}}>
                 <Typography variant="h5" component="h2" gutterBottom>
@@ -145,10 +149,31 @@ const ConsolePage: React.FC<ConsolePageProps> = ({
             <Paper
                 elevation={3}
                 sx={{
-                    flexGrow: inline ? 0 : 1,
-                    minHeight: inline ? 220 : undefined,
-                    maxHeight: inline ? 360 : undefined,
+                    flex: '1 1 auto',
+                    minHeight: 0,
                     overflow: 'auto',
+                    scrollbarWidth: 'thin',
+                    scrollbarColor: (theme) => `${alpha(theme.palette.text.primary, 0.35)} transparent`,
+                    '&::-webkit-scrollbar': {
+                        width: 10,
+                        height: 10,
+                    },
+                    '&::-webkit-scrollbar-track': {
+                        backgroundColor: 'transparent',
+                    },
+                    '&::-webkit-scrollbar-thumb': {
+                        backgroundColor: (theme) => alpha(theme.palette.text.primary, 0.28),
+                        border: '2px solid transparent',
+                        backgroundClip: 'content-box',
+                        borderRadius: 999,
+                    },
+                    '&::-webkit-scrollbar-thumb:hover': {
+                        backgroundColor: (theme) => alpha(theme.palette.primary.main, 0.6),
+                        backgroundClip: 'content-box',
+                    },
+                    '&::-webkit-scrollbar-corner': {
+                        backgroundColor: 'transparent',
+                    },
                     p: 2,
                     fontFamily: 'monospace',
                     whiteSpace: 'pre-wrap',

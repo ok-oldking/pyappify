@@ -126,7 +126,7 @@ pub struct Profile {
     pub name: String,
     #[serde(default)]
     pub main_script: String,
-    #[serde(default)]
+    #[serde(default, alias = "uac")]
     pub admin: Option<bool>,
     #[serde(default)]
     pub use_pythonw: Option<bool>,
@@ -425,7 +425,7 @@ pub(crate) async fn load_app_config_from_json(app_name: &str) -> anyhow::Result<
 #[cfg(test)]
 mod tests {
     use super::{
-        write_file_atomically, App, AppUpdateState, UPDATE_METHOD_OPTION_AUTO,
+        write_file_atomically, App, AppUpdateState, Profile, UPDATE_METHOD_OPTION_AUTO,
         UPDATE_METHOD_OPTION_MANUAL,
     };
 
@@ -473,6 +473,13 @@ mod tests {
     fn reads_relative_icon_path_from_yaml() {
         let app: App = serde_yaml::from_str("name: example\nicon: assets/icon.png\n").unwrap();
         assert_eq!(app.icon, "assets/icon.png");
+    }
+
+    #[test]
+    fn accepts_uac_as_an_alias_for_profile_admin() {
+        let profile: Profile =
+            serde_yaml::from_str("name: release\nmain_script: main.py\nuac: true\n").unwrap();
+        assert!(profile.is_admin());
     }
 
     #[test]

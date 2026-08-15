@@ -2,14 +2,13 @@
 use crate::emitter::get_app_handle;
 use crate::utils::error::Error;
 use crate::utils::path::get_start_dir;
-use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, Manager, WebviewWindow, Window, WindowEvent, Wry};
 use tauri_plugin_notification::NotificationExt;
-use tracing::info;
+use tracing::{error, info};
 
 pub fn on_window_event(window: &Window, _event: &WindowEvent) {
     if let WindowEvent::Resized(size) = _event {
@@ -90,38 +89,199 @@ fn show_window(window: WebviewWindow) {
     window.set_focus().unwrap();
 }
 
-fn build_startup_shortcut(
-    exe_path: &Path,
+fn build_app_shortcut(
+    target_path: &Path,
+    arguments: Option<String>,
+    working_dir: &Path,
+    app_name: &str,
+    icon_path: Option<&Path>,
+    run_as_admin: bool,
 ) -> Result<shortcuts_rs::ShellLink, shortcuts_rs::MSLinkError> {
-    // Launch PyAppify normally so the saved Auto Start preference remains authoritative.
-    // Older shortcuts used `-c start`, which forced the child app to run at every login.
-    shortcuts_rs::ShellLink::new(exe_path, None, None, None)
+    let name = Some(app_name.to_string());
+    let icon_location = icon_path.map(|path| path.to_string_lossy().into_owned());
+    let mut link = shortcuts_rs::ShellLink::new(
+        target_path,
+        arguments.clone(),
+        name.clone(),
+        icon_location.clone(),
+    )?;
+    // shortcuts-rs 1.1.1 resets the StringData flags near the end of ShellLink::new.
+    // Reapply these fields so arguments, display name, and icon are serialized to disk.
+    link.set_arguments(arguments);
+    link.set_name(name);
+    link.set_icon_location(icon_location);
+    link.set_working_dir(Some(working_dir.to_string_lossy().into_owned()));
+    link.header_mut()
+        .update_link_flags(shortcuts_rs::LinkFlags::RUN_AS_USER, run_as_admin);
+    Ok(link)
 }
 
-#[tauri::command]
-pub async fn create_startup_shortcut(app_handle: AppHandle, name: String) -> Result<(), Error> {
-    let shortcut_dir = get_start_dir(app_handle);
+#[cfg(windows)]
+fn write_app_shortcut(
+    shortcut_path: &Path,
+    target_path: &Path,
+    arguments: Option<String>,
+    working_dir: &Path,
+    app_name: &str,
+    icon_path: Option<&Path>,
+    run_as_admin: bool,
+) -> Result<(), Error> {
+    info!(
+        "Writing app shortcut '{}' -> '{}' (arguments: {:?}, working directory: '{}', icon: {:?}, run as admin: {})",
+        shortcut_path.display(),
+        target_path.display(),
+        arguments,
+        working_dir.display(),
+        icon_path,
+        run_as_admin
+    );
+    let link = match build_app_shortcut(
+        target_path,
+        arguments,
+        working_dir,
+        app_name,
+        icon_path,
+        run_as_admin,
+    ) {
+        Ok(link) => link,
+        Err(error) => {
+            error!(
+                "Failed to build app shortcut '{}': {}",
+                shortcut_path.display(),
+                error
+            );
+            return Err(error.into());
+        }
+    };
+    if let Err(error) = link.create_lnk(shortcut_path) {
+        error!(
+            "Failed to write app shortcut '{}': {}",
+            shortcut_path.display(),
+            error
+        );
+        return Err(error.into());
+    }
+    info!(
+        "Created or updated app shortcut at '{}'",
+        shortcut_path.display()
+    );
+    Ok(())
+}
 
-    fs::create_dir_all(&shortcut_dir)?;
+#[cfg(windows)]
+pub async fn update_app_shortcuts(
+    app_handle: AppHandle,
+    app_name: String,
+    target_path: PathBuf,
+    arguments: Option<String>,
+    working_dir: PathBuf,
+    icon_path: Option<PathBuf>,
+    run_as_admin: bool,
+) -> Result<(), Error> {
+    let shortcut_dir = get_start_dir(app_handle.clone());
+    info!(
+        "Updating Windows shortcuts for app '{}' in '{}'.",
+        app_name,
+        shortcut_dir.display()
+    );
 
-    let shortcut_path = shortcut_dir.join(format!("{}.lnk", name));
-    let exe_path = env::current_exe()?;
+    if let Err(error) = fs::create_dir_all(&shortcut_dir) {
+        error!(
+            "Failed to create Start Menu shortcut directory '{}': {}",
+            shortcut_dir.display(),
+            error
+        );
+        return Err(error.into());
+    }
 
-    let link = build_startup_shortcut(&exe_path)?;
-    link.create_lnk(&shortcut_path)?;
-    info!("created shortcut at {shortcut_path:?}");
+    let shortcut_filename = format!("{}.lnk", app_name);
+    let shortcut_path = shortcut_dir.join(&shortcut_filename);
+    write_app_shortcut(
+        &shortcut_path,
+        &target_path,
+        arguments.clone(),
+        &working_dir,
+        &app_name,
+        icon_path.as_deref(),
+        run_as_admin,
+    )?;
+
+    let desktop_dir = match app_handle.path().desktop_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            error!("Failed to resolve the Desktop directory: {}", error);
+            return Err(anyhow::Error::from(error).into());
+        }
+    };
+    let desktop_shortcut = desktop_dir.join(shortcut_filename);
+    if desktop_shortcut.exists() {
+        write_app_shortcut(
+            &desktop_shortcut,
+            &target_path,
+            arguments,
+            &working_dir,
+            &app_name,
+            icon_path.as_deref(),
+            run_as_admin,
+        )?;
+    } else {
+        info!(
+            "No existing Desktop shortcut at '{}'; nothing to update.",
+            desktop_shortcut.display()
+        );
+    }
+    info!(
+        "Finished updating Windows shortcuts for app '{}'.",
+        app_name
+    );
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub async fn update_app_shortcuts(
+    _app_handle: AppHandle,
+    _app_name: String,
+    _target_path: PathBuf,
+    _arguments: Option<String>,
+    _working_dir: PathBuf,
+    _icon_path: Option<PathBuf>,
+    _run_as_admin: bool,
+) -> Result<(), Error> {
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::build_startup_shortcut;
+    use super::build_app_shortcut;
+    use shortcuts_rs::LinkFlags;
 
     #[test]
-    fn startup_shortcut_does_not_force_start_the_child_app() {
-        let exe_path = std::env::current_exe().unwrap();
-        let shortcut = build_startup_shortcut(&exe_path).unwrap();
+    fn app_shortcut_starts_python_directly_and_uses_its_icon() {
+        let python_path = std::env::current_exe().unwrap();
+        let working_dir = python_path.parent().unwrap();
+        let icon_path = python_path.with_file_name("sample.ico");
+        let shortcut = build_app_shortcut(
+            &python_path,
+            Some(r#""C:\Sample App\main.py""#.to_string()),
+            working_dir,
+            "Sample",
+            Some(&icon_path),
+            true,
+        )
+        .unwrap();
 
-        assert_eq!(shortcut.arguments(), &None);
+        assert_eq!(
+            shortcut.arguments().as_deref(),
+            Some(r#""C:\Sample App\main.py""#)
+        );
+        assert_eq!(shortcut.working_dir().as_deref(), working_dir.to_str());
+        assert_eq!(shortcut.name().as_deref(), Some("Sample"));
+        assert_eq!(shortcut.icon_location().as_deref(), icon_path.to_str());
+        let flags = shortcut.header().link_flags();
+        assert!(flags.contains(LinkFlags::HAS_ARGUMENTS));
+        assert!(flags.contains(LinkFlags::HAS_NAME));
+        assert!(flags.contains(LinkFlags::HAS_ICON_LOCATION));
+        assert!(flags.contains(LinkFlags::HAS_WORKING_DIR));
+        assert!(flags.contains(LinkFlags::RUN_AS_USER));
     }
 }

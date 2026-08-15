@@ -4,6 +4,7 @@ import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {listen, UnlistenFn} from "@tauri-apps/api/event";
 import {getVersion} from '@tauri-apps/api/app';
+import {getCurrentWindow} from '@tauri-apps/api/window';
 import UpdateLogPage from "./UpdateLogPage";
 import ConsolePage, {type MessagePayload} from "./ConsolePage.tsx";
 import SettingsPage from "./SettingsPage.tsx";
@@ -296,6 +297,15 @@ function App() {
     useEffect(() => {
         localStorage.setItem('appThemeMode', themeMode);
     }, [themeMode]);
+
+    useEffect(() => {
+        if (!app?.name) return;
+        const launcherName = t('appLauncherName', {appName: app.name});
+        document.title = launcherName;
+        getCurrentWindow().setTitle(launcherName).catch((error) => {
+            console.warn('Failed to update launcher window title:', error);
+        });
+    }, [app?.name, t]);
 
     useEffect(() => {
         try {
@@ -841,6 +851,7 @@ function App() {
         setAppActionLoading(prev => ({...prev, [appName]: false}));
     };
 
+    const isInlineConsoleVisible = currentPage === 'list' && !!app && !!inlineConsoles[app.name];
     let pageContent;
 
     if (currentPage === 'installConsole' && startingAppName) {
@@ -903,18 +914,12 @@ function App() {
         );
     } else {
         pageContent = (
-            <Container maxWidth="lg" sx={{py: {xs: 2, md: 4}}}>
-                <Box component="header" sx={{display: 'flex', justifyContent: 'flex-end', alignItems: 'center', mb: 2}}>
-                    <Tooltip title={t('Settings')}>
-                        <IconButton
-                            onClick={() => setCurrentPage('settings')}
-                            color="inherit"
-                            sx={{bgcolor: 'background.paper', border: 1, borderColor: 'divider', width: 42, height: 42}}
-                        >
-                            <SettingsIcon/>
-                        </IconButton>
-                    </Tooltip>
-                </Box>
+            <Container maxWidth="lg" sx={{
+                py: isInlineConsoleVisible ? 2 : {xs: 2, md: 4},
+                height: isInlineConsoleVisible ? '100vh' : 'auto',
+                boxSizing: 'border-box',
+                overflow: isInlineConsoleVisible ? 'hidden' : 'visible',
+            }}>
                 <Snackbar open={snackbarOpen} autoHideDuration={6000} onClose={() => setSnackbarOpen(false)} anchorOrigin={{vertical: 'bottom', horizontal: 'center'}}>
                     <Alert onClose={() => setSnackbarOpen(false)} severity={snackbarSeverity} sx={{width: '100%'}}>{snackbarMessage}</Alert>
                 </Snackbar>
@@ -959,10 +964,18 @@ function App() {
                                         width: '100%',
                                         borderColor: app.running ? 'success.main' : 'divider',
                                         bgcolor: 'background.paper',
-                                        overflow: 'visible',
+                                        overflow: inlineConsoleKind ? 'hidden' : 'visible',
+                                        height: inlineConsoleKind ? '100%' : 'auto',
                                     }}
                                 >
-                                    <CardContent sx={{p: {xs: 2, sm: 3}, '&:last-child': {pb: {xs: 2, sm: 3}}}}>
+                                    <CardContent sx={{
+                                        p: {xs: 2, sm: 3},
+                                        '&:last-child': {pb: {xs: 2, sm: 3}},
+                                        height: inlineConsoleKind ? '100%' : 'auto',
+                                        boxSizing: 'border-box',
+                                        display: inlineConsoleKind ? 'flex' : 'block',
+                                        flexDirection: inlineConsoleKind ? 'column' : undefined,
+                                    }}>
                                         <Stack direction={{xs: 'column', sm: 'row'}} spacing={2} sx={{justifyContent: 'space-between', alignItems: {xs: 'stretch', sm: 'flex-start'}}}>
                                             <Stack direction="row" spacing={1.5} sx={{minWidth: 0, alignItems: 'center'}}>
                                                 <AppIcon appName={app.name} iconPath={app.icon}/>
@@ -1040,6 +1053,15 @@ function App() {
                                                         </span>
                                                     </Tooltip>
                                                 )}
+                                                <Tooltip title={t('Settings')}>
+                                                    <IconButton
+                                                        onClick={() => setCurrentPage('settings')}
+                                                        color="inherit"
+                                                        sx={{border: 1, borderColor: 'divider', borderRadius: 2}}
+                                                    >
+                                                        <SettingsIcon fontSize="small"/>
+                                                    </IconButton>
+                                                </Tooltip>
                                             </Stack>
                                         </Stack>
                                         {app.installed && (!app.running || !!inlineConsoleKind) && (
@@ -1049,6 +1071,10 @@ function App() {
                                                     p: {xs: 1.5, sm: 2},
                                                     borderRadius: 3,
                                                     bgcolor: theme => alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.075 : 0.045),
+                                                    flex: inlineConsoleKind ? '1 1 auto' : undefined,
+                                                    minHeight: inlineConsoleKind ? 0 : undefined,
+                                                    display: inlineConsoleKind ? 'flex' : 'block',
+                                                    flexDirection: inlineConsoleKind ? 'column' : undefined,
                                                 }}
                                             >
                                                 {!app.running && (
@@ -1145,7 +1171,7 @@ function App() {
             <CssBaseline/>
             <Box sx={{display: 'flex', flexDirection: 'column', minHeight: '100vh'}}>
                 <Box component="main" sx={{flex: '1 1 auto'}}>{pageContent}</Box>
-                {currentPage === 'list' && (
+                {currentPage === 'list' && !isInlineConsoleVisible && (
                     <Box component="footer" sx={{py: 2, textAlign: 'center'}}>
                         <Typography variant="body2" color="text.secondary">
                             <Link href="https://github.com/ok-oldking/pyappify" target="_blank" rel="noopener noreferrer">{t('appMadeWith', {name: `PyAppify ${appVersion}`})}</Link>

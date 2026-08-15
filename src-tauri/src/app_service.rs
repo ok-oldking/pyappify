@@ -11,7 +11,7 @@ use crate::utils::file;
 use crate::utils::file::delete_dir_if_exist;
 use crate::utils::locale::get_locale;
 use crate::utils::path::{get_app_base_path, get_app_working_dir_path, get_python_dir};
-use crate::utils::window::{create_startup_shortcut, send_notification};
+use crate::utils::window::{send_notification, update_app_shortcuts};
 use crate::{
     app::{
         get_app_config_json_path, load_app_config_from_json, read_embedded_app,
@@ -758,14 +758,10 @@ fn icon_mime_type(path: &Path) -> Option<&'static str> {
     }
 }
 
-#[tauri::command]
-pub async fn get_app_icon(app_name: String) -> Result<Option<AppIconAsset>, Error> {
-    const MAX_ICON_BYTES: u64 = 5 * 1024 * 1024;
-
-    let app = get_app_by_name(&app_name).await?;
-    let configured_path = app.icon.trim();
+async fn resolve_app_icon_path(app_name: &str, configured_path: &str) -> Option<PathBuf> {
+    let configured_path = configured_path.trim();
     if configured_path.is_empty() {
-        return Ok(None);
+        return None;
     }
 
     let relative_path = Path::new(configured_path);
@@ -774,25 +770,55 @@ pub async fn get_app_icon(app_name: String) -> Result<Option<AppIconAsset>, Erro
             "Ignoring absolute icon path '{}' for app '{}'; icon paths must be relative.",
             configured_path, app_name
         );
-        return Ok(None);
+        return None;
     }
 
-    let working_dir = get_app_working_dir_path(&app_name);
-    let Ok(canonical_working_dir) = tokio::fs::canonicalize(&working_dir).await else {
-        return Ok(None);
-    };
-    let candidate = working_dir.join(relative_path);
-    let Ok(canonical_icon_path) = tokio::fs::canonicalize(&candidate).await else {
-        return Ok(None);
-    };
+    let working_dir = get_app_working_dir_path(app_name);
+    let canonical_working_dir = tokio::fs::canonicalize(&working_dir).await.ok()?;
+    let canonical_icon_path = tokio::fs::canonicalize(working_dir.join(relative_path))
+        .await
+        .ok()?;
 
     if !canonical_icon_path.starts_with(&canonical_working_dir) {
         warn!(
             "Ignoring icon path '{}' for app '{}' because it escapes the working directory.",
             configured_path, app_name
         );
-        return Ok(None);
+        return None;
     }
+
+    let metadata = tokio::fs::metadata(&canonical_icon_path).await.ok()?;
+    metadata.is_file().then_some(canonical_icon_path)
+}
+
+async fn resolve_app_shortcut_icon_path(app_name: &str, configured_path: &str) -> Option<PathBuf> {
+    let configured_icon = resolve_app_icon_path(app_name, configured_path).await?;
+    if configured_icon
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("ico"))
+    {
+        return Some(configured_icon);
+    }
+
+    let ico_candidate = configured_icon.with_extension("ico");
+    let canonical_ico = tokio::fs::canonicalize(ico_candidate).await.ok()?;
+    let canonical_working_dir = tokio::fs::canonicalize(get_app_working_dir_path(app_name))
+        .await
+        .ok()?;
+    let metadata = tokio::fs::metadata(&canonical_ico).await.ok()?;
+    (metadata.is_file() && canonical_ico.starts_with(canonical_working_dir))
+        .then_some(canonical_ico)
+}
+
+#[tauri::command]
+pub async fn get_app_icon(app_name: String) -> Result<Option<AppIconAsset>, Error> {
+    const MAX_ICON_BYTES: u64 = 5 * 1024 * 1024;
+
+    let app = get_app_by_name(&app_name).await?;
+    let Some(canonical_icon_path) = resolve_app_icon_path(&app_name, &app.icon).await else {
+        return Ok(None);
+    };
 
     let Some(mime_type) = icon_mime_type(&canonical_icon_path) else {
         warn!(
@@ -803,7 +829,7 @@ pub async fn get_app_icon(app_name: String) -> Result<Option<AppIconAsset>, Erro
         return Ok(None);
     };
     let metadata = tokio::fs::metadata(&canonical_icon_path).await?;
-    if !metadata.is_file() || metadata.len() > MAX_ICON_BYTES {
+    if metadata.len() > MAX_ICON_BYTES {
         warn!(
             "Ignoring icon file '{}' for app '{}': it is not a file or exceeds 5 MiB.",
             canonical_icon_path.display(),
@@ -1428,11 +1454,12 @@ fn build_python_execution_environment(
     envs
 }
 
-async fn check_running_on_start(app_name: &str, working_dir: &Path) -> Result<()> {
+async fn check_running_on_start(app_name: &str) -> Result<bool> {
     let start_time = tokio::time::Instant::now();
     let timeout = Duration::from_secs(10);
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     let mut sys = System::new();
+    let app_base_dir = get_app_base_path(app_name);
 
     info!(
         "Monitoring for app '{}' to start for up to 10 seconds...",
@@ -1442,11 +1469,12 @@ async fn check_running_on_start(app_name: &str, working_dir: &Path) -> Result<()
     while tokio::time::Instant::now().duration_since(start_time) < timeout {
         interval.tick().await;
         sys.refresh_processes(ProcessesToUpdate::All, true);
-        let pids = process::get_pids_related_to_app_dir(&sys, working_dir);
+        let pids = process::get_pids_related_to_app_dir(&sys, &app_base_dir);
         if !pids.is_empty() {
             info!(
-                "App '{}' detected as running with a visible window. Updating status and minimizing main window.",
-                app_name
+                "App '{}' detected as running from '{}'. Updating status.",
+                app_name,
+                app_base_dir.display()
             );
 
             let mut app_guard = APP.lock().await;
@@ -1456,7 +1484,7 @@ async fn check_running_on_start(app_name: &str, working_dir: &Path) -> Result<()
             drop(app_guard);
 
             emit_app().await;
-            return Ok(());
+            return Ok(true);
         }
     }
 
@@ -1475,7 +1503,61 @@ async fn check_running_on_start(app_name: &str, working_dir: &Path) -> Result<()
         }
     }
 
-    Ok(())
+    Ok(is_running_after_timeout)
+}
+
+async fn build_app_shortcut_command(
+    app_name: &str,
+    profile: &Profile,
+    working_dir: &Path,
+) -> Result<(PathBuf, Option<String>)> {
+    let python_dir = path::get_python_dir(app_name);
+    let script_path = execute_python::find_script_or_executable(
+        &profile.main_script,
+        working_dir,
+        &python_dir.join("Scripts"),
+    )?;
+
+    if profile.main_script.ends_with(".py") {
+        let python_executable = path::get_python_exe(app_name, profile.use_pythonw());
+        let bootstrap_path = get_app_base_path(app_name).join(".pyappify-shortcut.py");
+        let env_names = serde_json::to_string(&process::PYTHON_ENVS_TO_REMOVE)?;
+        let main_script = serde_json::to_string(&path::path_to_abs(&script_path))?;
+        let python_path = serde_json::to_string(&profile.python_path)?;
+        let bootstrap = format!(
+            r#"# Generated by PyAppify. Changes will be replaced after the next successful launch.
+import os
+import sys
+
+for _name in {env_names}:
+    os.environ.pop(_name, None)
+
+_system_root = os.environ.get("SystemRoot", r"C:\Windows")
+os.environ["PATH"] = os.pathsep.join((
+    os.path.join(_system_root, "system32"),
+    _system_root,
+    os.path.join(_system_root, "System32", "Wbem"),
+    os.path.join(_system_root, "System32", "WindowsPowerShell", "v1.0"),
+    os.path.join(_system_root, "System32", "OpenSSH"),
+))
+os.environ["PYTHONNOUSERSITE"] = "1"
+os.environ["PYTHONIOENCODING"] = "utf-8"
+os.environ["PYTHONUNBUFFERED"] = "1"
+
+_python_path = {python_path}
+if _python_path:
+    os.environ["PYTHONPATH"] = _python_path
+
+_main_script = {main_script}
+os.execve(sys.executable, [sys.executable, _main_script], os.environ)
+"#
+        );
+        tokio::fs::write(&bootstrap_path, bootstrap).await?;
+        let arguments = format!("\"{}\"", path::path_to_abs(&bootstrap_path));
+        Ok((python_executable, Some(arguments)))
+    } else {
+        Ok((script_path, None))
+    }
 }
 
 #[tauri::command]
@@ -1502,7 +1584,14 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         );
     }
 
-    let (profile_to_run_with, working_dir, current_version, app_starting_version, update_note) = {
+    let (
+        profile_to_run_with,
+        working_dir,
+        current_version,
+        app_starting_version,
+        update_note,
+        configured_icon,
+    ) = {
         let mut app_guard = APP.lock().await;
         if let Some(app) = app_guard.as_mut().filter(|app| app.name == app_name) {
             let working_dir = get_app_working_dir_path(&app_name);
@@ -1522,6 +1611,7 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
             let current_version = app.current_version.clone();
             let app_starting_version = app.app_starting_version.clone();
             let update_note = app.update_note.clone();
+            let configured_icon = app.icon.clone();
             let app_to_save = app.clone();
             drop(app_guard);
 
@@ -1537,6 +1627,7 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
                 current_version,
                 app_starting_version,
                 update_note,
+                configured_icon,
             )
         } else {
             return Err(anyhow!("App '{}' not found.", app_name).into());
@@ -1594,8 +1685,62 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
     )
     .await?;
 
-    check_running_on_start(&app_name, &working_dir).await?;
-    create_startup_shortcut(app_handle, app_name).await?;
+    if check_running_on_start(&app_name).await? {
+        emit_info!(
+            app_name,
+            "App startup confirmed. Creating or updating Windows shortcuts..."
+        );
+        let icon_path = resolve_app_shortcut_icon_path(&app_name, &configured_icon).await;
+        if icon_path.is_none() {
+            emit_info!(
+                app_name,
+                "No Windows-compatible app icon was found; the shortcut will use the target executable icon."
+            );
+        }
+        let (shortcut_target, shortcut_arguments) =
+            match build_app_shortcut_command(&app_name, &profile_to_run_with, &working_dir).await {
+                Ok(command) => command,
+                Err(error) => {
+                    emit_error!(app_name, "Failed to prepare the app shortcut: {}", error);
+                    return Err(error.into());
+                }
+            };
+        emit_info!(
+            app_name,
+            "Shortcut target: {} (arguments: {:?}, icon: {:?}, run as admin: {})",
+            shortcut_target.display(),
+            shortcut_arguments,
+            icon_path,
+            profile_to_run_with.is_admin()
+        );
+        if let Err(error) = update_app_shortcuts(
+            app_handle,
+            app_name.clone(),
+            shortcut_target,
+            shortcut_arguments,
+            working_dir,
+            icon_path,
+            profile_to_run_with.is_admin(),
+        )
+        .await
+        {
+            emit_error!(
+                app_name,
+                "Failed to create or update Windows shortcuts: {}",
+                error
+            );
+            return Err(error);
+        }
+        emit_info!(
+            app_name,
+            "Windows app shortcuts were created or updated successfully."
+        );
+    } else {
+        emit_info!(
+            app_name,
+            "Skipping shortcut creation because the app process was not detected after startup."
+        );
+    }
     Ok(())
 }
 

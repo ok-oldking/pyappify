@@ -49,7 +49,7 @@ async fn run_python_script_normal_internal(
     Ok(())
 }
 
-fn find_script_or_executable(
+pub(crate) fn find_script_or_executable(
     script: &str,
     working_dir: &Path,
     script_dir: &Path,
