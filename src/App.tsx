@@ -5,6 +5,7 @@ import {invoke} from "@tauri-apps/api/core";
 import {listen, UnlistenFn} from "@tauri-apps/api/event";
 import {getVersion} from '@tauri-apps/api/app';
 import {getCurrentWindow} from '@tauri-apps/api/window';
+import {openUrl} from '@tauri-apps/plugin-opener';
 import UpdateLogPage from "./UpdateLogPage";
 import ConsolePage, {type MessagePayload} from "./ConsolePage.tsx";
 import SettingsPage from "./SettingsPage.tsx";
@@ -64,7 +65,7 @@ interface Profile {
 interface App {
     name: string;
     icon: string;
-    url: string;
+    website: string | null;
     path: string;
     current_version: string | null;
     available_versions: string[];
@@ -289,6 +290,16 @@ function App() {
     const [snackbarOpen, setSnackbarOpen] = useState(false);
     const [snackbarMessage, setSnackbarMessage] = useState("");
     const [snackbarSeverity, setSnackbarSeverity] = useState<"success" | "info" | "warning" | "error">("info");
+
+    const handleOpenWebsite = useCallback(async () => {
+        const website = app?.website?.trim();
+        if (!website) return;
+        try {
+            await openUrl(website);
+        } catch (error) {
+            console.warn('Failed to open app website:', error);
+        }
+    }, [app?.website]);
 
     useEffect(() => {
         selectedTargetVersionsRef.current = selectedTargetVersions;
@@ -981,7 +992,20 @@ function App() {
                                                 <AppIcon appName={app.name} iconPath={app.icon}/>
                                                 <Box sx={{minWidth: 0}}>
                                                     <Stack direction="row" spacing={1.5} useFlexGap sx={{alignItems: 'center', flexWrap: 'wrap'}}>
-                                                        <Typography variant="h6" noWrap>{app.name}</Typography>
+                                                        {app.website?.trim() ? (
+                                                            <Link
+                                                                component="button"
+                                                                type="button"
+                                                                variant="h6"
+                                                                underline="hover"
+                                                                onClick={handleOpenWebsite}
+                                                                sx={{fontWeight: 500, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left'}}
+                                                            >
+                                                                {app.name}
+                                                            </Link>
+                                                        ) : (
+                                                            <Typography variant="h6" noWrap>{app.name}</Typography>
+                                                        )}
                                                         {app.installed && !app.running && (
                                                             <FormControlLabel
                                                                 sx={{m: 0}}
@@ -1138,6 +1162,7 @@ function App() {
                                                         isConfirming={inlineUpdateEntry.isConfirming}
                                                         completed={inlineUpdateEntry.completed}
                                                         failed={inlineUpdateEntry.failed}
+                                                        website={app.website}
                                                         onConfirm={handleConfirmVersionChange}
                                                         onOpenConsole={() => handleOpenUpdateConsole(app.name)}
                                                         onCancel={() => {

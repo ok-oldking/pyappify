@@ -1,7 +1,8 @@
 // src/UpdateLogPage.tsx
 import React, {useEffect, useRef, useState} from 'react';
 import {invoke} from "@tauri-apps/api/core";
-import {Alert, Box, Button, CircularProgress, Paper, Stack, Typography} from "@mui/material";
+import {Alert, Box, Button, CircularProgress, Link, Paper, Stack, Typography} from "@mui/material";
+import {openUrl} from '@tauri-apps/plugin-opener';
 import {useTranslation} from 'react-i18next';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlineOutlined';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutlineOutlined';
@@ -14,6 +15,7 @@ interface UpdateLogPanelProps {
     isConfirming?: boolean;
     completed?: boolean;
     failed?: boolean;
+    website?: string | null;
     onConfirm: (params: { appName: string, version: string, actionType: VersionActionType }) => void;
     onCancel: () => void;
     onOpenConsole: () => void;
@@ -32,6 +34,7 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
                                                           isConfirming = false,
                                                           completed = false,
                                                           failed = false,
+                                                          website,
                                                           onConfirm,
                                                           onCancel,
                                                           onOpenConsole,
@@ -91,6 +94,16 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
         const body = notes ? `${version}\n${notes}` : version;
         sendOsNotification(title, body);
         onConfirm({appName, version, actionType});
+    };
+
+    const handleOpenWebsite = async () => {
+        const target = website?.trim();
+        if (!target) return;
+        try {
+            await openUrl(target);
+        } catch (error) {
+            console.warn('Failed to open app website:', error);
+        }
     };
 
     const progressTranslationKey = actionType === 'Upgrade'
@@ -161,6 +174,15 @@ const UpdateLogPage: React.FC<UpdateLogPanelProps> = ({
             {notesError && (
                 <Alert severity="error" sx={{my: 1}}>
                     {notesError}
+                </Alert>
+            )}
+
+            {failed && actionType === 'Upgrade' && website?.trim() && (
+                <Alert severity="warning" sx={{my: 1}}>
+                    {t('Upgrade failed. Please visit the website to download the latest version.')}{' '}
+                    <Link component="button" type="button" onClick={handleOpenWebsite}>
+                        {t('Open website')}
+                    </Link>
                 </Alert>
             )}
 

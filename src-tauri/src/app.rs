@@ -38,6 +38,8 @@ pub struct App {
     #[serde(default)]
     pub icon: String,
     #[serde(default)]
+    pub website: Option<String>,
+    #[serde(default)]
     pub current_version: Option<String>,
     #[serde(default, skip_serializing)]
     pub current_version_missing: bool,
@@ -245,6 +247,7 @@ pub fn update_app_from_yml(app: &mut App, file_path_str: &str) {
     apply_profile_inheritance(&mut parsed_app);
 
     app.icon = parsed_app.icon;
+    app.website = parsed_app.website;
     app.profiles = parsed_app.profiles;
 
     if app.get_profile(&app.current_profile).is_none() {
@@ -473,6 +476,18 @@ mod tests {
     fn reads_relative_icon_path_from_yaml() {
         let app: App = serde_yaml::from_str("name: example\nicon: assets/icon.png\n").unwrap();
         assert_eq!(app.icon, "assets/icon.png");
+    }
+
+    #[test]
+    fn website_is_optional_and_read_from_yaml() {
+        let without_website: App = serde_yaml::from_str("name: example\n").unwrap();
+        assert_eq!(without_website.website, None);
+
+        let with_website: App = serde_yaml::from_str(
+            "name: example\nwebsite: https://example.com/downloads\n",
+        )
+        .unwrap();
+        assert_eq!(with_website.website.as_deref(), Some("https://example.com/downloads"));
     }
 
     #[test]
