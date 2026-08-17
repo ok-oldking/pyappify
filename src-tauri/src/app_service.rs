@@ -1578,8 +1578,10 @@ if not _show_error_dialog:
     os.execve(sys.executable, [sys.executable, _main_script], os.environ)
 
 # Keep this pythonw process alive as a supervisor. A native crash cannot be caught
-# in the crashing process, so suppress the inherited Windows fault dialog, wait for
-# the child, and report its exit code from this healthy process instead.
+# in the crashing process, so suppress the inherited Windows fault dialog and wait
+# for the child. The application writes its own diagnostics to its log; showing a
+# second dialog here would recreate the close-time error this wrapper is intended
+# to prevent.
 import ctypes
 import subprocess
 
@@ -1604,13 +1606,9 @@ except BaseException as _error:
     _show_failure(f"Failed to start {{_app_name}}.\n\n{{type(_error).__name__}}: {{_error}}")
     sys.exit(1)
 
-if _result.returncode != 0:
-    _exit_code = _result.returncode & 0xFFFFFFFF
-    _show_failure(
-        f"{{_app_name}} exited unexpectedly (error 0x{{_exit_code:08X}}).\n\n"
-        "Check the application logs for more details."
-    )
-    sys.exit(1)
+# Do not show a second Windows dialog for a native child failure. In particular,
+# graphics backends can report an access violation while they are being torn down.
+# The supervisor itself remains healthy and exits silently after the child exits.
 "#
     ))
 }
@@ -2087,7 +2085,7 @@ mod tests {
     }
 
     #[test]
-    fn pythonw_shortcut_supervises_native_crashes_and_shows_an_error_dialog() {
+    fn pythonw_shortcut_supervises_native_crashes_without_a_second_error_dialog() {
         let bootstrap = build_app_shortcut_bootstrap(
             "Example App",
             &shortcut_profile(true),
@@ -2100,6 +2098,7 @@ mod tests {
         assert!(bootstrap.contains("subprocess.run"));
         assert!(bootstrap.contains("MessageBoxW"));
         assert!(bootstrap.contains("_app_name = \"Example App\""));
+        assert!(!bootstrap.contains("if _result.returncode != 0"));
     }
 
     #[test]
