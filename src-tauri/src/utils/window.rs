@@ -117,6 +117,19 @@ fn build_app_shortcut(
     Ok(link)
 }
 
+fn existing_desktop_shortcuts(
+    desktop_dir: &Path,
+    app_filename: &str,
+    launcher_filename: &str,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    let app_shortcut = desktop_dir.join(app_filename);
+    let launcher_shortcut = desktop_dir.join(launcher_filename);
+    (
+        app_shortcut.exists().then_some(app_shortcut),
+        launcher_shortcut.exists().then_some(launcher_shortcut),
+    )
+}
+
 #[cfg(windows)]
 fn write_app_shortcut(
     shortcut_path: &Path,
@@ -230,8 +243,13 @@ pub async fn update_app_shortcuts(
             return Err(anyhow::Error::from(error).into());
         }
     };
-    let desktop_shortcut = desktop_dir.join(shortcut_filename);
-    if desktop_shortcut.exists() {
+    let launcher_filename = format!("{}.lnk", launcher_name);
+    let (desktop_shortcut, desktop_launcher_shortcut) = existing_desktop_shortcuts(
+        &desktop_dir,
+        &shortcut_filename,
+        &launcher_filename,
+    );
+    if let Some(desktop_shortcut) = desktop_shortcut {
         write_app_shortcut(
             &desktop_shortcut,
             &target_path,
@@ -241,7 +259,13 @@ pub async fn update_app_shortcuts(
             icon_path.as_deref(),
             run_as_admin,
         )?;
-        let desktop_launcher_shortcut = desktop_dir.join(format!("{}.lnk", launcher_name));
+    } else {
+        info!(
+            "No existing Desktop shortcut at '{}'; nothing to update.",
+            desktop_dir.join(&shortcut_filename).display()
+        );
+    }
+    if let Some(desktop_launcher_shortcut) = desktop_launcher_shortcut {
         write_app_shortcut(
             &desktop_launcher_shortcut,
             &launcher_target,
@@ -253,8 +277,8 @@ pub async fn update_app_shortcuts(
         )?;
     } else {
         info!(
-            "No existing Desktop shortcut at '{}'; nothing to update.",
-            desktop_shortcut.display()
+            "No existing Desktop launcher shortcut at '{}'; nothing to update.",
+            desktop_dir.join(&launcher_filename).display()
         );
     }
     info!(
@@ -279,8 +303,10 @@ pub async fn update_app_shortcuts(
 
 #[cfg(test)]
 mod tests {
-    use super::build_app_shortcut;
+    use super::{build_app_shortcut, existing_desktop_shortcuts};
     use shortcuts_rs::LinkFlags;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn app_shortcut_starts_python_directly_and_uses_its_icon() {
@@ -310,5 +336,39 @@ mod tests {
         assert!(flags.contains(LinkFlags::HAS_ICON_LOCATION));
         assert!(flags.contains(LinkFlags::HAS_WORKING_DIR));
         assert!(flags.contains(LinkFlags::RUN_AS_USER));
+    }
+
+    #[test]
+    fn desktop_shortcuts_are_updated_only_when_each_one_exists() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let desktop_dir = std::env::temp_dir().join(format!(
+            "pyappify-desktop-shortcuts-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&desktop_dir).unwrap();
+
+        let (app, launcher) = existing_desktop_shortcuts(&desktop_dir, "app.lnk", "launcher.lnk");
+        assert!(app.is_none());
+        assert!(launcher.is_none());
+
+        let app_path = desktop_dir.join("app.lnk");
+        let launcher_path = desktop_dir.join("launcher.lnk");
+        fs::write(&app_path, []).unwrap();
+        let (app, launcher) = existing_desktop_shortcuts(&desktop_dir, "app.lnk", "launcher.lnk");
+        assert_eq!(app.as_deref(), Some(app_path.as_path()));
+        assert!(launcher.is_none());
+
+        fs::write(&launcher_path, []).unwrap();
+        let (app, launcher) = existing_desktop_shortcuts(&desktop_dir, "app.lnk", "launcher.lnk");
+        assert_eq!(app.as_deref(), Some(app_path.as_path()));
+        assert_eq!(
+            launcher.as_deref(),
+            Some(launcher_path.as_path())
+        );
+
+        fs::remove_dir_all(desktop_dir).unwrap();
     }
 }
