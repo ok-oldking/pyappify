@@ -62,6 +62,8 @@ pub struct App {
     #[serde(default)]
     pub auto_start: bool,
     #[serde(default)]
+    pub auto_start_delay_secs: Option<u64>,
+    #[serde(default)]
     pub update_state: AppUpdateState,
     #[serde(default)]
     pub update_target_version: Option<String>,

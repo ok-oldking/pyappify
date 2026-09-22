@@ -548,7 +548,11 @@ pub async fn load_app() -> Result<App, Error> {
                 && app.installed
                 && !app.available_versions.is_empty()
             {
-                info!("Scheduling auto-start for '{}' in 10 seconds.", app.name);
+                let auto_start_delay_secs = app.auto_start_delay_secs.unwrap_or(10);
+                info!(
+                    "Scheduling auto-start for '{}' in {} seconds.",
+                    app.name, auto_start_delay_secs
+                );
                 let app_name_clone = app.name.clone();
                 let auto_start_override = startup_overrides.auto_start;
                 AUTO_START_CANCELLED.store(false, AtomicOrdering::SeqCst);
@@ -556,7 +560,7 @@ pub async fn load_app() -> Result<App, Error> {
                 if let Some(app_handle) = get_app_handle() {
                     let app_handle_clone = app_handle.clone();
                     tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        tokio::time::sleep(Duration::from_secs(auto_start_delay_secs)).await;
 
                         let should_start = if AUTO_START_CANCELLED.load(AtomicOrdering::SeqCst) {
                             false
