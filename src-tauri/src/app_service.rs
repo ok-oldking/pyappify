@@ -548,7 +548,11 @@ pub async fn load_app() -> Result<App, Error> {
                 && app.installed
                 && !app.available_versions.is_empty()
             {
-                info!("Scheduling auto-start for '{}' in 10 seconds.", app.name);
+                let auto_start_delay_secs = app.auto_start_delay_secs.unwrap_or(10);
+                info!(
+                    "Scheduling auto-start for '{}' in {} seconds.",
+                    app.name, auto_start_delay_secs
+                );
                 let app_name_clone = app.name.clone();
                 let auto_start_override = startup_overrides.auto_start;
                 AUTO_START_CANCELLED.store(false, AtomicOrdering::SeqCst);
@@ -556,7 +560,7 @@ pub async fn load_app() -> Result<App, Error> {
                 if let Some(app_handle) = get_app_handle() {
                     let app_handle_clone = app_handle.clone();
                     tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        tokio::time::sleep(Duration::from_secs(auto_start_delay_secs)).await;
 
                         let should_start = if AUTO_START_CANCELLED.load(AtomicOrdering::SeqCst) {
                             false
@@ -662,10 +666,20 @@ pub async fn update_app_preferences(
     app_name: String,
     update_method: Option<String>,
     auto_start: Option<bool>,
+    auto_start_delay_secs: Option<u64>,
 ) -> Result<(), Error> {
     let app_dir_lock = get_app_lock(&app_name).await?;
     let _guard = app_dir_lock.lock().await;
     let mut app = get_app_by_name(&app_name).await?;
+
+    if let Some(auto_start_delay_secs) = auto_start_delay_secs {
+        if auto_start_delay_secs > 3600 {
+            return Err(err!(
+                "Auto start delay must be between 0 and 3600 seconds"
+            ));
+        }
+        app.auto_start_delay_secs = Some(auto_start_delay_secs);
+    }
 
     if let Some(update_method) = update_method {
         if !matches!(

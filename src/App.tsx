@@ -35,6 +35,7 @@ import {
     Snackbar,
     Stack,
     Switch,
+    TextField,
     Tooltip,
     Typography
 } from "@mui/material";
@@ -73,6 +74,7 @@ interface App {
     installed: boolean;
     update_method: string;
     auto_start: boolean;
+    auto_start_delay_secs: number | null;
     update_state: 'idle' | 'updating' | 'failed';
     update_target_version: string | null;
     update_error: string | null;
@@ -418,12 +420,13 @@ function App() {
         appName: string,
         updateMethod: string | null,
         autoStart: boolean | null,
+        autoStartDelaySecs: number | null = null,
     ) => {
         clearMessages();
         updateStatus({messageLoading: true});
         await invokeTauriCommandWrapper<void>(
             'update_app_preferences',
-            {appName, updateMethod, autoStart},
+            {appName, updateMethod, autoStart, autoStartDelaySecs},
             () => updateStatus({info: t('App settings updated successfully.'), messageLoading: false}),
             (errorMessage) => updateStatus({error: `Failed to update ${appName}: ${errorMessage}`, messageLoading: false}),
         );
@@ -1018,6 +1021,29 @@ function App() {
                                                                     />
                                                                 )}
                                                                 label={<Typography variant="body2" sx={{fontWeight: 600}}>{t('Auto Start')}</Typography>}
+                                                            />
+                                                        )}
+                                                        {app.installed && !app.running && app.auto_start && (
+                                                            <TextField
+                                                                size="small"
+                                                                type="number"
+                                                                label={t('Auto Start Delay (seconds)')}
+                                                                sx={{width: 160}}
+                                                                defaultValue={app.auto_start_delay_secs ?? 10}
+                                                                disabled={disableRowActions}
+                                                                slotProps={{htmlInput: {min: 0, max: 3600, step: 1}}}
+                                                                onBlur={(event) => {
+                                                                    let value = Math.round(Number(event.target.value));
+                                                                    if (!Number.isFinite(value) || value < 0) {
+                                                                        value = 10;
+                                                                    } else if (value > 3600) {
+                                                                        value = 3600;
+                                                                    }
+                                                                    event.target.value = String(value);
+                                                                    if (value !== (app.auto_start_delay_secs ?? 10)) {
+                                                                        handleAppPreferenceChange(app.name, null, null, value);
+                                                                    }
+                                                                }}
                                                             />
                                                         )}
                                                     </Stack>

@@ -123,7 +123,8 @@ const resources = {
             "MANUAL_UPDATE": "Manual Update",
             "AUTO_UPDATE": "Auto Update to Release",
             "AUTO_UPDATE_PRE_RELEASE": "Auto Update to Pre-release",
-            "Auto Start": "Auto Start"
+            "Auto Start": "Auto Start",
+            "Auto Start Delay (seconds)": "Auto Start Delay (seconds)"
         }
     },
     'zh-CN': {
@@ -247,7 +248,8 @@ const resources = {
             "MANUAL_UPDATE": "手动更新",
             "AUTO_UPDATE": "自动更新至正式版",
             "AUTO_UPDATE_PRE_RELEASE": "自动更新至预发布版",
-            "Auto Start": "自动启动"
+            "Auto Start": "自动启动",
+            "Auto Start Delay (seconds)": "自动启动等待(秒)"
         }
     },
     'zh-TW': {
@@ -369,7 +371,8 @@ const resources = {
             "MANUAL_UPDATE": "手動更新",
             "AUTO_UPDATE": "自動更新至正式版",
             "AUTO_UPDATE_PRE_RELEASE": "自動更新至預發佈版",
-            "Auto Start": "自動啟動"
+            "Auto Start": "自動啟動",
+            "Auto Start Delay (seconds)": "自動啟動等待(秒)"
         }
     },
     ja: {
@@ -491,7 +494,8 @@ const resources = {
             "MANUAL_UPDATE": "手動更新",
             "AUTO_UPDATE": "正式版に自動更新",
             "AUTO_UPDATE_PRE_RELEASE": "プレリリース版に自動更新",
-            "Auto Start": "自動起動"
+            "Auto Start": "自動起動",
+            "Auto Start Delay (seconds)": "自動起動待ち(秒)"
         }
     },
     ko: {
@@ -613,7 +617,8 @@ const resources = {
             "MANUAL_UPDATE": "수동 업데이트",
             "AUTO_UPDATE": "정식 버전으로 자동 업데이트",
             "AUTO_UPDATE_PRE_RELEASE": "사전 출시 버전으로 자동 업데이트",
-            "Auto Start": "자동 시작"
+            "Auto Start": "자동 시작",
+            "Auto Start Delay (seconds)": "자동 시작 대기(초)"
         }
     },
     es: {
@@ -735,7 +740,8 @@ const resources = {
             "MANUAL_UPDATE": "Actualización Manual",
             "AUTO_UPDATE": "Actualizar Automáticamente a la Versión Estable",
             "AUTO_UPDATE_PRE_RELEASE": "Actualizar Automáticamente a la Versión Preliminar",
-            "Auto Start": "Inicio Automático"
+            "Auto Start": "Inicio Automático",
+            "Auto Start Delay (seconds)": "Retraso de inicio automático (segundos)"
         }
     },
 };
