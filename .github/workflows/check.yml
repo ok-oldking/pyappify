@@ -1,0 +1,29 @@
+name: Check
+
+on:
+  push:
+    branches: [master, 'codex/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib

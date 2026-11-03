@@ -597,6 +597,10 @@ pub async fn load_app() -> Result<App, Error> {
 }
 
 async fn update_app_from_disk() -> Result<bool, Error> {
+    update_app_from_disk_at_version(None).await
+}
+
+async fn update_app_from_disk_at_version(setup_version: Option<&str>) -> Result<bool, Error> {
     let mut app = get_app().await.ok_or_else(|| err!("App is not loaded."))?;
     let original_app = app.clone();
 
@@ -609,6 +613,16 @@ async fn update_app_from_disk() -> Result<bool, Error> {
         ensure_repository(&app).await?;
         let previous_known_version = app.current_version.clone();
         let (versions, current) = git::get_tags_and_current_version(&app.name, repo_path).await?;
+        // Setup already checked out this exact tag. Multiple tags can share
+        // HEAD, so retain the requested tag instead of inferring a newer alias.
+        let current = if let Some(version) = setup_version {
+            if !versions.iter().any(|available| available == version) {
+                return Err(err!("Setup version '{}' is no longer available", version));
+            }
+            version.to_string()
+        } else {
+            current
+        };
         let (current_version, current_version_missing) =
             resolve_current_version_state(previous_known_version.clone(), &versions, current);
         app.current_version_missing = current_version_missing;
@@ -926,6 +940,14 @@ fn get_profile_for_setup<'a>(
 
 #[tauri::command]
 pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<(), Error> {
+    setup_app_at_version(app_name, profile_name, None).await
+}
+
+pub async fn setup_app_at_version(
+    app_name: &str,
+    profile_name: &str,
+    version: Option<&str>,
+) -> Result<(), Error> {
     let app_dir_lock = get_app_lock(app_name).await?;
     let _guard = app_dir_lock.lock().await;
 
@@ -933,6 +955,12 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<(), Error> 
     let app = get_app_by_name(app_name).await?;
 
     ensure_repository(&app).await?;
+
+    // Select the build's tag before copying configuration or installing Python
+    // dependencies. Normal interactive setup retains the latest stable default.
+    if let Some(version) = version {
+        git::checkout_version_tag(app_name, &repo_path, version).await?;
+    }
 
     let working_dir_path = get_app_working_dir_path(app_name);
     if !repo_path.exists() {
@@ -977,6 +1005,10 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<(), Error> 
         load_app_details(app).await?;
         app.installed = true;
         app.current_profile = final_profile_name_to_set.clone();
+        if let Some(version) = version {
+            app.current_version = Some(version.to_string());
+            app.current_version_missing = false;
+        }
         let app_to_save = app.clone();
         drop(app_guard);
 
@@ -990,7 +1022,7 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<(), Error> 
             "App config json saved successfully after setup {} installed {}",
             app_to_save.name, app_to_save.installed
         );
-        update_app_from_disk().await?;
+        update_app_from_disk_at_version(version).await?;
         emit_app().await;
     } else {
         warn!(
@@ -2082,6 +2114,65 @@ mod tests {
             requires_python: String::new(),
             pip_args: String::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn setup_records_requested_tag_when_a_newer_alias_shares_head() {
+        use crate::app::App;
+        use crate::utils::path;
+        use git2::{Repository, Signature};
+
+        let app_name = format!(
+            "setup-alias-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let app_root = path::get_app_base_path(&app_name);
+        let source_path = app_root.join("source");
+        std::fs::create_dir_all(&source_path).unwrap();
+        let source = Repository::init(&source_path).unwrap();
+        let tree_id = source.index().unwrap().write_tree().unwrap();
+        let tree = source.find_tree(tree_id).unwrap();
+        let signature = Signature::now("PyAppify Test", "test@example.com").unwrap();
+        let oid = source
+            .commit(Some("HEAD"), &signature, &signature, "release", &tree, &[])
+            .unwrap();
+        let commit = source.find_object(oid, None).unwrap();
+        for tag in ["v1.0.0-beta.1", "v1.0.0"] {
+            source.tag_lightweight(tag, &commit, false).unwrap();
+        }
+        let repo_path = path::get_app_repo_path(&app_name);
+        drop(Repository::clone(source_path.to_str().unwrap(), &repo_path).unwrap());
+        let app: App = serde_json::from_value(serde_json::json!({
+            "name": app_name,
+            "installed": true,
+            "current_version": "v1.0.0-beta.1",
+            "profiles": [{"name": "default", "git_url": source_path.to_str().unwrap()}]
+        }))
+        .unwrap();
+        *super::APP.lock().await = Some(app);
+
+        super::update_app_from_disk_at_version(Some("v1.0.0-beta.1"))
+            .await
+            .unwrap();
+        let saved: App = serde_json::from_str(
+            &std::fs::read_to_string(app_root.join("app.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved.current_version.as_deref(), Some("v1.0.0-beta.1"));
+        assert!(!super::get_app().await.unwrap().current_version_missing);
+        assert!(super::update_app_from_disk_at_version(Some("v9.0.0"))
+            .await
+            .is_err());
+
+        *super::APP.lock().await = None;
+        drop(commit);
+        drop(tree);
+        drop(source);
+        std::fs::remove_dir_all(app_root).unwrap();
     }
 
     #[test]

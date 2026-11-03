@@ -1131,7 +1131,10 @@ pub async fn get_commit_messages_for_version_diff(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_version_history, compare_version_tags, is_release_version, is_version_tag};
+    use super::{
+        build_version_history, checkout_version_tag, compare_version_tags, is_release_version,
+        is_version_tag,
+    };
     use git2::{Repository, Signature};
     use std::cmp::Ordering;
 
@@ -1223,6 +1226,49 @@ mod tests {
             Some("v1.1.0-beta.1")
         );
         assert_eq!(all_versions[0].update_note, vec!["release change"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_setup_tag_selects_prerelease_and_missing_tag_fails() {
+        let root = std::env::temp_dir().join(format!(
+            "pyappify-setup-tag-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source_path = root.join("source");
+        let source = Repository::init(&source_path).unwrap();
+        commit_and_tag(&source, &source_path, "v1.0.0", "stable dependencies");
+        commit_and_tag(&source, &source_path, "v1.1.0-beta.1", "minimal dependencies");
+        let checkout_path = root.join("checkout");
+        let checkout = Repository::clone(source_path.to_str().unwrap(), &checkout_path).unwrap();
+        drop(checkout);
+
+        checkout_version_tag("test", &checkout_path, "v1.0.0")
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(checkout_path.join("history.txt")).unwrap().trim(),
+            "v1.0.0"
+        );
+        checkout_version_tag("test", &checkout_path, "v1.1.0-beta.1")
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(checkout_path.join("history.txt")).unwrap().trim(),
+            "v1.1.0-beta.1"
+        );
+        assert!(checkout_version_tag("test", &checkout_path, "v9.0.0").await.is_err());
+        assert_eq!(
+            std::fs::read_to_string(checkout_path.join("history.txt")).unwrap().trim(),
+            "v1.1.0-beta.1"
+        );
+
+        drop(source);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
