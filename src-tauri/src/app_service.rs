@@ -926,6 +926,14 @@ fn get_profile_for_setup<'a>(
 
 #[tauri::command]
 pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<(), Error> {
+    setup_app_at_version(app_name, profile_name, None).await
+}
+
+pub async fn setup_app_at_version(
+    app_name: &str,
+    profile_name: &str,
+    version: Option<&str>,
+) -> Result<(), Error> {
     let app_dir_lock = get_app_lock(app_name).await?;
     let _guard = app_dir_lock.lock().await;
 
@@ -933,6 +941,12 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<(), Error> 
     let app = get_app_by_name(app_name).await?;
 
     ensure_repository(&app).await?;
+
+    // Select the build's tag before copying configuration or installing Python
+    // dependencies. Normal interactive setup retains the latest stable default.
+    if let Some(version) = version {
+        git::checkout_version_tag(app_name, &repo_path, version).await?;
+    }
 
     let working_dir_path = get_app_working_dir_path(app_name);
     if !repo_path.exists() {
@@ -977,6 +991,10 @@ pub async fn setup_app(app_name: &str, profile_name: &str) -> Result<(), Error> 
         load_app_details(app).await?;
         app.installed = true;
         app.current_profile = final_profile_name_to_set.clone();
+        if let Some(version) = version {
+            app.current_version = Some(version.to_string());
+            app.current_version_missing = false;
+        }
         let app_to_save = app.clone();
         drop(app_guard);
 

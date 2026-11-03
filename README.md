@@ -68,6 +68,17 @@ refer to the docs at [https://github.com/ok-oldking/pyappify-action](https://git
 
 ## Startup arguments
 
+Installer builds can prepare an exact application tag, including a prerelease:
+
+```text
+pyappify.exe -c setup -p China --setup-version v3.7.14-beta.5
+```
+
+The requested tag is fetched and checked out before copying the application files
+or installing its Python dependencies. A missing tag fails setup. Omitting
+`--setup-version` keeps the normal latest stable behavior. This option requires
+PyAppify v1.2.4 or newer and applies only to the headless setup command.
+
 PyAppify checks the repository for newer release tags when it starts. Manual-update mode shows a desktop notification when a newer release is available; automatic modes notify and then update before starting the application.
 
 Automatic application startup waits 10 seconds. Turning off **Auto Start** during that window cancels the pending start.

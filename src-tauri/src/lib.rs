@@ -15,8 +15,8 @@ use crate::app::{
 };
 use crate::app_service::{
     delete_app, get_app_icon, get_update_notes, get_version_list, load_app, set_startup_overrides,
-    setup_app, start_app, stop_app, update_app_preferences, update_to_version, StartupOverrides,
-    AUTO_START_CHECKED,
+    setup_app, setup_app_at_version, start_app, stop_app, update_app_preferences, update_to_version,
+    StartupOverrides, AUTO_START_CHECKED,
 };
 use crate::config_manager::{
     get_config_payload, init_config_manager, save_configuration, update_config_item,
@@ -36,6 +36,7 @@ i18n!("locales", fallback = "en");
 struct CommandLineOptions {
     command: Option<String>,
     profile_name: Option<String>,
+    setup_version: Option<String>,
     auto_start: Option<bool>,
     update_method: Option<String>,
     number_versions: Option<usize>,
@@ -104,6 +105,7 @@ fn parse_command_line(args: &[String]) -> Result<CommandLineOptions, String> {
             | "--command"
             | "-p"
             | "--profile"
+            | "--setup-version"
             | "-a"
             | "--auto-start"
             | "-u"
@@ -127,6 +129,12 @@ fn parse_command_line(args: &[String]) -> Result<CommandLineOptions, String> {
         match flag {
             "-c" | "--command" => options.command = Some(value.clone()),
             "-p" | "--profile" => options.profile_name = Some(value.clone()),
+            "--setup-version" => {
+                if !git::is_version_tag(value) {
+                    return Err(format!("Invalid setup version tag '{value}'"));
+                }
+                options.setup_version = Some(value.clone());
+            }
             "-a" | "--auto-start" => {
                 options.auto_start = Some(parse_bool_argument(value).ok_or_else(|| {
                     format!(
@@ -205,6 +213,14 @@ fn parse_command_line(args: &[String]) -> Result<CommandLineOptions, String> {
                     .ok_or_else(|| format!("Invalid PYAPPIFY_UPDATE_METHOD value '{}'", value))
             })
             .transpose()?;
+    }
+
+    if options.setup_version.is_some()
+        && (options.command.as_deref() != Some("setup")
+            || options.profile_name.is_none()
+            || options.update_to_version.is_some())
+    {
+        return Err("--setup-version requires -c setup -p <profile> and cannot be combined with --update-to-version".to_string());
     }
 
     // Existing PyAppify startup shortcuts used `-c start -n <app>`. Do not let that
@@ -355,7 +371,7 @@ async fn handle_command_line(options: CommandLineOptions) {
                 "Command-line mode: Setting up app '{}' with profile '{}'.",
                 app_name, p_name
             );
-            match setup_app(app_name, &p_name).await {
+            match setup_app_at_version(app_name, &p_name, options.setup_version.as_deref()).await {
                 Ok(()) => {
                     println!("Setup successful.");
                     std::process::exit(0);
@@ -705,7 +721,7 @@ pub async fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_command_line, CommandLineOptions};
+    use super::{has_cli_command, parse_command_line, CommandLineOptions};
     use crate::app::{UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE, UPDATE_METHOD_OPTION_MANUAL};
 
     fn args(values: &[&str]) -> Vec<String> {
@@ -730,6 +746,7 @@ mod tests {
             CommandLineOptions {
                 command: Some("start".to_string()),
                 profile_name: None,
+                setup_version: None,
                 auto_start: Some(false),
                 update_method: Some(UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE.to_string()),
                 number_versions: None,
@@ -794,5 +811,44 @@ mod tests {
             parse_command_line(&args(&["pyappify", "--update_to_version", "v1.2.3"])).unwrap();
         assert_eq!(parsed.update_to_version.as_deref(), Some("v1.2.3"));
         assert!(parsed.has_forwardable_request());
+    }
+
+    #[test]
+    fn setup_can_pin_a_prerelease_without_forwarding_an_update_request() {
+        let parsed = parse_command_line(&args(&[
+            "pyappify",
+            "-c",
+            "setup",
+            "-p",
+            "China",
+            "--setup-version",
+            "v3.7.14-beta.5",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.setup_version.as_deref(), Some("v3.7.14-beta.5"));
+        assert!(has_cli_command(&parsed));
+        assert!(!parsed.has_forwardable_request());
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_invalid_setup_versions() {
+        for arguments in [
+            vec!["pyappify", "--setup-version", "v1.0.0"],
+            vec!["pyappify", "-c", "setup", "--setup-version", "v1.0.0"],
+            vec!["pyappify", "-c", "setup", "-p", "China", "--setup-version", ""],
+            vec!["pyappify", "-c", "setup", "-p", "China", "--setup-version", "main"],
+            vec![
+                "pyappify", "-c", "setup", "-p", "China", "--setup-version", "v1.0.0",
+                "--update-to-version", "v2.0.0",
+            ],
+        ] {
+            assert!(
+                parse_command_line(&args(&arguments)).is_err(),
+                "{arguments:?}"
+            );
+        }
+        let defaults =
+            parse_command_line(&args(&["pyappify", "-c", "setup", "-p", "China"])).unwrap();
+        assert_eq!(defaults.setup_version, None);
     }
 }
