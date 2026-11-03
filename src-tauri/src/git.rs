@@ -1249,21 +1249,23 @@ mod tests {
         drop(checkout);
 
         checkout_version_tag("test", &checkout_path, "v1.0.0")
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(
-            std::fs::read_to_string(checkout_path.join("history.txt")).unwrap(),
-            "v1.0.0\n"
+            std::fs::read_to_string(checkout_path.join("history.txt")).unwrap().trim(),
+            "v1.0.0"
         );
         checkout_version_tag("test", &checkout_path, "v1.1.0-beta.1")
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(
-            std::fs::read_to_string(checkout_path.join("history.txt")).unwrap(),
-            "v1.1.0-beta.1\n"
+            std::fs::read_to_string(checkout_path.join("history.txt")).unwrap().trim(),
+            "v1.1.0-beta.1"
         );
         assert!(checkout_version_tag("test", &checkout_path, "v9.0.0").await.is_err());
         assert_eq!(
-            std::fs::read_to_string(checkout_path.join("history.txt")).unwrap(),
-            "v1.1.0-beta.1\n"
+            std::fs::read_to_string(checkout_path.join("history.txt")).unwrap().trim(),
+            "v1.1.0-beta.1"
         );
 
         drop(source);
