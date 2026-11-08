@@ -293,10 +293,22 @@ fn extract_archive(archive_path: &Path, extract_to_dir: &Path) -> Result<()> {
             )
         })?;
 
+    let open_archive = || {
+        fs::File::open(archive_path)
+            .with_context(|| format!("Failed to open archive: {}", archive_path.display()))
+    };
+
     if file_name.ends_with(".zip") {
         extract_zip(archive_path, extract_to_dir)
     } else if file_name.ends_with(".tar.gz") {
-        extract_tar_gz(archive_path, extract_to_dir)
+        // python-build-standalone "install_only" archives keep the install under python/.
+        extract_tar(GzDecoder::new(open_archive()?), "python", extract_to_dir)
+    } else if file_name.ends_with(".tar.zst") {
+        // Older python-build-standalone "full" archives keep the install under
+        // python/install/, next to build artifacts that must not be extracted.
+        let decoder = zstd::stream::read::Decoder::new(open_archive()?)
+            .context("Failed to initialize zstd decoder")?;
+        extract_tar(decoder, "python/install", extract_to_dir)
     } else {
         Err(anyhow!("Unsupported archive format: {}", file_name))
     }
@@ -319,22 +331,17 @@ fn extract_zip(archive_path: &Path, extract_to_dir: &Path) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-fn extract_tar_gz(archive_path: &Path, extract_to_dir: &Path) -> Result<()> {
-    let tar_gz_file = fs::File::open(archive_path)
-        .with_context(|| format!("Failed to open tar.gz archive: {}", archive_path.display()))?;
-    let tar_stream = GzDecoder::new(tar_gz_file);
-    let mut archive = Archive::new(tar_stream);
+fn extract_tar<R: io::Read>(reader: R, strip_prefix: &str, extract_to_dir: &Path) -> Result<()> {
+    let mut archive = Archive::new(reader);
+    let mut skipped_entries = 0usize;
 
     for entry_result in archive.entries()? {
         let mut entry = entry_result.context("Failed to read entry from tar archive")?;
         let path_in_archive = entry.path()?.into_owned();
-        let path_after_stripping_python_dir = match path_in_archive.strip_prefix("python") {
+        let path_after_stripping_python_dir = match path_in_archive.strip_prefix(strip_prefix) {
             Ok(p) => p.to_path_buf(),
             Err(_) => {
-                warn!(
-                    "Archive entry {} not under expected 'python/' top-level directory. Skipping.",
-                    path_in_archive.display()
-                );
+                skipped_entries += 1;
                 continue;
             }
         };
@@ -371,6 +378,12 @@ fn extract_tar_gz(archive_path: &Path, extract_to_dir: &Path) -> Result<()> {
                 )
             })?;
         }
+    }
+    if skipped_entries > 0 {
+        info!(
+            "Skipped {} archive entries outside '{}/'.",
+            skipped_entries, strip_prefix
+        );
     }
     Ok(())
 }
@@ -520,13 +533,16 @@ pub async fn install_requirements(
 ) -> Result<(), Error> {
     let python_exe = get_python_exe(app_name, false);
     if !python_exe.exists() {
-        err!("Python executable not found at {}", python_exe.display());
+        return Err(err!(
+            "Python executable not found at {}",
+            python_exe.display()
+        ));
     }
     if !project_dir.is_dir() {
-        err!(
+        return Err(err!(
             "Project directory for pip execution not found or not a directory: {}",
             project_dir.display()
-        );
+        ));
     }
     let config_state = GLOBAL_CONFIG_STATE.get().ok_or_else(|| {
         anyhow!("GLOBAL_CONFIG_STATE not initialized. Call init_config_manager first.")
@@ -568,10 +584,10 @@ pub async fn install_requirements(
     if requirements.ends_with(".txt") {
         let requirements_path = project_dir.join(requirements);
         if !requirements_path.exists() {
-            err!(
+            return Err(err!(
                 "Requirements file not found at {}",
                 requirements_path.display()
-            );
+            ));
         }
         pip_install_cmd.arg("-r").arg(&requirements_path);
     } else {
@@ -612,7 +628,7 @@ pub async fn install_requirements(
     _project_dir: &Path,
     _pip_args: &str,
 ) -> Result<(), Error> {
-    err!("install_requirements is only implemented for Windows.")
+    Err(err!("install_requirements is only implemented for Windows."))
 }
 
 #[cfg(target_os = "windows")]

@@ -915,27 +915,23 @@ fn get_profile_for_setup<'a>(
     profile_name: &str,
     app_name: &str,
 ) -> Result<(&'a Profile, String)> {
-    match temp_app_config.get_profile(profile_name) {
-        Some(profile) => Ok((profile, profile_name.to_string())),
-        None => {
-            if profile_name != "default" {
-                warn!(
-                    "Profile '{}' not found for setup in app '{}'. Falling back to 'default' profile.",
-                    profile_name, app_name
-                );
-            }
-            let final_profile_name_to_set = "default".to_string();
-            let profile = temp_app_config.get_profile("default").ok_or_else(|| {
-                anyhow!(
-                    "Profile '{}' (and fallback 'default') not found in {} for app {}",
-                    profile_name,
-                    YML_FILE_NAME,
-                    app_name
-                )
-            })?;
-            Ok((profile, final_profile_name_to_set))
-        }
+    // `get_profile` falls back to the first profile when the name is unknown, so
+    // record the name of the profile actually used rather than the requested one.
+    let profile = temp_app_config.get_profile(profile_name).ok_or_else(|| {
+        anyhow!(
+            "Profile '{}' not found in {} for app {}, and no fallback profile exists",
+            profile_name,
+            YML_FILE_NAME,
+            app_name
+        )
+    })?;
+    if profile.name != profile_name {
+        warn!(
+            "Profile '{}' not found for setup in app '{}'. Falling back to '{}' profile.",
+            profile_name, app_name, profile.name
+        );
     }
+    Ok((profile, profile.name.clone()))
 }
 
 #[tauri::command]
@@ -964,7 +960,7 @@ pub async fn setup_app_at_version(
 
     let working_dir_path = get_app_working_dir_path(app_name);
     if !repo_path.exists() {
-        err!("Repo for {} not at {}", app_name, repo_path.display());
+        return Err(err!("Repo for {} not at {}", app_name, repo_path.display()));
     }
 
     delete_dir_if_exist(&working_dir_path).await?;
@@ -1239,14 +1235,18 @@ async fn ensure_app_stopped_for_update(app_name: &str) -> Result<(), Error> {
 async fn update_to_version_inner(app_name: &str, version: &str) -> Result<(), Error> {
     let working_dir_path = get_app_working_dir_path(app_name);
 
-    let (previous_version, old_requirements_spec) = {
+    let (previous_version, current_profile_name, old_requirements_spec) = {
         let app_guard = APP.lock().await;
         match app_guard.as_ref().filter(|app| app.name == app_name) {
-            Some(app) => (
-                app.current_version.clone(),
-                app.get_current_profile_settings().requirements.clone(),
-            ),
-            None => (None, String::new()),
+            Some(app) => {
+                let profile = app.get_current_profile_settings();
+                (
+                    app.current_version.clone(),
+                    profile.name.clone(),
+                    profile.requirements.clone(),
+                )
+            }
+            None => (None, "default".to_string(), String::new()),
         }
     };
 
@@ -1335,7 +1335,9 @@ async fn update_to_version_inner(app_name: &str, version: &str) -> Result<(), Er
         let mut temp_app = read_embedded_app();
         temp_app.name = app_name.to_string();
         update_app_from_yml(&mut temp_app, &yml_path.to_string_lossy());
-        match temp_app.get_profile("default") {
+        // Compare against the same profile the app is installed with, so a
+        // non-default profile keeps its own requirements across updates.
+        match temp_app.get_profile(&current_profile_name) {
             Some(p) => (p.requirements.clone(), p.pip_args.clone()),
             None => (String::new(), String::new()),
         }
@@ -1663,10 +1665,10 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         drop(_guard);
         delete_app(&app_name).await?;
         emit_error_finish!(&app_name);
-        err!(
+        return Err(err!(
             "Python .venv was missing for '{}'. App has been reset. Please run setup.",
             app_name
-        );
+        ));
     }
 
     let (
