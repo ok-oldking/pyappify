@@ -807,12 +807,8 @@ async fn get_app_by_name(app_name: &str) -> Result<App, Error> {
         .ok_or_else(|| anyhow!("App '{}' not found.", app_name).into())
 }
 
-#[derive(serde::Serialize)]
-pub struct AppIconAsset {
-    bytes: Vec<u8>,
-    mime_type: &'static str,
-}
-
+/// Supported icon formats. The frontend maps the same extensions to MIME
+/// types in src/AppIcon.tsx; keep the two lists in sync.
 fn icon_mime_type(path: &Path) -> Option<&'static str> {
     match path
         .extension()
@@ -884,37 +880,39 @@ async fn resolve_app_shortcut_icon_path(app_name: &str, configured_path: &str) -
         .then_some(canonical_ico)
 }
 
+/// Returns the app icon's raw bytes as an ArrayBuffer (not a JSON number
+/// array). An empty buffer means there is no usable icon.
 #[tauri::command]
-pub async fn get_app_icon(app_name: String) -> Result<Option<AppIconAsset>, Error> {
+pub async fn get_app_icon(app_name: String) -> Result<tauri::ipc::Response, Error> {
     const MAX_ICON_BYTES: u64 = 5 * 1024 * 1024;
+    let no_icon = || Ok(tauri::ipc::Response::new(Vec::new()));
 
     let app = get_app_by_name(&app_name).await?;
     let Some(canonical_icon_path) = resolve_app_icon_path(&app_name, &app.icon).await else {
-        return Ok(None);
+        return no_icon();
     };
 
-    let Some(mime_type) = icon_mime_type(&canonical_icon_path) else {
+    if icon_mime_type(&canonical_icon_path).is_none() {
         warn!(
             "Ignoring unsupported icon file '{}' for app '{}'.",
             canonical_icon_path.display(),
             app_name
         );
-        return Ok(None);
-    };
+        return no_icon();
+    }
     let metadata = tokio::fs::metadata(&canonical_icon_path).await?;
     if metadata.len() > MAX_ICON_BYTES {
         warn!(
-            "Ignoring icon file '{}' for app '{}': it is not a file or exceeds 5 MiB.",
+            "Ignoring icon file '{}' for app '{}': it exceeds 5 MiB.",
             canonical_icon_path.display(),
             app_name
         );
-        return Ok(None);
+        return no_icon();
     }
 
-    Ok(Some(AppIconAsset {
-        bytes: tokio::fs::read(canonical_icon_path).await?,
-        mime_type,
-    }))
+    Ok(tauri::ipc::Response::new(
+        tokio::fs::read(canonical_icon_path).await?,
+    ))
 }
 
 pub async fn update_working_from_repo(app_name: &str) -> Result<()> {

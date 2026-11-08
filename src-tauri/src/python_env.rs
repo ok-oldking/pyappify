@@ -413,8 +413,8 @@ async fn download_file(url: &str, dest_path: &Path, app_name: &str) -> Result<()
             .with_context(|| format!("Failed to write chunk to file {}", dest_path.display()))?;
         downloaded += chunk.len() as u64;
 
-        if total_size > 0 {
-            let percent = (100 * downloaded / total_size) as i64;
+        if let Some(percent) = (100 * downloaded).checked_div(total_size) {
+            let percent = percent as i64;
             if percent > last_reported_percent {
                 emit_update_info!(app_name, "Python Download Progress: {}%", percent);
                 last_reported_percent = percent;

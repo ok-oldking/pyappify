@@ -17,7 +17,7 @@ import i18n from "i18next";
 import {useTranslation} from 'react-i18next';
 import {invoke} from "@tauri-apps/api/core";
 import {invokeTauriCommandWrapper} from "./utils.ts";
-import {ThemeModeSetting} from "./App.tsx";
+import type {ThemeModeSetting} from "./theme.ts";
 
 interface StatusUpdateProps {
     updateStatus: (newStatus: { error?: string | null, info?: string | null, messageLoading?: boolean }) => void;
