@@ -91,6 +91,8 @@ type ParsedVersion = {
     };
 };
 
+// Keep the tag format and ordering in sync with parse_version_tag and
+// Prerelease in src-tauri/src/git.rs (alpha < beta < rc < release).
 const parseVersion = (version: string): ParsedVersion | null => {
     const match = version.match(/^v?(\d+)\.(\d+)\.(\d+)(?:(?:-|\.)(alpha|beta|rc)(?:\.(\d+))?)?$/);
     if (!match) return null;
@@ -186,6 +188,7 @@ type InlineConsoleKind = 'start' | 'update';
 
 const MAX_CONSOLE_LOGS = 500;
 const CONSOLE_LOG_STORAGE_KEY = 'pyappifyConsoleLogs';
+const CONSOLE_LOG_PERSIST_INTERVAL_MS = 1000;
 
 const loadConsoleLogs = (): Record<string, MessagePayload[]> => {
     try {
@@ -318,13 +321,32 @@ function App() {
         });
     }, [app?.name, t]);
 
+    // Persisting serializes every app's log history, so do it at most once per
+    // interval (and on unload) instead of on every streamed log line.
+    const consoleLogsRef = useRef(consoleLogs);
+    const consoleLogsDirtyRef = useRef(false);
     useEffect(() => {
-        try {
-            localStorage.setItem(CONSOLE_LOG_STORAGE_KEY, JSON.stringify(consoleLogs));
-        } catch (error) {
-            console.warn('Failed to persist console logs:', error);
-        }
+        consoleLogsRef.current = consoleLogs;
+        consoleLogsDirtyRef.current = true;
     }, [consoleLogs]);
+    useEffect(() => {
+        const persist = () => {
+            if (!consoleLogsDirtyRef.current) return;
+            consoleLogsDirtyRef.current = false;
+            try {
+                localStorage.setItem(CONSOLE_LOG_STORAGE_KEY, JSON.stringify(consoleLogsRef.current));
+            } catch (error) {
+                console.warn('Failed to persist console logs:', error);
+            }
+        };
+        const intervalId = window.setInterval(persist, CONSOLE_LOG_PERSIST_INTERVAL_MS);
+        window.addEventListener('beforeunload', persist);
+        return () => {
+            window.clearInterval(intervalId);
+            window.removeEventListener('beforeunload', persist);
+            persist();
+        };
+    }, []);
 
     const addConsoleLog = useCallback((logEntry: MessagePayload) => {
         setConsoleLogs(previous => {
@@ -693,9 +715,7 @@ function App() {
         beginConsoleSession(params.appName, `Initiating ${params.actionType} for '${params.appName}' to version '${params.version}'...`);
         setInlineConsoles(prev => ({...prev, [params.appName]: 'update'}));
 
-        const requirementsFile = app?.profiles?.find(p => p.name === app.current_profile)?.requirements || "requirements.txt";
-
-        await invokeTauriCommandWrapper<void>("update_to_version", {appName: params.appName, version: params.version, requirements: requirementsFile}, () => {},
+        await invokeTauriCommandWrapper<void>("update_to_version", {appName: params.appName, version: params.version}, () => {},
             (errorMessage, rawError) => {
                 console.error(`Failed to invoke ${params.actionType.toLowerCase()}:`, rawError);
                 const operationError = `Upgrade failed: ${errorMessage}`;

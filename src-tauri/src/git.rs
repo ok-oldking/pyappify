@@ -14,7 +14,10 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use tokio::{sync::Mutex, task};
+use tokio::{
+    sync::{Mutex, OwnedMutexGuard},
+    task,
+};
 use tracing::{debug, info, warn};
 
 const MAX_UPDATE_NOTE_LINES: usize = 10;
@@ -28,6 +31,36 @@ pub struct VersionHistoryEntry {
 
 static REPO_LOCKS: Lazy<DashMap<PathBuf, Arc<Mutex<()>>>> = Lazy::new(DashMap::new);
 static GIT_CONFIG_INITIALIZED: OnceLock<()> = OnceLock::new();
+
+/// Serializes all git operations on one repository path.
+async fn lock_repo(repo_path: &Path) -> OwnedMutexGuard<()> {
+    let lock = REPO_LOCKS
+        .entry(repo_path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone();
+    lock.lock_owned().await
+}
+
+/// Force-checks out `obj` and detaches HEAD at the commit it points to.
+fn checkout_detached(repo: &Repository, obj: &git2::Object<'_>, label: &str) -> Result<Oid> {
+    repo.checkout_tree(obj, Some(CheckoutBuilder::new().force()))
+        .with_context(|| format!("Failed to checkout tree for {label}"))?;
+    let commit_oid = obj
+        .peel_to_commit()
+        .map_or_else(|_| obj.id(), |commit| commit.id());
+    repo.set_head_detached(commit_oid)
+        .with_context(|| format!("Failed to set head detached to {commit_oid} for {label}"))?;
+    Ok(commit_oid)
+}
+
+fn resolve_tag_commit(repo: &Repository, tag: &str) -> Result<Oid> {
+    Ok(repo
+        .revparse_single(&format!("refs/tags/{tag}"))
+        .with_context(|| format!("Failed to resolve version tag '{tag}'"))?
+        .peel_to_commit()
+        .with_context(|| format!("Failed to peel version tag '{tag}' to a commit"))?
+        .id())
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum Prerelease {
@@ -188,30 +221,50 @@ fn create_fetch_options(
     fo
 }
 
+/// Emits throttled (0.1%) transfer progress. With `detailed`, also reports
+/// received bytes and indexed objects, which is useful for initial clones.
 fn create_transfer_progress_callback(
     app_name: String,
-    prefix: String,
+    prefix: &str,
+    detailed: bool,
 ) -> impl FnMut(Progress<'_>) -> bool + 'static {
+    let prefix = prefix.to_string();
     let mut last_percent = -1.0;
     move |progress: Progress| {
         let received_objects = progress.received_objects();
         let total_objects = progress.total_objects();
+        let detail = if detailed {
+            format!(
+                "({}), indexing {} objects... ",
+                format_bytes(progress.received_bytes()),
+                progress.indexed_objects()
+            )
+        } else {
+            String::new()
+        };
         if total_objects > 0 {
             let current_percent = (received_objects as f64 * 100.0) / total_objects as f64;
             let rounded_percent = (current_percent * 10.0).round() / 10.0;
             if (rounded_percent - last_percent).abs() >= 0.1 || received_objects == total_objects {
                 emit_update_info!(
                     app_name,
-                    "\r{}: {:.1}% ({} / {}) ",
+                    "\r{}: {:.1}% ({} / {}) {}",
                     prefix,
                     rounded_percent,
                     received_objects,
-                    total_objects
+                    total_objects,
+                    detail
                 );
                 last_percent = rounded_percent;
             }
         } else {
-            emit_update_info!(app_name, "\r{}: {} received... ", prefix, received_objects);
+            emit_update_info!(
+                app_name,
+                "\r{}: {} received... {}",
+                prefix,
+                received_objects,
+                detail
+            );
         }
         io::stdout().flush().unwrap_or_default();
         true
@@ -244,25 +297,29 @@ fn collect_commit_messages_between_tags(
     previous_tag: Option<&str>,
     target_tag: &str,
 ) -> Result<Vec<String>> {
-    let target_commit = repo
-        .revparse_single(&format!("refs/tags/{target_tag}"))
-        .with_context(|| format!("Failed to resolve target version tag '{target_tag}'"))?
-        .peel_to_commit()
-        .with_context(|| format!("Failed to peel target version tag '{target_tag}'"))?;
+    let target_oid = resolve_tag_commit(repo, target_tag)?;
+    let hidden_oid = previous_tag
+        .map(|tag| resolve_tag_commit(repo, tag))
+        .transpose()?;
+    collect_commit_messages(repo, target_oid, hidden_oid)
+}
 
+/// Collects up to `MAX_UPDATE_NOTE_LINES` unique, non-empty message lines from
+/// non-merge commits reachable from `target_oid` but not from `hidden_oid`,
+/// newest first.
+fn collect_commit_messages(
+    repo: &Repository,
+    target_oid: Oid,
+    hidden_oid: Option<Oid>,
+) -> Result<Vec<String>> {
     let mut revwalk = repo.revwalk().context("Failed to create revwalk")?;
     revwalk
-        .push(target_commit.id())
-        .with_context(|| format!("Failed to walk target version tag '{target_tag}'"))?;
-    if let Some(previous_tag) = previous_tag {
-        let previous_commit = repo
-            .revparse_single(&format!("refs/tags/{previous_tag}"))
-            .with_context(|| format!("Failed to resolve previous version tag '{previous_tag}'"))?
-            .peel_to_commit()
-            .with_context(|| format!("Failed to peel previous version tag '{previous_tag}'"))?;
+        .push(target_oid)
+        .with_context(|| format!("Failed to walk from commit {target_oid}"))?;
+    if let Some(hidden_oid) = hidden_oid {
         revwalk
-            .hide(previous_commit.id())
-            .with_context(|| format!("Failed to hide previous version tag '{previous_tag}'"))?;
+            .hide(hidden_oid)
+            .with_context(|| format!("Failed to hide commit {hidden_oid}"))?;
     }
     revwalk
         .set_sorting(Sort::TIME)
@@ -328,11 +385,7 @@ pub async fn get_version_history(
     number_versions: usize,
     release_only: bool,
 ) -> Result<Vec<VersionHistoryEntry>> {
-    let lock_arc = REPO_LOCKS
-        .entry(repo_path.to_path_buf())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone();
-    let _guard = lock_arc.lock().await;
+    let _guard = lock_repo(repo_path).await;
     let repo_path = repo_path.to_path_buf();
 
     task::spawn_blocking(move || {
@@ -462,11 +515,7 @@ pub async fn get_tags_and_current_version(
     app_name: &str,
     repo_path: PathBuf,
 ) -> Result<(Vec<String>, String)> {
-    let lock_arc = REPO_LOCKS
-        .entry(repo_path.clone())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone();
-    let _guard = lock_arc.lock().await;
+    let _guard = lock_repo(&repo_path).await;
 
     let app_name_for_task = app_name.to_string();
     let repo_path_for_task = repo_path.clone();
@@ -557,12 +606,7 @@ fn format_bytes(bytes: usize) -> String {
 
 pub async fn ensure_repository(app: &App) -> Result<()> {
     let repo_path = app.get_repo_path();
-
-    let lock_arc = REPO_LOCKS
-        .entry(repo_path.clone())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone();
-    let _guard = lock_arc.lock().await;
+    let _guard = lock_repo(&repo_path).await;
 
     let profile = app.get_current_profile_settings();
     let url = profile.git_url.clone();
@@ -602,10 +646,10 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
                     let mut callbacks = RemoteCallbacks::new();
                     configure_credentials(&mut callbacks, Some(&url_for_task));
 
-                    let app_name_for_progress = app_name_for_task.clone();
                     callbacks.transfer_progress(create_transfer_progress_callback(
-                        app_name_for_progress,
-                        "Fetching objects".to_string(),
+                        app_name_for_task.clone(),
+                        "Fetching objects",
+                        false,
                     ));
 
                     let mut fetch_options = create_fetch_options(callbacks, None);
@@ -656,45 +700,13 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
     task::spawn_blocking(move || -> Result<()> {
         let mut callbacks = RemoteCallbacks::new();
         configure_credentials(&mut callbacks, Some(&url_for_clone_task));
-        let app_name_for_progress_clone = app_name_for_messages.clone();
-        callbacks.transfer_progress({
-            let mut last_percent = -1.0;
-            move |progress: Progress| {
-                let received_objects = progress.received_objects();
-                let total_objects = progress.total_objects();
-                let indexed_objects = progress.indexed_objects();
-                let received_bytes = progress.received_bytes();
-                if total_objects > 0 {
-                    let current_percent = (received_objects as f64 * 100.0) / total_objects as f64;
-                    let rounded_percent = (current_percent * 10.0).round() / 10.0;
-                    if (rounded_percent - last_percent).abs() >= 0.1 {
-                        emit_update_info!(
-                            app_name_for_progress_clone,
-                            "\rReceiving objects: {:.1}% ({} / {}) ({}), indexing {} objects... ",
-                            rounded_percent,
-                            received_objects,
-                            total_objects,
-                            format_bytes(received_bytes),
-                            indexed_objects
-                        );
-                        last_percent = rounded_percent;
-                    }
-                } else {
-                    emit_update_info!(
-                        app_name_for_progress_clone,
-                        "\rReceiving objects: {} received ({} bytes), indexing {} objects... ",
-                        received_objects,
-                        received_bytes,
-                        indexed_objects
-                    );
-                }
-                io::stdout().flush().unwrap_or_default();
-                true
-            }
-        });
+        callbacks.transfer_progress(create_transfer_progress_callback(
+            app_name_for_messages.clone(),
+            "Receiving objects",
+            true,
+        ));
 
-        let mut fetch_options = create_fetch_options(callbacks, None);
-        fetch_options.download_tags(git2::AutotagOption::All);
+        let fetch_options = create_fetch_options(callbacks, None);
 
         let mut builder = git2::build::RepoBuilder::new();
         builder.fetch_options(fetch_options);
@@ -749,20 +761,7 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
                     latest_tag_name
                 )
             })?;
-
-        repo.checkout_tree(&obj, Some(CheckoutBuilder::new().force()))
-            .with_context(|| format!("Failed to checkout tree for tag {}", latest_tag_name))?;
-
-        let commit_oid = obj
-            .peel_to_commit()
-            .map_or_else(|_| obj.id(), |commit| commit.id());
-
-        repo.set_head_detached(commit_oid).with_context(|| {
-            format!(
-                "Failed to set head detached to {} for tag {}",
-                commit_oid, latest_tag_name
-            )
-        })?;
+        checkout_detached(&repo, &obj, &format!("tag {latest_tag_name}"))?;
 
         emit_info!(
             app_name_for_messages,
@@ -791,11 +790,7 @@ pub async fn checkout_version_tag(
     repo_path: &Path,
     version_tag_name: &str,
 ) -> Result<Oid> {
-    let lock_arc = REPO_LOCKS
-        .entry(repo_path.to_path_buf())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone();
-    let _guard = lock_arc.lock().await;
+    let _guard = lock_repo(repo_path).await;
 
     let task_repo_path = repo_path.to_path_buf();
     let tag_to_checkout = version_tag_name.to_string();
@@ -813,7 +808,8 @@ pub async fn checkout_version_tag(
 
         callbacks.transfer_progress(create_transfer_progress_callback(
             app_name_for_task.clone(),
-            "Fetching objects for tag".to_string(),
+            "Fetching objects for tag",
+            false,
         ));
 
         let mut fetch_options = create_fetch_options(callbacks, None);
@@ -852,17 +848,7 @@ pub async fn checkout_version_tag(
             })?;
 
         debug!("Revparsed tag {} to object {}", tag_to_checkout, obj.id());
-
-        repo.checkout_tree(&obj, Some(CheckoutBuilder::new().force()))
-            .with_context(|| format!("Failed to checkout tree for tag {}", tag_to_checkout))?;
-        debug!("Checkout tree successful for tag {}", tag_to_checkout);
-
-        let commit_oid = obj
-            .peel_to_commit()
-            .map_or_else(|_| obj.id(), |commit| commit.id());
-
-        repo.set_head_detached(commit_oid)
-            .with_context(|| format!("Failed to set head detached to {}", commit_oid))?;
+        let commit_oid = checkout_detached(&repo, &obj, &format!("tag {tag_to_checkout}"))?;
 
         emit_info!(
             app_name_for_task,
@@ -890,11 +876,7 @@ pub async fn checkout_version_tag(
 }
 
 pub async fn get_current_head_oid(repo_path: &Path) -> Result<Oid> {
-    let lock_arc = REPO_LOCKS
-        .entry(repo_path.to_path_buf())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone();
-    let _guard = lock_arc.lock().await;
+    let _guard = lock_repo(repo_path).await;
 
     let task_repo_path = repo_path.to_path_buf();
     let oid = task::spawn_blocking(move || -> Result<Oid> {
@@ -908,27 +890,31 @@ pub async fn get_current_head_oid(repo_path: &Path) -> Result<Oid> {
     Ok(oid)
 }
 
+/// Resolves a revision (commit, branch or tag name) that already exists locally.
+fn find_local_revision<'r>(
+    repo: &'r Repository,
+    repo_path: &Path,
+    revision: &str,
+) -> Result<git2::Object<'r>> {
+    repo.revparse_single(revision)
+        .or_else(|_| repo.revparse_single(&format!("refs/tags/{revision}")))
+        .with_context(|| {
+            format!(
+                "Revision '{}' not found locally in repo {}",
+                revision,
+                repo_path.display()
+            )
+        })
+}
+
 pub async fn get_revision_oid(repo_path: &Path, revision: &str) -> Result<Oid> {
-    let lock_arc = REPO_LOCKS
-        .entry(repo_path.to_path_buf())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone();
-    let _guard = lock_arc.lock().await;
+    let _guard = lock_repo(repo_path).await;
 
     let task_repo_path = repo_path.to_path_buf();
     let revision_to_resolve = revision.to_string();
     let oid = task::spawn_blocking(move || -> Result<Oid> {
         let repo = open_repository(&task_repo_path)?;
-        let object = repo
-            .revparse_single(&revision_to_resolve)
-            .or_else(|_| repo.revparse_single(&format!("refs/tags/{revision_to_resolve}")))
-            .with_context(|| {
-                format!(
-                    "Revision '{}' not found locally in repo {}",
-                    revision_to_resolve,
-                    task_repo_path.display()
-                )
-            })?;
+        let object = find_local_revision(&repo, &task_repo_path, &revision_to_resolve)?;
         Ok(object
             .peel_to_commit()
             .map_or_else(|_| object.id(), |commit| commit.id()))
@@ -943,11 +929,7 @@ pub async fn checkout_existing_revision(
     repo_path: &Path,
     revision: &str,
 ) -> Result<Oid> {
-    let lock_arc = REPO_LOCKS
-        .entry(repo_path.to_path_buf())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone();
-    let _guard = lock_arc.lock().await;
+    let _guard = lock_repo(repo_path).await;
 
     let task_repo_path = repo_path.to_path_buf();
     let revision_to_checkout = revision.to_string();
@@ -955,32 +937,9 @@ pub async fn checkout_existing_revision(
 
     let oid = task::spawn_blocking(move || -> Result<Oid> {
         let repo = open_repository(&task_repo_path)?;
-
-        let obj = repo
-            .revparse_single(&revision_to_checkout)
-            .or_else(|_| repo.revparse_single(&format!("refs/tags/{}", revision_to_checkout)))
-            .with_context(|| {
-                format!(
-                    "Revision '{}' not found locally in repo {}",
-                    revision_to_checkout,
-                    task_repo_path.display()
-                )
-            })?;
-
-        repo.checkout_tree(&obj, Some(CheckoutBuilder::new().force()))
-            .with_context(|| {
-                format!(
-                    "Failed to checkout tree for revision {}",
-                    revision_to_checkout
-                )
-            })?;
-
-        let commit_oid = obj
-            .peel_to_commit()
-            .map_or_else(|_| obj.id(), |commit| commit.id());
-
-        repo.set_head_detached(commit_oid)
-            .with_context(|| format!("Failed to set head detached to {}", commit_oid))?;
+        let obj = find_local_revision(&repo, &task_repo_path, &revision_to_checkout)?;
+        let commit_oid =
+            checkout_detached(&repo, &obj, &format!("revision {revision_to_checkout}"))?;
 
         emit_info!(
             app_name_for_task,
@@ -1011,11 +970,7 @@ pub async fn get_commit_messages_for_version_diff(
     repo_path: &Path,
     target_version_tag_name: &str,
 ) -> Result<Vec<String>> {
-    let lock_arc = REPO_LOCKS
-        .entry(repo_path.to_path_buf())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone();
-    let _guard = lock_arc.lock().await;
+    let _guard = lock_repo(repo_path).await;
 
     let repo_path_clone = repo_path.to_path_buf();
     let target_tag = target_version_tag_name.to_string();
@@ -1058,44 +1013,7 @@ pub async fn get_commit_messages_for_version_diff(
             .with_context(|| format!("Failed to peel tag '{}' to a commit object", target_tag))?
             .id();
 
-        let mut revwalk = repo.revwalk().context("Failed to create revwalk")?;
-        revwalk
-            .push(target_commit_oid)
-            .with_context(|| format!("Failed to push OID {} to revwalk", target_commit_oid))?;
-        revwalk
-            .hide(head_oid)
-            .with_context(|| format!("Failed to hide OID {} from revwalk", head_oid))?;
-        revwalk
-            .set_sorting(Sort::TIME)
-            .context("Failed to set revwalk sorting")?;
-
-        let mut messages = Vec::new();
-        let mut seen_messages = HashSet::new();
-        'revwalk: for oid_result in revwalk {
-            let oid = oid_result.context("Error iterating revwalk")?;
-            let commit = repo
-                .find_commit(oid)
-                .with_context(|| format!("Failed to find commit for OID {}", oid))?;
-
-            if commit.parent_count() > 1 {
-                continue;
-            }
-
-            if let Ok(full_message) = commit.message() {
-                for line in full_message.lines() {
-                    let trimmed_line = line.trim();
-                    if !trimmed_line.is_empty() {
-                        let msg_str = trimmed_line.to_string();
-                        if seen_messages.insert(msg_str.clone()) {
-                            messages.push(msg_str);
-                            if messages.len() >= 10 {
-                                break 'revwalk;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let mut messages = collect_commit_messages(&repo, target_commit_oid, Some(head_oid))?;
         info!(
             "Found {} commit messages in diff from HEAD ({}) to target {} ({})",
             messages.len(),

@@ -14,6 +14,7 @@ use rand::RngExt;
 use reqwest::Client;
 use reqwest::Url;
 use std::io::Write;
+#[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
@@ -86,44 +87,30 @@ async fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(Pat
                         python_exe_path.display()
                     );
                     return Ok((python_exe_path, installed_version));
-                } else {
-                    info!(
-                        "Found incompatible Python version {} (required {}). Removing and reinstalling.",
-                        installed_version, major_minor_from_param
-                    );
-                    fs::remove_dir_all(&install_dir).with_context(|| {
-                        format!(
-                            "Failed to remove existing Python installation at {}",
-                            install_dir.display()
-                        )
-                    })?;
-                    fs::create_dir_all(&install_dir).with_context(|| {
-                        format!(
-                            "Failed to recreate Python installation directory at {}",
-                            install_dir.display()
-                        )
-                    })?;
                 }
-            }
-            Err(e) => {
-                warn!(
-                    "Existing python.exe at {} is corrupted or unusable ({}). Removing and reinstalling.",
-                    python_exe_path.display(), e
+                info!(
+                    "Found incompatible Python version {} (required {}). Removing and reinstalling.",
+                    installed_version, major_minor_from_param
                 );
-                fs::remove_dir_all(&install_dir).with_context(|| {
-                    format!(
-                        "Failed to remove corrupted Python installation at {}",
-                        install_dir.display()
-                    )
-                })?;
-                fs::create_dir_all(&install_dir).with_context(|| {
-                    format!(
-                        "Failed to recreate Python installation directory at {}",
-                        install_dir.display()
-                    )
-                })?;
             }
+            Err(e) => warn!(
+                "Existing python.exe at {} is corrupted or unusable ({}). Removing and reinstalling.",
+                python_exe_path.display(),
+                e
+            ),
         }
+        fs::remove_dir_all(&install_dir).with_context(|| {
+            format!(
+                "Failed to remove existing Python installation at {}",
+                install_dir.display()
+            )
+        })?;
+        fs::create_dir_all(&install_dir).with_context(|| {
+            format!(
+                "Failed to recreate Python installation directory at {}",
+                install_dir.display()
+            )
+        })?;
     }
 
     let version_to_ensure = get_latest_known_patch_for_major_minor(&major_minor_from_param)?;
@@ -142,31 +129,16 @@ async fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(Pat
                 "Download from primary URL {} failed: {:#}. Trying backup URL: {}",
                 primary_url, e, backup_url
             );
-            if archive_path.exists() {
-                fs::remove_file(&archive_path).ok();
-            }
+            remove_path_logged(&archive_path);
             download_file(&backup_url, &archive_path, app_name).await
         }
     };
-
     if let Err(download_err) = download_result {
         error!(
             "Download failed from both primary and backup URLs: {:#}",
             download_err
         );
-        if archive_path.exists() {
-            info!(
-                "Attempting to remove partially downloaded file: {}",
-                archive_path.display()
-            );
-            if let Err(remove_file_err) = fs::remove_file(&archive_path) {
-                warn!(
-                    "Failed to remove partially downloaded file {}: {}",
-                    archive_path.display(),
-                    remove_file_err
-                );
-            }
-        }
+        remove_path_logged(&archive_path);
         return Err(download_err.context(format!(
             "Downloading Python {} from all available sources failed",
             version_to_ensure
@@ -178,65 +150,21 @@ async fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(Pat
     );
 
     info!(
-        "Creating installation directory {}...",
-        install_dir.display()
-    );
-    if let Err(create_dir_err) = fs::create_dir_all(&install_dir) {
-        error!(
-            "Failed to create target install directory {}: {}",
-            install_dir.display(),
-            create_dir_err
-        );
-        if archive_path.exists() {
-            info!(
-                "Attempting to remove downloaded archive {} as installation cannot proceed.",
-                archive_path.display()
-            );
-            if let Err(remove_file_err) = fs::remove_file(&archive_path) {
-                warn!(
-                    "Failed to remove archive file {} after directory creation failure: {}",
-                    archive_path.display(),
-                    remove_file_err
-                );
-            }
-        }
-        return Err(anyhow!(create_dir_err).context(format!(
-            "Creating install directory {} failed",
-            install_dir.display()
-        )));
-    }
-
-    info!(
         "Extracting archive {} to {}...",
         archive_path.display(),
         install_dir.display()
     );
-    if let Err(extract_err) = extract_archive(&archive_path, &install_dir) {
+    let extract_result = extract_archive(&archive_path, &install_dir);
+    // The archive is only needed for extraction, whatever the outcome.
+    remove_path_logged(&archive_path);
+    if let Err(extract_err) = extract_result {
         error!(
             "Extraction from {} to {} failed: {:#}",
             archive_path.display(),
             install_dir.display(),
             extract_err
         );
-        info!("Attempting to clean up downloaded file and extraction folder.");
-        if archive_path.exists() {
-            if let Err(remove_file_err) = fs::remove_file(&archive_path) {
-                warn!(
-                    "Failed to remove archive file {}: {}",
-                    archive_path.display(),
-                    remove_file_err
-                );
-            }
-        }
-        if install_dir.exists() {
-            if let Err(remove_dir_err) = fs::remove_dir_all(&install_dir) {
-                warn!(
-                    "Failed to remove extraction directory {}: {}",
-                    install_dir.display(),
-                    remove_dir_err
-                );
-            }
-        }
+        remove_path_logged(&install_dir);
         return Err(extract_err.context(format!(
             "Extracting archive {} to {} failed",
             archive_path.display(),
@@ -249,29 +177,9 @@ async fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(Pat
         install_dir.display()
     );
 
-    info!(
-        "Removing archive file {} after successful extraction...",
-        archive_path.display()
-    );
-    if let Err(remove_file_err) = fs::remove_file(&archive_path) {
-        warn!("Failed to remove archive file {} after successful extraction: {}. This is non-critical.", archive_path.display(), remove_file_err);
-    }
-
     if !python_exe_path.exists() {
         error!("CRITICAL: python.exe not found at {} after extraction reported success. Installation is incomplete.", python_exe_path.display());
-        if install_dir.exists() {
-            info!(
-                "Attempting to remove incomplete installation directory: {}",
-                install_dir.display()
-            );
-            if let Err(remove_dir_err) = fs::remove_dir_all(&install_dir) {
-                warn!(
-                    "Failed to remove incomplete installation directory {}: {}",
-                    install_dir.display(),
-                    remove_dir_err
-                );
-            }
-        }
+        remove_path_logged(&install_dir);
         return Err(anyhow!(
             "python.exe not found at {} after extraction, though extraction reported success. The installation is likely corrupt.",
             python_exe_path.display()
@@ -279,6 +187,22 @@ async fn ensure_python_version(app_name: &str, version_str: &str) -> Result<(Pat
     }
 
     Ok((python_exe_path, version_to_ensure))
+}
+
+/// Best-effort removal of a file or directory; failures are only logged.
+#[cfg(target_os = "windows")]
+fn remove_path_logged(path: &Path) {
+    let result = if path.is_dir() {
+        fs::remove_dir_all(path)
+    } else if path.exists() {
+        fs::remove_file(path)
+    } else {
+        return;
+    };
+    match result {
+        Ok(()) => info!("Removed {}", path.display()),
+        Err(e) => warn!("Failed to remove {}: {}", path.display(), e),
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -521,7 +445,7 @@ pub async fn setup_python_env(app_name: String, python_version_spec: &str) -> Re
     Ok(managed_python_exe)
 }
 #[cfg(not(target_os = "windows"))]
-pub fn setup_python_env(_app_name: String, _python_version_spec: &str) -> Result<PathBuf> {
+pub async fn setup_python_env(_app_name: String, _python_version_spec: &str) -> Result<PathBuf> {
     Err(anyhow!("setup_python_env is only implemented for Windows."))
 }
 #[cfg(target_os = "windows")]

@@ -36,7 +36,7 @@ use std::{
     },
     time::{SystemTime, UNIX_EPOCH},
 };
-use sysinfo::{Pid, ProcessesToUpdate, System};
+use sysinfo::{Pid, System};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 use tokio::task;
@@ -72,20 +72,74 @@ fn check_python_env_exists(app_name: &str) -> bool {
     python_path.exists() && python_exe_path.exists()
 }
 
-fn is_app_running(sys: &System, app_name: &str) -> bool {
-    let app_working_dir = get_app_base_path(app_name);
-    !process::get_pids_related_to_app_dir(sys, &app_working_dir).is_empty()
+/// Returns the PIDs of processes running from the app's directory. The scan
+/// runs on the blocking pool so it never stalls the async runtime.
+async fn find_app_pids(app_name: &str) -> Result<Vec<Pid>> {
+    let app_base_path = get_app_base_path(app_name);
+    Ok(task::spawn_blocking(move || process::scan_pids_related_to_app_dir(&app_base_path)).await?)
 }
 
-pub(crate) async fn load_app_details(app: &mut App) -> Result<()> {
-    let working_dir = get_app_working_dir_path(&app.name);
-    let yml_path = working_dir.join(YML_FILE_NAME);
-
-    if yml_path.exists() {
-        let yml_path_str = yml_path.to_string_lossy().into_owned();
-        update_app_from_yml(app, &yml_path_str);
+async fn is_app_running(app_name: &str) -> bool {
+    match find_app_pids(app_name).await {
+        Ok(pids) => !pids.is_empty(),
+        Err(e) => {
+            warn!("Failed to scan processes for '{}': {:?}", app_name, e);
+            false
+        }
     }
-    Ok(())
+}
+
+/// Refreshes `app` from the YAML file in its working directory, if present.
+fn load_app_details(app: &mut App) {
+    let yml_path = get_app_working_dir_path(&app.name).join(YML_FILE_NAME);
+    if yml_path.exists() {
+        update_app_from_yml(app, &yml_path.to_string_lossy());
+    }
+}
+
+/// Builds a throwaway app config from the embedded template plus the YAML file
+/// currently in the app's working directory, to read its profiles.
+fn read_working_dir_app_config(app_name: &str) -> App {
+    let mut app = read_embedded_app();
+    app.name = app_name.to_string();
+    let yml_path = get_app_working_dir_path(app_name).join(YML_FILE_NAME);
+    update_app_from_yml(&mut app, &yml_path.to_string_lossy());
+    app
+}
+
+/// Runs `f` on the loaded app named `app_name` while holding the app lock.
+/// Returns `None` when that app is not loaded.
+async fn with_loaded_app<R>(app_name: &str, f: impl FnOnce(&mut App) -> R) -> Option<R> {
+    APP.lock()
+        .await
+        .as_mut()
+        .filter(|app| app.name == app_name)
+        .map(f)
+}
+
+/// Applies `f` to the loaded app and persists the result to app.json.
+/// The app lock is released before writing. Returns the saved snapshot, or
+/// `None` when that app is not loaded.
+async fn update_and_save_app(app_name: &str, f: impl FnOnce(&mut App)) -> Result<Option<App>> {
+    let Some(app) = with_loaded_app(app_name, |app| {
+        f(app);
+        app.clone()
+    })
+    .await
+    else {
+        return Ok(None);
+    };
+    save_app_config_to_json(&app).await?;
+    Ok(Some(app))
+}
+
+/// Records whether the app is running. Returns true when the value changed.
+async fn set_app_running(app_name: &str, running: bool) -> bool {
+    with_loaded_app(app_name, |app| {
+        std::mem::replace(&mut app.running, running) != running
+    })
+    .await
+    .unwrap_or(false)
 }
 
 fn resolve_current_version_state(
@@ -157,19 +211,13 @@ async fn persist_update_state(
     target_version: Option<String>,
     update_error: Option<String>,
 ) -> Result<()> {
-    let app_to_save = {
-        let mut app_guard = APP.lock().await;
-        let app = app_guard
-            .as_mut()
-            .filter(|app| app.name == app_name)
-            .with_context(|| format!("App '{}' not found.", app_name))?;
+    update_and_save_app(app_name, |app| {
         app.update_state = state;
         app.update_target_version = target_version;
         app.update_error = update_error;
-        app.clone()
-    };
-
-    save_app_config_to_json(&app_to_save).await?;
+    })
+    .await?
+    .with_context(|| format!("App '{}' not found.", app_name))?;
     emit_app().await;
     Ok(())
 }
@@ -242,7 +290,7 @@ async fn rollback_interrupted_pip_sync_on_startup(app: &mut App, repo_path: &Pat
         }
     }
 
-    load_app_details(app).await?;
+    load_app_details(app);
     app.current_version = Some(previous_version.clone());
     emit_info!(
         app.name,
@@ -260,9 +308,7 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
                 "Loaded app '{}' from app.json. {:?}",
                 app_name, app_from_disk
             );
-            let mut sys = System::new();
-            sys.refresh_processes(ProcessesToUpdate::All, true);
-            app_from_disk.running = is_app_running(&sys, app_name);
+            app_from_disk.running = is_app_running(app_name).await;
             let current_profile = app_from_disk.current_profile.clone();
             app_from_disk.icon = app_template.icon.clone();
             app_from_disk.profiles = app_template.profiles.clone();
@@ -325,7 +371,7 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
         rollback_interrupted_pip_sync_on_startup(&mut app, &repo_path).await?;
     }
 
-    load_app_details(&mut app).await?;
+    load_app_details(&mut app);
     save_app_config_to_json(&app).await?;
     Ok(app)
 }
@@ -396,204 +442,217 @@ pub async fn load_app() -> Result<App, Error> {
     let mut auto_start_guard = AUTO_START_CHECKED.lock().await;
     if !*auto_start_guard {
         *auto_start_guard = true;
-
-        let app_clone_for_checks = APP.lock().await.clone();
-
-        if let Some(mut app) = app_clone_for_checks {
-            let startup_overrides = STARTUP_OVERRIDES.lock().await.clone();
-            let mut update_failed = false;
-            if app.update_state != AppUpdateState::Idle {
-                if let Some(retry_version) = app.update_target_version.clone() {
-                    info!(
-                        "Retrying persisted {:?} update for '{}' to '{}'.",
-                        app.update_state, app.name, retry_version
-                    );
-                    send_notification(
-                        app.name.clone(),
-                        format!(
-                            "Retrying the last interrupted or failed update to {}.",
-                            retry_version
-                        ),
-                    );
-                    match update_to_version(&app.name, &retry_version).await {
-                        Ok(()) => {
-                            send_notification(
-                                app.name.clone(),
-                                t!("message.version_update_success", version = retry_version),
-                            );
-                            if let Some(refreshed_app) = APP.lock().await.clone() {
-                                app = refreshed_app;
-                            }
-                        }
-                        Err(error) => {
-                            error!(
-                                "Startup retry for app '{}' to '{}' failed: {}",
-                                app.name, retry_version, error
-                            );
-                            send_notification(
-                                app.name.clone(),
-                                format!(
-                                    "The retry to update to {} failed. Open the update console for details.",
-                                    retry_version
-                                ),
-                            );
-                            update_failed = true;
-                        }
-                    }
-                } else {
-                    warn!(
-                        "App '{}' has persisted update state {:?}, but no target version.",
-                        app.name, app.update_state
-                    );
-                    send_notification(
-                        app.name.clone(),
-                        "The previous update did not finish and has no retry target. Review the update console.",
-                    );
-                    update_failed = true;
-                }
-            }
-
-            let update_method = startup_overrides
-                .update_method
-                .clone()
-                .unwrap_or_else(|| app.effective_update_method().to_string());
-            let auto_start = startup_overrides.auto_start.unwrap_or(app.auto_start);
-
-            let latest_update_version =
-                get_update_target(&app.available_versions, &update_method).cloned();
-            let current_version_missing = app.current_version_missing;
-            let update_available = latest_update_version
-                .as_ref()
-                .is_some_and(|latest_version| {
-                    if current_version_missing {
-                        return true;
-                    }
-                    app.current_version.as_ref().is_some_and(|current_version| {
-                        git::compare_version_tags(latest_version, current_version)
-                            == Some(Ordering::Greater)
-                    })
-                });
-            let is_latest = !update_available;
-
-            info!(
-                "First load, checking update and auto-start conditions. update_method:{}, auto_start:{}, is_latest:{}, current_version_missing:{}",
-                update_method, auto_start, is_latest, current_version_missing
-            );
-
-            info!("locale is {}", get_locale());
-            if !update_failed
-                && app.installed
-                && !app.available_versions.is_empty()
-                && update_available
-            {
-                if current_version_missing {
-                    info!(
-                            "Current version is no longer available upstream. Forcing update to the latest available version."
-                        );
-                } else {
-                    info!("App is not the latest version for the selected update method.");
-                }
-                let app_name_clone = app.name.clone();
-                let latest_version =
-                    latest_update_version.expect("update_available requires a target version");
-                if current_version_missing
-                    || update_method == UPDATE_METHOD_OPTION_AUTO
-                    || update_method == UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE
-                {
-                    info!(
-                        "{}",
-                        t!(
-                            "message.new_version_update",
-                            version = latest_version.clone()
-                        )
-                    );
-                    send_notification(
-                        app_name_clone.clone(),
-                        t!("message.new_version_update", version = latest_version),
-                    );
-                    match update_to_version(&app_name_clone, &latest_version).await {
-                        Ok(()) => {
-                            info!("Auto Update to version {} success.", &latest_version);
-                            send_notification(
-                                app_name_clone,
-                                t!("message.version_update_success", version = latest_version),
-                            );
-                        }
-                        Err(error) => {
-                            error!(
-                                "Auto update for app '{}' to '{}' failed: {}",
-                                app.name, latest_version, error
-                            );
-                            send_notification(
-                                    app.name.clone(),
-                                    format!(
-                                        "Automatic update to {} failed. Open the update console for details.",
-                                        latest_version
-                                    ),
-                                );
-                            update_failed = true;
-                        }
-                    }
-                } else {
-                    send_notification(
-                        app_name_clone.clone(),
-                        t!("message.new_version", version = latest_version),
-                    );
-                }
-            }
-
-            if auto_start
-                && !update_failed
-                && app.update_state == AppUpdateState::Idle
-                && app.installed
-                && !app.available_versions.is_empty()
-            {
-                info!("Scheduling auto-start for '{}' in 10 seconds.", app.name);
-                let app_name_clone = app.name.clone();
-                let auto_start_override = startup_overrides.auto_start;
-                AUTO_START_CANCELLED.store(false, AtomicOrdering::SeqCst);
-                drop(auto_start_guard);
-                if let Some(app_handle) = get_app_handle() {
-                    let app_handle_clone = app_handle.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-
-                        let should_start = if AUTO_START_CANCELLED.load(AtomicOrdering::SeqCst) {
-                            false
-                        } else {
-                            APP.lock().await.as_ref().is_some_and(|current_app| {
-                                current_app.name == app_name_clone
-                                    && auto_start_override.unwrap_or(current_app.auto_start)
-                                    && current_app.installed
-                                    && !current_app.available_versions.is_empty()
-                                    && current_app.update_state == AppUpdateState::Idle
-                            })
-                        };
-
-                        if !should_start {
-                            info!("Cancelled delayed auto-start for '{}'.", app_name_clone);
-                            return;
-                        }
-
-                        info!("Auto-starting app '{}' after delay.", app_name_clone);
-                        if let Err(e) = start_app(app_handle_clone, app_name_clone.clone()).await {
-                            error!("Auto-start for app '{}' failed: {:?}", app_name_clone, e);
-                        }
-                    });
-                }
-            } else {
-                info!(
-                    "Auto-start disabled or app not ready for '{}' (enabled: {}, installed: {}, has_versions: {}).",
-                    app.name,
-                    auto_start,
-                    app.installed,
-                    !app.available_versions.is_empty()
-                );
-            }
+        let loaded_app = APP.lock().await.clone();
+        if let Some(app) = loaded_app {
+            run_first_load_checks(app, auto_start_guard).await;
         }
     }
 
     get_app().await.ok_or_else(|| err!("App is not loaded."))
+}
+
+/// One-time startup work: retry an unfinished update, apply or announce a new
+/// version, then schedule auto-start. `auto_start_guard` is held until the
+/// update work is done so concurrent loads cannot repeat it.
+async fn run_first_load_checks(
+    mut app: App,
+    auto_start_guard: tokio::sync::MutexGuard<'static, bool>,
+) {
+    let startup_overrides = STARTUP_OVERRIDES.lock().await.clone();
+    let mut update_failed =
+        app.update_state != AppUpdateState::Idle && !retry_persisted_update(&mut app).await;
+
+    let update_method = startup_overrides
+        .update_method
+        .clone()
+        .unwrap_or_else(|| app.effective_update_method().to_string());
+    let auto_start = startup_overrides.auto_start.unwrap_or(app.auto_start);
+
+    let available_update = get_update_target(&app.available_versions, &update_method)
+        .filter(|latest_version| {
+            app.current_version_missing
+                || app.current_version.as_ref().is_some_and(|current_version| {
+                    git::compare_version_tags(latest_version, current_version)
+                        == Some(Ordering::Greater)
+                })
+        })
+        .cloned();
+
+    info!(
+        "First load, checking update and auto-start conditions. update_method:{}, auto_start:{}, is_latest:{}, current_version_missing:{}",
+        update_method,
+        auto_start,
+        available_update.is_none(),
+        app.current_version_missing
+    );
+    info!("locale is {}", get_locale());
+
+    if let Some(latest_version) = available_update {
+        if !update_failed && app.installed && !app.available_versions.is_empty() {
+            update_failed = !handle_available_update(&app, &update_method, latest_version).await;
+        }
+    }
+
+    if auto_start
+        && !update_failed
+        && app.update_state == AppUpdateState::Idle
+        && app.installed
+        && !app.available_versions.is_empty()
+    {
+        info!("Scheduling auto-start for '{}' in 10 seconds.", app.name);
+        drop(auto_start_guard);
+        schedule_auto_start(app.name.clone(), startup_overrides.auto_start);
+    } else {
+        info!(
+            "Auto-start disabled or app not ready for '{}' (enabled: {}, installed: {}, has_versions: {}).",
+            app.name,
+            auto_start,
+            app.installed,
+            !app.available_versions.is_empty()
+        );
+    }
+}
+
+/// Retries an update left `Updating` or `Failed` by a previous session.
+/// Returns false when the retry failed or there is nothing to retry.
+async fn retry_persisted_update(app: &mut App) -> bool {
+    let Some(retry_version) = app.update_target_version.clone() else {
+        warn!(
+            "App '{}' has persisted update state {:?}, but no target version.",
+            app.name, app.update_state
+        );
+        send_notification(
+            app.name.clone(),
+            "The previous update did not finish and has no retry target. Review the update console.",
+        );
+        return false;
+    };
+
+    info!(
+        "Retrying persisted {:?} update for '{}' to '{}'.",
+        app.update_state, app.name, retry_version
+    );
+    send_notification(
+        app.name.clone(),
+        format!(
+            "Retrying the last interrupted or failed update to {}.",
+            retry_version
+        ),
+    );
+    match update_to_version(&app.name, &retry_version).await {
+        Ok(()) => {
+            send_notification(
+                app.name.clone(),
+                t!("message.version_update_success", version = retry_version),
+            );
+            if let Some(refreshed_app) = APP.lock().await.clone() {
+                *app = refreshed_app;
+            }
+            true
+        }
+        Err(error) => {
+            error!(
+                "Startup retry for app '{}' to '{}' failed: {}",
+                app.name, retry_version, error
+            );
+            send_notification(
+                app.name.clone(),
+                format!(
+                    "The retry to update to {} failed. Open the update console for details.",
+                    retry_version
+                ),
+            );
+            false
+        }
+    }
+}
+
+/// Installs `latest_version` when the update method (or a vanished current
+/// version) calls for it; otherwise only notifies the user. Returns false when
+/// an automatic update was attempted and failed.
+async fn handle_available_update(app: &App, update_method: &str, latest_version: String) -> bool {
+    if app.current_version_missing {
+        info!(
+            "Current version is no longer available upstream. Forcing update to the latest available version."
+        );
+    } else {
+        info!("App is not the latest version for the selected update method.");
+    }
+
+    let should_auto_update = app.current_version_missing
+        || update_method == UPDATE_METHOD_OPTION_AUTO
+        || update_method == UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE;
+    if !should_auto_update {
+        send_notification(
+            app.name.clone(),
+            t!("message.new_version", version = latest_version),
+        );
+        return true;
+    }
+
+    info!(
+        "{}",
+        t!("message.new_version_update", version = latest_version.clone())
+    );
+    send_notification(
+        app.name.clone(),
+        t!("message.new_version_update", version = latest_version.clone()),
+    );
+    match update_to_version(&app.name, &latest_version).await {
+        Ok(()) => {
+            info!("Auto Update to version {} success.", &latest_version);
+            send_notification(
+                app.name.clone(),
+                t!("message.version_update_success", version = latest_version),
+            );
+            true
+        }
+        Err(error) => {
+            error!(
+                "Auto update for app '{}' to '{}' failed: {}",
+                app.name, latest_version, error
+            );
+            send_notification(
+                app.name.clone(),
+                format!(
+                    "Automatic update to {} failed. Open the update console for details.",
+                    latest_version
+                ),
+            );
+            false
+        }
+    }
+}
+
+/// Starts the app after 10 seconds unless auto-start was cancelled or the app
+/// stopped being startable in the meantime.
+fn schedule_auto_start(app_name: String, auto_start_override: Option<bool>) {
+    AUTO_START_CANCELLED.store(false, AtomicOrdering::SeqCst);
+    let Some(app_handle) = get_app_handle().cloned() else {
+        return;
+    };
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+
+        let should_start = !AUTO_START_CANCELLED.load(AtomicOrdering::SeqCst)
+            && APP.lock().await.as_ref().is_some_and(|current_app| {
+                current_app.name == app_name
+                    && auto_start_override.unwrap_or(current_app.auto_start)
+                    && current_app.installed
+                    && !current_app.available_versions.is_empty()
+                    && current_app.update_state == AppUpdateState::Idle
+            });
+
+        if !should_start {
+            info!("Cancelled delayed auto-start for '{}'.", app_name);
+            return;
+        }
+
+        info!("Auto-starting app '{}' after delay.", app_name);
+        if let Err(e) = start_app(app_handle, app_name.clone()).await {
+            error!("Auto-start for app '{}' failed: {:?}", app_name, e);
+        }
+    });
 }
 
 async fn update_app_from_disk() -> Result<bool, Error> {
@@ -971,13 +1030,7 @@ pub async fn setup_app_at_version(
 
     update_working_from_repo(app_name).await?;
 
-    let yml_path = working_dir_path.join(YML_FILE_NAME);
-    let yml_path_str = yml_path.to_string_lossy().into_owned();
-
-    let mut temp_app_for_config = read_embedded_app();
-    temp_app_for_config.name = app_name.to_string();
-    update_app_from_yml(&mut temp_app_for_config, &yml_path_str);
-
+    let temp_app_for_config = read_working_dir_app_config(app_name);
     let (profile_settings_for_setup, final_profile_name_to_set) =
         get_profile_for_setup(&temp_app_for_config, profile_name, app_name)?;
 
@@ -996,28 +1049,28 @@ pub async fn setup_app_at_version(
         );
     }
 
-    let mut app_guard = APP.lock().await;
-    if let Some(app) = app_guard.as_mut().filter(|app| app.name == app_name) {
-        load_app_details(app).await?;
+    let saved_app = with_loaded_app(app_name, |app| {
+        load_app_details(app);
         app.installed = true;
         app.current_profile = final_profile_name_to_set.clone();
         if let Some(version) = version {
             app.current_version = Some(version.to_string());
             app.current_version_missing = false;
         }
-        let app_to_save = app.clone();
-        drop(app_guard);
-
-        if let Err(e) = save_app_config_to_json(&app_to_save).await {
-            error!(
+        app.clone()
+    })
+    .await;
+    if let Some(app_to_save) = saved_app {
+        match save_app_config_to_json(&app_to_save).await {
+            Ok(()) => info!(
+                "App config json saved successfully after setup {} installed {}",
+                app_to_save.name, app_to_save.installed
+            ),
+            Err(e) => error!(
                 "Failed to save app config for {} after setup (installed=true, profile='{}'): {:?}",
                 app_name, final_profile_name_to_set, e
-            );
+            ),
         }
-        info!(
-            "App config json saved successfully after setup {} installed {}",
-            app_to_save.name, app_to_save.installed
-        );
         update_app_from_disk_at_version(version).await?;
         emit_app().await;
     } else {
@@ -1095,17 +1148,12 @@ async fn rollback_to_previous_version(
 
     update_working_from_repo(app_name).await?;
 
-    {
-        let mut app_guard = APP.lock().await;
-        if let Some(app) = app_guard.as_mut().filter(|app| app.name == app_name) {
-            load_app_details(app).await?;
-            app.current_version = Some(previous_version.to_string());
-            app.current_version_missing = used_revision_fallback;
-            let app_to_save = app.clone();
-            drop(app_guard);
-            save_app_config_to_json(&app_to_save).await?;
-        }
-    }
+    update_and_save_app(app_name, |app| {
+        load_app_details(app);
+        app.current_version = Some(previous_version.to_string());
+        app.current_version_missing = used_revision_fallback;
+    })
+    .await?;
 
     emit_app().await;
     emit_info!(
@@ -1132,23 +1180,8 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
     )
     .await
     {
-        let error_message = format!("Failed to record update progress: {}", state_error);
-        if let Err(failure_state_error) = persist_update_state(
-            app_name,
-            AppUpdateState::Failed,
-            Some(version.to_string()),
-            Some(error_message.clone()),
-        )
-        .await
-        {
-            error!(
-                "Failed to persist update failure state for '{}': {}",
-                app_name, failure_state_error
-            );
-            emit_app().await;
-        }
-        emit_error!(app_name, "{}", error_message);
-        emit_error_finish!(app_name);
+        let message = format!("Failed to record update progress: {}", state_error);
+        record_update_failure(app_name, version, &message, &message).await;
         return Err(state_error.into());
     }
 
@@ -1159,64 +1192,51 @@ pub async fn update_to_version(app_name: &str, version: &str) -> Result<(), Erro
                 Ok(())
             }
             Err(state_error) => {
-                let error_message = format!(
+                let message = format!(
                     "Update completed, but its state could not be saved: {}",
                     state_error
                 );
-                if let Err(failure_state_error) = persist_update_state(
-                    app_name,
-                    AppUpdateState::Failed,
-                    Some(version.to_string()),
-                    Some(error_message.clone()),
-                )
-                .await
-                {
-                    error!(
-                        "Failed to persist update failure state for '{}': {}",
-                        app_name, failure_state_error
-                    );
-                    emit_app().await;
-                }
-                emit_error!(app_name, "{}", error_message);
-                emit_error_finish!(app_name);
+                record_update_failure(app_name, version, &message, &message).await;
                 Err(state_error.into())
             }
         },
         Err(error) => {
-            let error_message = error.to_string();
-            if let Err(state_error) = persist_update_state(
-                app_name,
-                AppUpdateState::Failed,
-                Some(version.to_string()),
-                Some(error_message.clone()),
-            )
-            .await
-            {
-                error!(
-                    "Failed to persist update failure state for '{}': {}",
-                    app_name, state_error
-                );
-            }
-            emit_error!(
-                app_name,
-                "Update to version {} failed: {}",
-                version,
-                error_message
-            );
-            emit_error_finish!(app_name);
+            let message = error.to_string();
+            let console_message = format!("Update to version {} failed: {}", version, message);
+            record_update_failure(app_name, version, &message, &console_message).await;
             Err(error)
         }
     }
 }
 
+/// Persists the `Failed` update state with `stored_error`, then reports
+/// `console_message` and finishes the update console.
+async fn record_update_failure(
+    app_name: &str,
+    version: &str,
+    stored_error: &str,
+    console_message: &str,
+) {
+    if let Err(state_error) = persist_update_state(
+        app_name,
+        AppUpdateState::Failed,
+        Some(version.to_string()),
+        Some(stored_error.to_string()),
+    )
+    .await
+    {
+        error!(
+            "Failed to persist update failure state for '{}': {}",
+            app_name, state_error
+        );
+        emit_app().await;
+    }
+    emit_error!(app_name, "{}", console_message);
+    emit_error_finish!(app_name);
+}
+
 async fn ensure_app_stopped_for_update(app_name: &str) -> Result<(), Error> {
-    let app_base_path = get_app_base_path(app_name);
-    let running_pids = task::spawn_blocking(move || {
-        let mut system = System::new();
-        system.refresh_processes(ProcessesToUpdate::All, true);
-        process::get_pids_related_to_app_dir(&system, &app_base_path)
-    })
-    .await?;
+    let running_pids = find_app_pids(app_name).await?;
     if !running_pids.is_empty() {
         let pid_list = running_pids
             .iter()
@@ -1331,10 +1351,7 @@ async fn update_to_version_inner(app_name: &str, version: &str) -> Result<(), Er
     debug!("Updated working dir for app {}", app_name);
 
     let (new_requirements_spec, new_pip_args) = {
-        let yml_path = working_dir_path.join(YML_FILE_NAME);
-        let mut temp_app = read_embedded_app();
-        temp_app.name = app_name.to_string();
-        update_app_from_yml(&mut temp_app, &yml_path.to_string_lossy());
+        let temp_app = read_working_dir_app_config(app_name);
         // Compare against the same profile the app is installed with, so a
         // non-default profile keeps its own requirements across updates.
         match temp_app.get_profile(&current_profile_name) {
@@ -1412,23 +1429,18 @@ async fn update_to_version_inner(app_name: &str, version: &str) -> Result<(), Er
         );
     }
 
-    {
-        let mut app_guard = APP.lock().await;
-        if let Some(app) = app_guard.as_mut().filter(|app| app.name == app_name) {
-            load_app_details(app).await?;
-            app.current_version = Some(version.to_string());
-            app.current_version_missing = false;
-            app.app_starting_version = Some(
-                previous_version
-                    .clone()
-                    .unwrap_or_else(|| version.to_string()),
-            );
-            app.update_note = update_note;
-            let app_to_save = app.clone();
-            drop(app_guard);
-            save_app_config_to_json(&app_to_save).await?;
-        }
-    }
+    update_and_save_app(app_name, |app| {
+        load_app_details(app);
+        app.current_version = Some(version.to_string());
+        app.current_version_missing = false;
+        app.app_starting_version = Some(
+            previous_version
+                .clone()
+                .unwrap_or_else(|| version.to_string()),
+        );
+        app.update_note = update_note;
+    })
+    .await?;
 
     emit_info!(app_name, "Updated {} to version {}", app_name, version);
     Ok(())
@@ -1492,8 +1504,6 @@ async fn check_running_on_start(app_name: &str) -> Result<bool> {
     let start_time = tokio::time::Instant::now();
     let timeout = Duration::from_secs(10);
     let mut interval = tokio::time::interval(Duration::from_secs(1));
-    let mut sys = System::new();
-    let app_base_dir = get_app_base_path(app_name);
 
     info!(
         "Monitoring for app '{}' to start for up to 10 seconds...",
@@ -1502,21 +1512,14 @@ async fn check_running_on_start(app_name: &str) -> Result<bool> {
 
     while tokio::time::Instant::now().duration_since(start_time) < timeout {
         interval.tick().await;
-        sys.refresh_processes(ProcessesToUpdate::All, true);
-        let pids = process::get_pids_related_to_app_dir(&sys, &app_base_dir);
-        if !pids.is_empty() {
+        if !find_app_pids(app_name).await?.is_empty() {
             info!(
                 "App '{}' detected as running from '{}'. Updating status.",
                 app_name,
-                app_base_dir.display()
+                get_app_base_path(app_name).display()
             );
 
-            let mut app_guard = APP.lock().await;
-            if let Some(app) = app_guard.as_mut().filter(|app| app.name == app_name) {
-                app.running = true;
-            }
-            drop(app_guard);
-
+            set_app_running(app_name, true).await;
             emit_app().await;
             return Ok(true);
         }
@@ -1526,15 +1529,9 @@ async fn check_running_on_start(app_name: &str) -> Result<bool> {
         "App '{}' did not appear to be running with a visible window within 10 seconds.",
         app_name
     );
-    sys.refresh_processes(ProcessesToUpdate::All, true);
-    let is_running_after_timeout = is_app_running(&sys, app_name);
-    let mut app_guard = APP.lock().await;
-    if let Some(app) = app_guard.as_mut().filter(|app| app.name == app_name) {
-        if app.running != is_running_after_timeout {
-            app.running = is_running_after_timeout;
-            drop(app_guard);
-            emit_app().await;
-        }
+    let is_running_after_timeout = is_app_running(app_name).await;
+    if set_app_running(app_name, is_running_after_timeout).await {
+        emit_app().await;
     }
 
     Ok(is_running_after_timeout)
@@ -1671,55 +1668,28 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         ));
     }
 
-    let (
-        profile_to_run_with,
-        working_dir,
-        current_version,
-        app_starting_version,
-        update_note,
-        configured_icon,
-    ) = {
-        let mut app_guard = APP.lock().await;
-        if let Some(app) = app_guard.as_mut().filter(|app| app.name == app_name) {
-            let working_dir = get_app_working_dir_path(&app_name);
-            let marker_path = working_dir.join(python_env::PIP_UPDATE_NEEDED_MARKER);
-            if marker_path.exists() {
-                info!(
-                    "Marker file found for app '{}'. Reloading app details before retry.",
-                    app_name
-                );
-                if let Err(e) = load_app_details(app).await {
-                    warn!("Failed to reload app details for '{}': {:?}", app_name, e);
-                }
-            }
-
-            app.last_start = Utc::now();
-            let profile_settings = app.get_current_profile_settings().clone();
-            let current_version = app.current_version.clone();
-            let app_starting_version = app.app_starting_version.clone();
-            let update_note = app.update_note.clone();
-            let configured_icon = app.icon.clone();
-            let app_to_save = app.clone();
-            drop(app_guard);
-
-            if let Err(e) = save_app_config_to_json(&app_to_save).await {
-                error!(
-                    "Failed to save app config for {} after updating last_start: {:?}.",
-                    app_name, e
-                );
-            }
-            (
-                profile_settings,
-                get_app_working_dir_path(&app_name),
-                current_version,
-                app_starting_version,
-                update_note,
-                configured_icon,
-            )
-        } else {
-            return Err(anyhow!("App '{}' not found.", app_name).into());
+    let working_dir = get_app_working_dir_path(&app_name);
+    let marker_path = working_dir.join(python_env::PIP_UPDATE_NEEDED_MARKER);
+    let app_snapshot = with_loaded_app(&app_name, |app| {
+        if marker_path.exists() {
+            info!(
+                "Marker file found for app '{}'. Reloading app details before retry.",
+                app_name
+            );
+            load_app_details(app);
         }
-    };
+        app.last_start = Utc::now();
+        app.clone()
+    })
+    .await
+    .ok_or_else(|| anyhow!("App '{}' not found.", app_name))?;
+    if let Err(e) = save_app_config_to_json(&app_snapshot).await {
+        error!(
+            "Failed to save app config for {} after updating last_start: {:?}.",
+            app_name, e
+        );
+    }
+    let profile_to_run_with = app_snapshot.get_current_profile_settings().clone();
 
     if profile_to_run_with.main_script.is_empty() {
         return Err(anyhow!(
@@ -1738,7 +1708,6 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
         profile_to_run_with.main_script
     );
 
-    let marker_path = working_dir.join(python_env::PIP_UPDATE_NEEDED_MARKER);
     if marker_path.exists() {
         info!(
             "Marker file found for app '{}' at {}. Attempting to re-install requirements.",
@@ -1758,9 +1727,9 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
     let envs = build_python_execution_environment(
         &app_name,
         &profile_to_run_with,
-        current_version,
-        app_starting_version,
-        update_note,
+        app_snapshot.current_version.clone(),
+        app_snapshot.app_starting_version.clone(),
+        app_snapshot.update_note.clone(),
         pyappify_version,
     );
     execute_python::run_python_script(
@@ -1777,7 +1746,7 @@ pub async fn start_app(app_handle: AppHandle, app_name: String) -> Result<(), Er
             app_name,
             "App startup confirmed. Creating or updating Windows shortcuts..."
         );
-        let icon_path = resolve_app_shortcut_icon_path(&app_name, &configured_icon).await;
+        let icon_path = resolve_app_shortcut_icon_path(&app_name, &app_snapshot.icon).await;
         if icon_path.is_none() {
             emit_info!(
                 app_name,
@@ -1873,7 +1842,7 @@ async fn kill_app_processes(app_name: &str) -> Result<bool> {
 
     task::spawn_blocking(move || -> Result<bool> {
         let mut sys_task = System::new();
-        sys_task.refresh_processes(ProcessesToUpdate::All, true);
+        process::refresh_process_exes(&mut sys_task);
         debug!(
             "Scanning processes to stop for '{}' in '{}'",
             app_name_clone,
@@ -1927,31 +1896,12 @@ pub async fn stop_app(app_name: String) -> Result<(), Error> {
         info!("No active processes for '{}'.", app_name);
     }
 
-    let mut sys_final = System::new();
-    sys_final.refresh_processes(ProcessesToUpdate::All, true);
-    let currently_running_final = is_app_running(&sys_final, &app_name);
-    let mut status_changed = false;
-
-    {
-        let mut app_guard = APP.lock().await;
-        if let Some(app) = app_guard.as_mut().filter(|app| app.name == app_name) {
-            if app.running != currently_running_final {
-                debug!(
-                    "Updating running status for '{}' after stop: {} -> {}",
-                    app_name, app.running, currently_running_final
-                );
-                app.running = currently_running_final;
-                status_changed = true;
-            }
-        } else {
-            warn!(
-                "App '{}' is not loaded during stop_app final update.",
-                app_name
-            );
-        }
-    }
-
-    if status_changed {
+    let currently_running_final = is_app_running(&app_name).await;
+    if set_app_running(&app_name, currently_running_final).await {
+        debug!(
+            "Updated running status for '{}' after stop: {}",
+            app_name, currently_running_final
+        );
         emit_app().await;
     }
     if currently_running_final && any_pids_were_targeted {
@@ -2023,23 +1973,19 @@ pub async fn watch_app_config_changes() {
             }
         };
 
-        let changed = {
-            let mut app_guard = APP.lock().await;
-            if let Some(app) = app_guard.as_mut().filter(|app| app.name == app_name) {
-                if app.update_method != update_method || app.auto_start != auto_start {
-                    if app.auto_start && !auto_start {
-                        AUTO_START_CANCELLED.store(true, AtomicOrdering::SeqCst);
-                    }
-                    app.update_method = update_method;
-                    app.auto_start = auto_start;
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
+        let changed = with_loaded_app(&app_name, |app| {
+            if app.update_method == update_method && app.auto_start == auto_start {
+                return false;
             }
-        };
+            if app.auto_start && !auto_start {
+                AUTO_START_CANCELLED.store(true, AtomicOrdering::SeqCst);
+            }
+            app.update_method = update_method;
+            app.auto_start = auto_start;
+            true
+        })
+        .await
+        .unwrap_or(false);
 
         if changed {
             info!("Reloaded preferences from app.json for '{}'.", app_name);
@@ -2051,7 +1997,6 @@ pub async fn watch_app_config_changes() {
 pub async fn periodically_update_app_running_status(app_handle: AppHandle) {
     let mut ticker = interval(Duration::from_secs(2));
     info!("Starting periodic app status update (2s interval).");
-    let mut sys = System::new();
     loop {
         ticker.tick().await;
         if let Some(window) = app_handle.get_webview_window("main") {
@@ -2059,31 +2004,15 @@ pub async fn periodically_update_app_running_status(app_handle: AppHandle) {
                 continue;
             }
         }
-        sys.refresh_processes(ProcessesToUpdate::All, true);
         let Some(app_name) = APP.lock().await.as_ref().map(|app| app.name.clone()) else {
             continue;
         };
-        let new_status = is_app_running(&sys, &app_name);
-
-        let changed = {
-            let mut app_guard = APP.lock().await;
-            if let Some(app) = app_guard.as_mut().filter(|app| app.name == app_name) {
-                if app.running != new_status {
-                    debug!(
-                        "Periodic: Running status for '{}': {} -> {}",
-                        app.name, app.running, new_status
-                    );
-                    app.running = new_status;
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        };
-        if changed {
-            info!("App status changed by periodic check. Emitting.");
+        let new_status = is_app_running(&app_name).await;
+        if set_app_running(&app_name, new_status).await {
+            info!(
+                "Periodic check: running status for '{}' is now {}. Emitting.",
+                app_name, new_status
+            );
             emit_app().await;
         }
     }

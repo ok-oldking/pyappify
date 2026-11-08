@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::process::Command as StdCommand;
-use sysinfo::{Pid, Process, System};
+use sysinfo::{Pid, Process, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tokio::process::Command as TokioCommand;
 
 pub const PYTHON_ENVS_TO_REMOVE: [&str; 13] = [
@@ -71,6 +71,25 @@ pub fn is_process_related_to_app_dir(process: &Process, app_dir_canonical: &Path
         }
     }
     false
+}
+
+/// Refreshes the process list with only executable paths, which is all the app
+/// matching needs. Skipping CPU, memory, command line and environment data makes
+/// a full scan much cheaper than `refresh_processes(All, true)`.
+pub fn refresh_process_exes(sys: &mut System) {
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
+    );
+}
+
+/// Takes a fresh process snapshot and returns the processes whose executable
+/// lives under `app_dir_canonical`. Blocking; call from a blocking context.
+pub fn scan_pids_related_to_app_dir(app_dir_canonical: &Path) -> Vec<Pid> {
+    let mut sys = System::new();
+    refresh_process_exes(&mut sys);
+    get_pids_related_to_app_dir(&sys, app_dir_canonical)
 }
 
 pub fn get_pids_related_to_app_dir(sys: &System, app_dir_canonical: &Path) -> Vec<Pid> {
