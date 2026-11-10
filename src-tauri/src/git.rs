@@ -209,9 +209,12 @@ fn create_proxy_options() -> ProxyOptions<'static> {
     proxy_opts
 }
 
+/// With `all_tags`, every remote tag is downloaded along with the refspecs;
+/// otherwise only the refspecs are.
 fn create_fetch_options(
     callbacks: RemoteCallbacks<'static>,
     depth: Option<u32>,
+    all_tags: bool,
 ) -> FetchOptions<'static> {
     let mut fo = FetchOptions::new();
     fo.remote_callbacks(callbacks);
@@ -219,8 +222,293 @@ fn create_fetch_options(
     if let Some(d) = depth {
         fo.depth(d as i32);
     }
-    fo.download_tags(git2::AutotagOption::All);
+    fo.download_tags(if all_tags {
+        git2::AutotagOption::All
+    } else {
+        git2::AutotagOption::None
+    });
     fo
+}
+
+/// Fetches `refspecs` from `origin`, reporting transfer progress under
+/// `progress_prefix` when given.
+fn fetch_from_origin(
+    repo: &Repository,
+    app_name: &str,
+    refspecs: &[String],
+    depth: Option<u32>,
+    all_tags: bool,
+    progress_prefix: Option<&str>,
+) -> Result<()> {
+    let mut remote = repo
+        .find_remote("origin")
+        .context("Failed to find remote 'origin'")?;
+    let remote_url = remote.url().ok().map(String::from);
+    let mut callbacks = RemoteCallbacks::new();
+    configure_credentials(&mut callbacks, remote_url.as_deref());
+    if let Some(prefix) = progress_prefix {
+        callbacks.transfer_progress(create_transfer_progress_callback(
+            app_name.to_string(),
+            prefix,
+            false,
+        ));
+    }
+    let mut fetch_options = create_fetch_options(callbacks, depth, all_tags);
+    fetch_options.prune(git2::FetchPrune::On);
+    let refspecs: Vec<&str> = refspecs.iter().map(String::as_str).collect();
+    let result = remote
+        .fetch(&refspecs, Some(&mut fetch_options), None)
+        .with_context(|| {
+            format!(
+                "Failed to fetch {} from {}",
+                refspecs.join(" "),
+                remote_url.as_deref().unwrap_or("origin")
+            )
+        });
+    if progress_prefix.is_some() {
+        emit_update_info!(app_name, "");
+    }
+    result
+}
+
+fn tag_refspec(tag: &str) -> String {
+    format!("+refs/tags/{0}:refs/tags/{0}", tag)
+}
+
+/// Repository config key holding the app's `keep_releases`, so every git
+/// operation on the repository (and the Python package's standalone updater)
+/// applies it without needing the app's configuration.
+const KEEP_RELEASES_CONFIG_KEY: &str = "pyappify.keepreleases";
+/// Shallow clones start at this depth and deepen until the history between
+/// the kept releases is complete.
+const SHALLOW_START_DEPTH: u32 = 100;
+const SHALLOW_MAX_DEPTH: u32 = 25_600;
+
+/// The number of releases the repository keeps, or `None` to keep every tag.
+fn keep_releases(repo: &Repository) -> Option<usize> {
+    let value = repo.config().ok()?.get_i64(KEEP_RELEASES_CONFIG_KEY).ok()?;
+    usize::try_from(value).ok().filter(|keep| *keep > 0)
+}
+
+fn set_keep_releases(repo: &Repository, keep: Option<usize>) -> Result<()> {
+    if keep_releases(repo) == keep {
+        return Ok(());
+    }
+    let mut config = repo.config().context("Failed to open repository config")?;
+    match keep {
+        Some(keep) => config
+            .set_i64(KEEP_RELEASES_CONFIG_KEY, keep as i64)
+            .with_context(|| format!("Failed to set {KEEP_RELEASES_CONFIG_KEY}")),
+        None => match config.remove(KEEP_RELEASES_CONFIG_KEY) {
+            Err(error) if error.code() != ErrorCode::NotFound => Err(anyhow::Error::new(error)
+                .context(format!("Failed to remove {KEEP_RELEASES_CONFIG_KEY}"))),
+            _ => Ok(()),
+        },
+    }
+}
+
+/// The version tags to keep: the `keep` newest releases and the prereleases
+/// newer than the oldest of them, newest first. With fewer releases than
+/// `keep`, every version tag is kept.
+fn select_kept_tags<'a>(tags: impl IntoIterator<Item = &'a str>, keep: usize) -> Vec<String> {
+    let mut versions: Vec<(VersionKey, &str)> = tags
+        .into_iter()
+        .filter_map(|tag| parse_version_tag(tag).map(|key| (key, tag)))
+        .collect();
+    versions.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut kept = Vec::new();
+    let mut releases = 0;
+    for (key, tag) in versions {
+        if releases >= keep {
+            break;
+        }
+        if key.prerelease.is_release() {
+            releases += 1;
+        }
+        kept.push(tag.to_string());
+    }
+    kept
+}
+
+/// The tags pointing at the checked-out commit.
+fn head_tags(repo: &Repository) -> Vec<String> {
+    let Some(head) = repo.head().ok().and_then(|head| head.target()) else {
+        return Vec::new();
+    };
+    repo.tag_names(None)
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(|tag| tag.ok().flatten())
+                .filter(|tag| resolve_tag_commit(repo, tag).ok() == Some(head))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The local tags to keep given the remote's tags: all of them, or with
+/// `keep_releases` the kept versions, the tag being checked out (`extra`) and
+/// the tags of the checked-out version.
+fn tags_to_keep(
+    repo: &Repository,
+    remote_tags: &HashSet<String>,
+    extra: Option<&str>,
+) -> HashSet<String> {
+    let Some(keep) = keep_releases(repo) else {
+        return remote_tags.clone();
+    };
+    let mut kept: HashSet<String> = select_kept_tags(remote_tags.iter().map(String::as_str), keep)
+        .into_iter()
+        .collect();
+    kept.extend(
+        head_tags(repo)
+            .into_iter()
+            .chain(extra.map(String::from))
+            .filter(|tag| remote_tags.contains(tag)),
+    );
+    kept
+}
+
+/// Fetches the remote's tags (and branches with `include_heads`) and removes
+/// local tags that are not kept, see [`tags_to_keep`]. With `keep_releases`,
+/// only the kept tags are fetched and branches are skipped.
+fn sync_tags(
+    repo: &Repository,
+    app_name: &str,
+    include_heads: bool,
+    progress_prefix: Option<&str>,
+) -> Result<()> {
+    let remote_tags = list_remote_tags(repo)?;
+    if keep_releases(repo).is_some() {
+        let mut kept: Vec<String> = tags_to_keep(repo, &remote_tags, None).into_iter().collect();
+        kept.sort();
+        let refspecs: Vec<String> = kept.iter().map(|tag| tag_refspec(tag)).collect();
+        if !refspecs.is_empty() {
+            fetch_from_origin(repo, app_name, &refspecs, None, false, progress_prefix)?;
+        }
+        return prune_local_tags(repo, app_name, &kept.into_iter().collect());
+    }
+    let mut refspecs = vec!["+refs/tags/*:refs/tags/*".to_string()];
+    if include_heads {
+        refspecs.insert(0, "+refs/heads/*:refs/remotes/origin/*".to_string());
+    }
+    fetch_from_origin(repo, app_name, &refspecs, None, true, progress_prefix)?;
+    prune_local_tags(repo, app_name, &remote_tags)
+}
+
+/// Removes local tags the remote no longer has, or with `keep_releases` the
+/// ones that are not kept. `extra` names a tag that must stay.
+fn prune_tags(repo: &Repository, app_name: &str, extra: Option<&str>) -> Result<()> {
+    let remote_tags = list_remote_tags(repo)?;
+    prune_local_tags(repo, app_name, &tags_to_keep(repo, &remote_tags, extra))
+}
+
+/// The commits listed in the repository's `shallow` file: the commits whose
+/// parents were not fetched.
+fn shallow_roots(repo: &Repository) -> HashSet<Oid> {
+    fs::read_to_string(repo.path().join("shallow"))
+        .map(|content| {
+            content
+                .lines()
+                .filter_map(|line| Oid::from_str(line.trim()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether the history between the kept tags (newest first) is complete, so
+/// update notes between them can be read: walking from the kept tags down to
+/// the oldest one reaches no commit whose parents are missing.
+fn kept_history_complete(repo: &Repository, kept: &[String]) -> Result<bool> {
+    let roots = shallow_roots(repo);
+    let Some(oldest) = kept.last() else {
+        return Ok(true);
+    };
+    if roots.is_empty() {
+        return Ok(true);
+    }
+    let mut revwalk = repo.revwalk().context("Failed to create revwalk")?;
+    for tag in kept {
+        revwalk.push(resolve_tag_commit(repo, tag)?)?;
+    }
+    revwalk.hide(resolve_tag_commit(repo, oldest)?)?;
+    for oid in revwalk {
+        match oid {
+            Ok(oid) if roots.contains(&oid) => return Ok(false),
+            Ok(_) => {}
+            Err(_) => return Ok(false),
+        }
+    }
+    Ok(true)
+}
+
+/// Creates the bare repository at `repo_path` with only the kept releases of
+/// `url` and as much history as their update notes need. Returns `None`, with
+/// nothing created, when the remote has no version tags.
+fn clone_kept_releases(
+    url: &str,
+    repo_path: &Path,
+    app_name: &str,
+    keep: usize,
+) -> Result<Option<Repository>> {
+    init_git_options();
+    let repo = Repository::init_bare(repo_path)
+        .with_context(|| format!("Failed to create repository at {}", repo_path.display()))?;
+    repo.remote("origin", url)
+        .with_context(|| format!("Failed to add remote {url}"))?;
+    set_keep_releases(&repo, Some(keep))?;
+    let remote_tags = list_remote_tags(&repo)?;
+    let kept = select_kept_tags(remote_tags.iter().map(String::as_str), keep);
+    if kept.is_empty() {
+        drop(repo);
+        fs::remove_dir_all(repo_path)
+            .with_context(|| format!("Failed to remove {}", repo_path.display()))?;
+        return Ok(None);
+    }
+    emit_info!(
+        app_name,
+        "Fetching the {} newest version(s) of {} releases kept.",
+        kept.len(),
+        keep
+    );
+    let refspecs: Vec<String> = kept.iter().map(|tag| tag_refspec(tag)).collect();
+    let mut depth = SHALLOW_START_DEPTH;
+    loop {
+        let roots_before = shallow_roots(&repo);
+        // One tag per fetch: a shallow fetch of several tags at once can
+        // stall in libgit2. After the newest tag, the others are mostly
+        // already present and quick to fetch.
+        for refspec in &refspecs {
+            let fetch = || {
+                fetch_from_origin(
+                    &repo,
+                    app_name,
+                    std::slice::from_ref(refspec),
+                    Some(depth),
+                    false,
+                    Some("Receiving objects"),
+                )
+            };
+            if let Err(error) = fetch() {
+                warn!("Fetching {} failed, retrying once: {:#}", refspec, error);
+                fetch()?;
+            }
+        }
+        if kept_history_complete(&repo, &kept)? {
+            break;
+        }
+        if depth >= SHALLOW_MAX_DEPTH || shallow_roots(&repo) == roots_before {
+            warn!(
+                "History between the kept releases of {} is still incomplete at depth {}.",
+                app_name, depth
+            );
+            break;
+        }
+        depth *= 4;
+        debug!("Deepening {} to depth {}", app_name, depth);
+    }
+    Ok(Some(repo))
 }
 
 /// Emits throttled (0.1%) transfer progress. With `detailed`, also reports
@@ -428,17 +716,16 @@ fn collect_remote_tag_names(
     Ok(remote_tags)
 }
 
-fn prune_deleted_local_tags_from_remote(
-    repo: &Repository,
-    remote_name: &str,
-    app_name: &str,
-) -> Result<()> {
+fn list_remote_tags(repo: &Repository) -> Result<HashSet<String>> {
     let mut remote = repo
-        .find_remote(remote_name)
-        .with_context(|| format!("Failed to find remote '{}' for tag pruning", remote_name))?;
+        .find_remote("origin")
+        .context("Failed to find remote 'origin' for listing tags")?;
     let remote_url = remote.url().ok().map(String::from);
-    let remote_tags = collect_remote_tag_names(&mut remote, remote_url.as_deref())?;
+    collect_remote_tag_names(&mut remote, remote_url.as_deref())
+}
 
+/// Deletes the local tags that are not in `keep`.
+fn prune_local_tags(repo: &Repository, app_name: &str, keep: &HashSet<String>) -> Result<()> {
     let local_tag_array = repo
         .tag_names(None)
         .with_context(|| format!("Failed to list local tags from {:?}", repo.path()))?;
@@ -451,7 +738,7 @@ fn prune_deleted_local_tags_from_remote(
 
     let mut pruned_count = 0;
     for tag_name in local_tags {
-        if remote_tags.contains(&tag_name) {
+        if keep.contains(&tag_name) {
             continue;
         }
 
@@ -464,7 +751,7 @@ fn prune_deleted_local_tags_from_remote(
                 pruned_count += 1;
                 emit_info!(
                     app_name,
-                    "Pruned local tag '{}' because it no longer exists on remote.",
+                    "Pruned local tag '{}': it is gone from the remote or older than the kept releases.",
                     tag_name
                 );
             }
@@ -480,12 +767,28 @@ fn prune_deleted_local_tags_from_remote(
 
     if pruned_count > 0 {
         info!(
-            "Pruned {} local tag(s) for {} that no longer exist on remote.",
+            "Pruned {} local tag(s) for {} that are gone from the remote or not kept.",
             pruned_count, app_name
         );
     }
 
     Ok(())
+}
+
+/// A network read that receives nothing for this long fails instead of
+/// stalling the fetch forever (libgit2 waits indefinitely by default).
+const SERVER_TIMEOUT_MS: i32 = 60_000;
+
+fn init_git_options() {
+    GIT_CONFIG_INITIALIZED.get_or_init(|| {
+        unsafe {
+            let _ = opts::set_verify_owner_validation(false);
+            if let Err(error) = opts::set_server_timeout_in_milliseconds(SERVER_TIMEOUT_MS) {
+                warn!("Failed to set the git server timeout: {}", error);
+            }
+        }
+        debug!("git2 owner validation disabled for this process.");
+    });
 }
 
 /// Opens an app repository.
@@ -497,12 +800,7 @@ fn prune_deleted_local_tags_from_remote(
 /// created there are kept, and only files removed between versions are
 /// deleted. A non-bare repository is opened as is.
 pub fn open_repository(repo_path: &Path) -> Result<Repository> {
-    GIT_CONFIG_INITIALIZED.get_or_init(|| {
-        unsafe {
-            let _ = opts::set_verify_owner_validation(false);
-        }
-        debug!("git2 owner validation disabled for this process.");
-    });
+    init_git_options();
     let repo = Repository::open(repo_path)
         .with_context(|| format!("Failed to open local repo at {}", repo_path.display()))?;
     if repo.is_bare() {
@@ -698,35 +996,12 @@ pub async fn get_tags_and_current_version(
         );
 
         let repo = open_repository(&repo_path_for_task)?;
-
-        let mut remote = repo.find_remote("origin").with_context(|| {
+        sync_tags(&repo, &app_name_for_task, false, None).with_context(|| {
             format!(
-                "Failed to find remote 'origin' in repository {}",
+                "Failed to fetch tags for repository {}",
                 repo_path_for_task.display()
             )
         })?;
-
-        let remote_url = remote.url().ok().map(String::from);
-
-        let mut remote_callbacks = RemoteCallbacks::new();
-        configure_credentials(&mut remote_callbacks, remote_url.as_deref());
-
-        let mut fetch_options = create_fetch_options(remote_callbacks, None);
-        fetch_options.prune(git2::FetchPrune::On);
-
-        remote
-            .fetch(
-                &["+refs/tags/*:refs/tags/*"],
-                Some(&mut fetch_options),
-                None,
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to fetch tags for repository {}",
-                    repo_path_for_task.display()
-                )
-            })?;
-        prune_deleted_local_tags_from_remote(&repo, "origin", &app_name_for_task)?;
 
         let sorted_tags = get_sorted_tags_by_time(&repo)?;
 
@@ -805,42 +1080,21 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
                         format!("Failed to set remote url for {}", repo_path.display())
                     })?;
                 }
+                set_keep_releases(&repo, app.keep_releases)?;
 
                 emit_info!(app_name, "Fetching updates for existing repository...");
                 let repo_path_for_task = repo_path.clone();
-                let url_for_task = url.clone();
                 let app_name_for_task = app_name.clone();
 
                 task::spawn_blocking(move || -> Result<()> {
                     let repo = open_repository(&repo_path_for_task)?;
-                    let mut remote = repo.find_remote("origin")?;
-                    let mut callbacks = RemoteCallbacks::new();
-                    configure_credentials(&mut callbacks, Some(&url_for_task));
-
-                    callbacks.transfer_progress(create_transfer_progress_callback(
-                        app_name_for_task.clone(),
-                        "Fetching objects",
-                        false,
-                    ));
-
-                    let mut fetch_options = create_fetch_options(callbacks, None);
-                    fetch_options.prune(git2::FetchPrune::On);
-                    let refspecs = [
-                        "+refs/heads/*:refs/remotes/origin/*",
-                        "+refs/tags/*:refs/tags/*",
-                    ];
-                    let fetch_result = remote
-                        .fetch(&refspecs, Some(&mut fetch_options), None)
+                    sync_tags(&repo, &app_name_for_task, true, Some("Fetching objects"))
                         .with_context(|| {
                             format!(
                                 "Failed to fetch updates for {}",
                                 repo_path_for_task.display()
                             )
-                        });
-
-                    emit_update_info!(app_name_for_task, "");
-                    fetch_result?;
-                    prune_deleted_local_tags_from_remote(&repo, "origin", &app_name_for_task)?;
+                        })?;
                     emit_info!(app_name_for_task, "Fetch complete.");
                     Ok(())
                 })
@@ -867,35 +1121,53 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
     let repo_path_for_clone_task = repo_path.to_path_buf();
     let url_for_clone_task = url.to_string();
     let app_name_for_messages = app_name.to_string();
+    let keep = app.keep_releases;
 
     task::spawn_blocking(move || -> Result<()> {
-        let mut callbacks = RemoteCallbacks::new();
-        configure_credentials(&mut callbacks, Some(&url_for_clone_task));
-        callbacks.transfer_progress(create_transfer_progress_callback(
-            app_name_for_messages.clone(),
-            "Receiving objects",
-            true,
-        ));
-
-        let fetch_options = create_fetch_options(callbacks, None);
-
-        // Bare: `repo` keeps only git data; files are checked out into `working`.
-        let mut builder = git2::build::RepoBuilder::new();
-        builder.fetch_options(fetch_options);
-        builder.bare(true);
-
         emit_info!(
             app_name_for_messages,
             "Attempting to clone {} into {}",
             url_for_clone_task,
             repo_path_for_clone_task.display()
         );
-        drop(
-            builder
-                .clone(&url_for_clone_task, &repo_path_for_clone_task)
-                .with_context(|| format!("Git clone failed for {}", url_for_clone_task))?,
-        );
+        let kept_clone = match keep {
+            Some(keep) => clone_kept_releases(
+                &url_for_clone_task,
+                &repo_path_for_clone_task,
+                &app_name_for_messages,
+                keep,
+            )
+            .map(|repo| repo.is_some())
+            .inspect_err(|_| {
+                let _ = fs::remove_dir_all(&repo_path_for_clone_task);
+            })
+            .with_context(|| format!("Git clone failed for {}", url_for_clone_task))?,
+            None => false,
+        };
+
+        if !kept_clone {
+            let mut callbacks = RemoteCallbacks::new();
+            configure_credentials(&mut callbacks, Some(&url_for_clone_task));
+            callbacks.transfer_progress(create_transfer_progress_callback(
+                app_name_for_messages.clone(),
+                "Receiving objects",
+                true,
+            ));
+
+            let fetch_options = create_fetch_options(callbacks, None, true);
+
+            // Bare: `repo` keeps only git data; files are checked out into `working`.
+            let mut builder = git2::build::RepoBuilder::new();
+            builder.fetch_options(fetch_options);
+            builder.bare(true);
+            drop(
+                builder
+                    .clone(&url_for_clone_task, &repo_path_for_clone_task)
+                    .with_context(|| format!("Git clone failed for {}", url_for_clone_task))?,
+            );
+        }
         let repo = open_repository(&repo_path_for_clone_task)?;
+        set_keep_releases(&repo, keep)?;
 
         emit_info!(
             app_name_for_messages,
@@ -974,41 +1246,29 @@ pub async fn checkout_version_tag(
     let oid = task::spawn_blocking(move || -> Result<Oid> {
         let repo = open_repository(&task_repo_path)?;
 
-        let mut remote = repo
-            .find_remote("origin")
-            .context("Failed to find remote 'origin'")?;
-
-        let mut callbacks = RemoteCallbacks::new();
-        configure_credentials(&mut callbacks, remote.url().ok());
-
-        callbacks.transfer_progress(create_transfer_progress_callback(
-            app_name_for_task.clone(),
-            "Fetching objects for tag",
-            false,
-        ));
-
-        let mut fetch_options = create_fetch_options(callbacks, None);
-        fetch_options.prune(git2::FetchPrune::On);
-
-        let refspec = format!("+refs/tags/{0}:refs/tags/{0}", tag_to_checkout);
+        let refspec = tag_refspec(&tag_to_checkout);
         emit_info!(
             app_name_for_task,
             "Fetching refspec: {} for repo: {}",
             refspec,
             task_repo_path.display()
         );
-        let fetch_result = remote
-            .fetch(&[refspec.as_str()], Some(&mut fetch_options), None)
-            .with_context(|| {
-                format!(
-                    "Failed to fetch tag {} for repo {}",
-                    tag_to_checkout,
-                    task_repo_path.display()
-                )
-            });
-        emit_update_info!(app_name_for_task, "");
-        fetch_result?;
-        prune_deleted_local_tags_from_remote(&repo, "origin", &app_name_for_task)?;
+        fetch_from_origin(
+            &repo,
+            &app_name_for_task,
+            &[refspec],
+            None,
+            keep_releases(&repo).is_none(),
+            Some("Fetching objects for tag"),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to fetch tag {} for repo {}",
+                tag_to_checkout,
+                task_repo_path.display()
+            )
+        })?;
+        prune_tags(&repo, &app_name_for_task, Some(&tag_to_checkout))?;
 
         debug!("Fetch successful for tag {}", tag_to_checkout);
 
@@ -1152,28 +1412,24 @@ pub async fn get_commit_messages_for_version_diff(
 
     let messages = task::spawn_blocking(move || -> Result<Vec<String>> {
         let repo = open_repository(&repo_path_clone)?;
-        let mut remote = repo
-            .find_remote("origin")
-            .context("Failed to find remote 'origin'")?;
-
-        let mut callbacks = RemoteCallbacks::new();
-        configure_credentials(&mut callbacks, remote.url().ok());
-
-        let mut fetch_options = create_fetch_options(callbacks, None);
-
         let head_ref = repo.head().context("Failed to get repo HEAD")?;
         let head_oid = head_ref.target().context("HEAD has no target OID")?;
 
         let target_tag_ref_str = format!("refs/tags/{}", target_tag);
         if repo.find_reference(&target_tag_ref_str).is_err() {
-            let target_refspec = format!("+refs/tags/{0}:refs/tags/{0}", target_tag);
             debug!(
                 "Fetching target tag {} as it's not found locally.",
                 target_tag
             );
-            remote
-                .fetch(&[target_refspec.as_str()], Some(&mut fetch_options), None)
-                .with_context(|| format!("Failed to fetch target version tag {}", target_tag))?;
+            fetch_from_origin(
+                &repo,
+                "",
+                &[tag_refspec(&target_tag)],
+                None,
+                keep_releases(&repo).is_none(),
+                None,
+            )
+            .with_context(|| format!("Failed to fetch target version tag {}", target_tag))?;
         }
 
         let target_obj = repo.revparse_single(&target_tag_ref_str).with_context(|| {
@@ -1608,5 +1864,129 @@ mod tests {
 
         drop(source);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn kept_tags_are_the_newest_releases_and_newer_prereleases() {
+        let tags = [
+            "v1.0.0",
+            "v1.1.0-beta.1",
+            "v1.1.0",
+            "v1.2.0-beta.1",
+            "v1.2.0",
+            "v1.3.0-beta.2",
+            "latest",
+        ];
+        assert_eq!(
+            super::select_kept_tags(tags, 2),
+            ["v1.3.0-beta.2", "v1.2.0", "v1.2.0-beta.1", "v1.1.0"]
+        );
+        assert_eq!(
+            super::select_kept_tags(tags, 1),
+            ["v1.3.0-beta.2", "v1.2.0"]
+        );
+        assert_eq!(super::select_kept_tags(tags, 10).len(), 6);
+    }
+
+    #[tokio::test]
+    async fn keep_releases_fetches_only_kept_tags_and_keeps_the_checked_out_one() {
+        let root = unique_temp_dir("keep-releases");
+        let source_path = root.join("source");
+        let source = Repository::init(&source_path).unwrap();
+        for tag in ["v1.0.0", "v1.1.0", "v1.2.0-beta.1", "v1.2.0"] {
+            commit_and_tag(&source, &source_path, tag, tag);
+        }
+        let repo_path = root.join("repo");
+        bare_clone(&source_path, &repo_path);
+        let repo = open_repository(&repo_path).unwrap();
+        super::checkout_detached(
+            &repo,
+            &repo.revparse_single("refs/tags/v1.0.0").unwrap(),
+            "v1.0.0",
+        )
+        .unwrap();
+        super::set_keep_releases(&repo, Some(1)).unwrap();
+        assert_eq!(super::keep_releases(&repo), Some(1));
+
+        commit_and_tag(&source, &source_path, "v1.3.0-beta.1", "v1.3.0-beta.1");
+        super::sync_tags(&repo, "test", true, None).unwrap();
+        let mut tags: Vec<String> = repo
+            .tag_names(None)
+            .unwrap()
+            .iter()
+            .filter_map(|tag| tag.ok().flatten().map(String::from))
+            .collect();
+        tags.sort();
+        // v1.0.0 stays because it is checked out.
+        assert_eq!(tags, ["v1.0.0", "v1.2.0", "v1.3.0-beta.1"]);
+
+        super::set_keep_releases(&repo, None).unwrap();
+        assert_eq!(super::keep_releases(&repo), None);
+        super::sync_tags(&repo, "test", true, None).unwrap();
+        assert_eq!(repo.tag_names(None).unwrap().len(), 5);
+
+        drop(repo);
+        drop(source);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Shallow fetches need a smart transport, so this clones a real update
+    /// repository: `cargo test kept_release_clone -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn kept_release_clone_is_shallow_with_complete_notes() {
+        let url = std::env::var("PYAPPIFY_TEST_GIT_URL")
+            .unwrap_or_else(|_| "https://github.com/ok-oldking/ok-ww-update.git".to_string());
+        let root = unique_temp_dir("kept-clone");
+        let repo_path = root.join("repo");
+        let keep = std::env::var("PYAPPIFY_TEST_KEEP")
+            .ok()
+            .and_then(|keep| keep.parse().ok())
+            .unwrap_or(3);
+        let repo = super::clone_kept_releases(&url, &repo_path, "test", keep)
+            .unwrap()
+            .unwrap();
+        let kept: Vec<String> = super::get_sorted_tags_by_time(&repo).unwrap();
+        println!("kept tags: {kept:?}");
+        println!("shallow roots: {}", super::shallow_roots(&repo).len());
+        let mut revwalk = repo.revwalk().unwrap();
+        revwalk.push_glob("refs/tags/*").unwrap();
+        println!("commits: {}", revwalk.count());
+        assert!(super::kept_history_complete(&repo, &kept).unwrap());
+        let history = super::build_version_history(&repo, 10, false).unwrap();
+        for entry in &history {
+            println!(
+                "{} <- {:?}: {:?}",
+                entry.version, entry.previous_version, entry.update_note
+            );
+        }
+        let size: u64 = walk_size(&repo_path);
+        println!("repo size: {:.1} MB", size as f64 / 1024.0 / 1024.0);
+        drop(repo);
+
+        // A later sync fetches only the kept tags into the shallow repository.
+        let repo = open_repository(&repo_path).unwrap();
+        super::sync_tags(&repo, "test", true, None).unwrap();
+        println!(
+            "size after sync: {:.1} MB",
+            walk_size(&repo_path) as f64 / 1024.0 / 1024.0
+        );
+        drop(repo);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn walk_size(path: &std::path::Path) -> u64 {
+        std::fs::read_dir(path)
+            .unwrap()
+            .flatten()
+            .map(|entry| {
+                let meta = entry.metadata().unwrap();
+                if meta.is_dir() {
+                    walk_size(&entry.path())
+                } else {
+                    meta.len()
+                }
+            })
+            .sum()
     }
 }
