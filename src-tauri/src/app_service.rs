@@ -7,7 +7,6 @@ use crate::emitter::get_app_handle;
 use crate::git::ensure_repository;
 use crate::runas;
 use crate::utils::error::Error;
-use crate::utils::file;
 use crate::utils::file::delete_dir_if_exist;
 use crate::utils::locale::get_locale;
 use crate::utils::path::{get_app_base_path, get_app_working_dir_path, get_python_dir};
@@ -359,6 +358,16 @@ async fn load_and_prepare_app_state(app_template: &App) -> Result<App> {
         app.name
     );
     let repo_path = path::get_app_repo_path(&app.name);
+    if app.installed {
+        // Before the existence check: an interrupted migration can leave
+        // `repo` briefly renamed.
+        if let Err(error) = git::ensure_bare_layout(&app.name, &repo_path).await {
+            error!(
+                "Failed to move '{}' to the shared-checkout repository layout: {:?}",
+                app.name, error
+            );
+        }
+    }
     if app.installed && !repo_path.exists() {
         warn!(
             "Repository for app '{}' is missing. Marking as not installed.",
@@ -915,56 +924,23 @@ pub async fn get_app_icon(app_name: String) -> Result<tauri::ipc::Response, Erro
     ))
 }
 
+/// Makes the app's `working` folder match the version checked out in its
+/// repository. `repo` is bare and checks out straight into `working`, so this
+/// only restores tracked files that are missing or modified (for example after
+/// `working` was recreated); files the app created there are kept.
 pub async fn update_working_from_repo(app_name: &str) -> Result<()> {
     let repo_path = path::get_app_repo_path(app_name);
-    let working_dir_path = get_app_working_dir_path(app_name);
     info!(
         "update_working_from_repo {}: repo_path = {}, working_dir_path = {}",
         app_name,
         repo_path.display(),
-        working_dir_path.display()
+        get_app_working_dir_path(app_name).display()
     );
 
     if !repo_path.exists() {
         bail!("Repo for {} not at {}", app_name, repo_path.display());
     }
-    if !working_dir_path.exists() {
-        tokio::fs::create_dir_all(&working_dir_path)
-            .await
-            .with_context(|| format!("Failed to create dir {}", working_dir_path.display()))?;
-    }
-
-    let task_repo_path = repo_path.clone();
-    let task_working_dir_path = working_dir_path.clone();
-    task::spawn_blocking(move || -> Result<()> {
-        let repository = git2::Repository::open(&task_repo_path).with_context(|| {
-            format!(
-                "Failed to open repository at {} before synchronizing app files",
-                task_repo_path.display()
-            )
-        })?;
-        file::copy_dir_recursive_filtered_sync(
-            &task_repo_path,
-            &task_working_dir_path,
-            &[".git"],
-            &|relative_path| match repository.status_should_ignore(relative_path) {
-                Ok(ignored) => ignored,
-                Err(error) => {
-                    warn!(
-                        "Could not determine Git ignore status for {} in {}: {}. Copying it.",
-                        relative_path.display(),
-                        task_repo_path.display(),
-                        error
-                    );
-                    false
-                }
-            },
-        )?;
-        file::sync_delete_extra_files(&task_working_dir_path, &task_repo_path)?;
-        Ok(())
-    })
-    .await??;
-    Ok(())
+    git::checkout_head_to_working(app_name, &repo_path).await
 }
 
 fn get_profile_for_setup<'a>(
@@ -1318,14 +1294,18 @@ async fn update_to_version_inner(app_name: &str, version: &str) -> Result<(), Er
         }
     };
 
-    let commit_oid = git::checkout_version_tag(app_name, &repo_path, version).await?;
-    emit_info!(
-        app_name,
-        "Checked out commit {} for version {}",
-        commit_oid,
-        version
-    );
-    if let Err(sync_error) = update_working_from_repo(app_name).await {
+    // The checkout writes straight into `working`, so a failure part way
+    // through (e.g. a locked file) is rolled back like a failed file sync.
+    let checkout_result = git::checkout_version_tag(app_name, &repo_path, version).await;
+    if let Ok(commit_oid) = &checkout_result {
+        emit_info!(
+            app_name,
+            "Checked out commit {} for version {}",
+            commit_oid,
+            version
+        );
+    }
+    if let Err(sync_error) = checkout_result {
         if let Some(previous_version) = previous_version.as_deref() {
             if let Err(rollback_error) = rollback_to_previous_version(
                 app_name,

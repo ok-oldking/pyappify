@@ -48,6 +48,30 @@ pub fn get_app_base_path(app_name: &str) -> PathBuf {
 pub fn get_app_working_dir_path(app_name: &str) -> PathBuf {
     get_app_base_path(app_name).join(WORKING_DIR_NAME)
 }
+
+/// The working directory that belongs to an app's bare repository: the
+/// `working` folder next to `repo`.
+pub fn get_working_dir_for_repo(repo_path: &Path) -> PathBuf {
+    repo_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(WORKING_DIR_NAME)
+}
+
+/// `to` relative to the directory `from_dir`. Both must be absolute.
+pub fn relative_path(from_dir: &Path, to: &Path) -> PathBuf {
+    let from: Vec<_> = from_dir.components().collect();
+    let to: Vec<_> = to.components().collect();
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut result = PathBuf::new();
+    for _ in common..from.len() {
+        result.push("..");
+    }
+    for component in &to[common..] {
+        result.push(component);
+    }
+    result
+}
 pub fn get_pip_cache_dir() -> PathBuf {
     CWD.join("cache").join("pip")
 }
