@@ -543,6 +543,43 @@ pub type ConfigState = Arc<Mutex<AppConfig>>;
 
 pub static GLOBAL_CONFIG_STATE: OnceCell<ConfigState> = OnceCell::new();
 
+fn normalize_pip_index_url(value: &str, item: &ConfigItem) -> Result<ConfigValue, String> {
+    let normalized = ConfigValue::String(if value == "default" { "" } else { value }.to_string());
+    if item
+        .options
+        .as_ref()
+        .is_some_and(|options| options.contains(&normalized))
+    {
+        Ok(normalized)
+    } else {
+        Err(format!("Unsupported pip index URL '{value}'"))
+    }
+}
+
+pub fn execute_pip_index_url_request(value: Option<&str>) -> Result<String, String> {
+    let state = GLOBAL_CONFIG_STATE
+        .get()
+        .ok_or_else(|| "Configuration is not initialized".to_string())?;
+    let mut config = state
+        .lock()
+        .map_err(|error| format!("Failed to lock configuration: {error}"))?;
+    let item = config
+        .items
+        .get(PIP_INDEX_URL_CONFIG_KEY)
+        .ok_or_else(|| "Pip Index URL configuration is missing".to_string())?;
+    if let Some(value) = value {
+        let normalized = normalize_pip_index_url(value, item)?;
+        config.update_item_value(PIP_INDEX_URL_CONFIG_KEY, normalized);
+    }
+    let item = &config.items[PIP_INDEX_URL_CONFIG_KEY];
+    serde_json::to_string(&serde_json::json!({
+        "pip_index_url": item.value,
+        "default": item.default_value,
+        "options": item.options,
+    }))
+    .map_err(|error| format!("Failed to serialize pip index URL: {error}"))
+}
+
 #[tauri::command]
 pub fn get_config_payload(state: tauri::State<'_, ConfigState>) -> Result<Vec<ConfigItem>, String> {
     let config_manager = state.lock().unwrap();
@@ -578,6 +615,33 @@ fn get_default_pip_url_for_locale(locale: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_and_normalizes_pip_index_url() {
+        let items = AppConfig::get_default_config_items();
+        let item = &items[PIP_INDEX_URL_CONFIG_KEY];
+        for value in item.options.as_ref().unwrap() {
+            assert_eq!(
+                normalize_pip_index_url(&value.to_string(), item).unwrap(),
+                *value
+            );
+        }
+        assert_eq!(
+            normalize_pip_index_url("default", item).unwrap(),
+            ConfigValue::String(String::new())
+        );
+        for value in [
+            "https://example.com/simple/",
+            "https://pypi.org/simple",
+            "DEFAULT",
+            " default ",
+        ] {
+            assert_eq!(
+                normalize_pip_index_url(value, item).unwrap_err(),
+                format!("Unsupported pip index URL '{value}'")
+            );
+        }
+    }
 
     #[test]
     fn uses_aliyun_as_default_pip_url_for_simplified_chinese_locale() {

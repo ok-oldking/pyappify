@@ -1465,6 +1465,7 @@ fn build_python_execution_environment(
     envs.push(("PYAPPIFY_PID".to_string(), std::process::id().to_string()));
     envs.push(("PYAPPIFY_UPGRADEABLE".to_string(), 1.to_string()));
     envs.push(("PYAPPIFY_VERSION".to_string(), pyappify_version));
+    envs.push(("PYAPPIFY_PIP_INDEX_API".to_string(), "1".to_string()));
     envs.push(("PYTHONIOENCODING".to_string(), "utf-8".to_string()));
     envs.push(("PYTHONUNBUFFERED".to_string(), "1".to_string()));
     envs.push(("PYTHONNOUSERSITE".to_string(), "1".to_string()));
@@ -2202,6 +2203,12 @@ mod tests {
             .map(|(_, value)| Path::new(value))
             .unwrap();
 
+        assert_eq!(
+            env.iter()
+                .find(|(name, _)| name == "PYAPPIFY_PIP_INDEX_API")
+                .map(|(_, value)| value.as_str()),
+            Some("1")
+        );
         assert!(app_json_path.is_absolute());
         assert!(app_json_path.ends_with(Path::new("data/apps/example/app.json")));
         assert_eq!(
