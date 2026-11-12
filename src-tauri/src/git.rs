@@ -1,4 +1,5 @@
 //git.rs
+use crate::changelog;
 use crate::utils::path::get_working_dir_for_repo;
 use crate::{app::App, emit_info, emit_update_info, submodule};
 use anyhow::{Context, Result};
@@ -10,7 +11,7 @@ use git2::{
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -23,11 +24,18 @@ use tracing::{debug, info, warn};
 
 const MAX_UPDATE_NOTE_LINES: usize = 10;
 
+/// `{language: notes}` for every launcher language, from an app's changelogs.
+pub type LocalizedNotes = BTreeMap<String, Vec<String>>;
+
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 pub struct VersionHistoryEntry {
     pub version: String,
     pub previous_version: Option<String>,
     pub update_note: Vec<String>,
+    /// The changelog's notes in every language, when the version has them, so
+    /// an app can show its own language rather than the launcher's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub localized_notes: Option<LocalizedNotes>,
 }
 
 static REPO_LOCKS: Lazy<DashMap<PathBuf, Arc<Mutex<()>>>> = Lazy::new(DashMap::new);
@@ -582,16 +590,145 @@ fn get_sorted_tags_by_time(repo: &Repository) -> Result<Vec<String>> {
     Ok(sorted_tags)
 }
 
-fn collect_commit_messages_between_tags(
+/// `{commit: [version tag, ...]}`, each list newest first.
+fn version_tags_by_commit(repo: &Repository) -> Result<HashMap<Oid, Vec<String>>> {
+    let mut tags: HashMap<Oid, Vec<String>> = HashMap::new();
+    for tag in get_sorted_tags_by_time(repo)? {
+        if let Ok(oid) = resolve_tag_commit(repo, &tag) {
+            tags.entry(oid).or_default().push(tag);
+        }
+    }
+    Ok(tags)
+}
+
+/// The text of `path` in commit `oid`, or None if it does not exist.
+fn read_file_at_commit(repo: &Repository, oid: Oid, path: &str) -> Option<String> {
+    let tree = repo.find_commit(oid).ok()?.tree().ok()?;
+    let entry = tree.get_path(Path::new(path)).ok()?;
+    let blob = repo.find_blob(entry.id()).ok()?;
+    Some(String::from_utf8_lossy(blob.content()).into_owned())
+}
+
+/// `{language: notes}` for moving to `target_oid`, or None without a changelog.
+///
+/// A language's notes come from the changelogs in `target_oid` (see
+/// [`changelog`]) when its version tag has an entry in that language or in
+/// English: the entries of every version tag reachable from `target_oid` but
+/// not from `hidden_oid`, newest first, or the target's own when nothing is (a
+/// downgrade). Other languages get `commit_notes()`. None when no language has
+/// an entry.
+fn changelog_notes(
     repo: &Repository,
-    previous_tag: Option<&str>,
-    target_tag: &str,
+    target_oid: Oid,
+    hidden_oid: Option<Oid>,
+    tags_by_commit: &HashMap<Oid, Vec<String>>,
+    commit_notes: impl FnOnce() -> Result<Vec<String>>,
+) -> Result<Option<LocalizedNotes>> {
+    let Some(target_versions) = tags_by_commit.get(&target_oid) else {
+        return Ok(None);
+    };
+    let changelogs: HashMap<&str, changelog::Changelog> = changelog::LANGUAGES
+        .iter()
+        .filter_map(|language| {
+            read_file_at_commit(repo, target_oid, &changelog::changelog_path(language))
+                .map(|text| (*language, changelog::parse_changelog(&text)))
+        })
+        .collect();
+    let empty = changelog::Changelog::new();
+    let english = changelogs.get(changelog::ENGLISH).unwrap_or(&empty);
+    let languages: Vec<&str> = changelog::LANGUAGES
+        .iter()
+        .copied()
+        .filter(|language| {
+            let localized = changelogs.get(language).unwrap_or(&empty);
+            target_versions
+                .iter()
+                .any(|version| changelog::has_entry(localized, english, version))
+        })
+        .collect();
+    if languages.is_empty() {
+        return Ok(None);
+    }
+
+    let mut versions = target_versions.clone();
+    let mut revwalk = repo.revwalk().context("Failed to create revwalk")?;
+    revwalk
+        .push(target_oid)
+        .with_context(|| format!("Failed to walk from commit {target_oid}"))?;
+    if let Some(hidden_oid) = hidden_oid {
+        revwalk
+            .hide(hidden_oid)
+            .with_context(|| format!("Failed to hide commit {hidden_oid}"))?;
+    }
+    revwalk
+        .set_sorting(Sort::TIME)
+        .context("Failed to sort changelog commits")?;
+    for oid in revwalk {
+        let oid = oid.context("Error iterating changelog commits")?;
+        if oid != target_oid {
+            if let Some(tags) = tags_by_commit.get(&oid) {
+                versions.extend(tags.iter().cloned());
+            }
+        }
+    }
+
+    let mut commit_notes = Some(commit_notes);
+    let mut fallback: Option<Vec<String>> = None;
+    let mut notes = LocalizedNotes::new();
+    for language in changelog::LANGUAGES {
+        let language_notes = if languages.contains(&language) {
+            let localized = changelogs.get(language).unwrap_or(&empty);
+            changelog::notes_for_versions(localized, english, &versions)
+        } else {
+            if fallback.is_none() {
+                fallback = Some(commit_notes.take().map_or(Ok(Vec::new()), |notes| notes())?);
+            }
+            fallback.clone().unwrap_or_default()
+        };
+        notes.insert(language.to_string(), language_notes);
+    }
+    Ok(Some(notes))
+}
+
+/// The notes for `language` from [`changelog_notes`], and all of them; or
+/// `commit_notes()` and None when the target has no changelog entry.
+fn notes_in_language(
+    repo: &Repository,
+    target_oid: Oid,
+    hidden_oid: Option<Oid>,
+    language: &str,
+    tags_by_commit: &HashMap<Oid, Vec<String>>,
+    commit_notes: impl Fn() -> Result<Vec<String>>,
+) -> Result<(Vec<String>, Option<LocalizedNotes>)> {
+    match changelog_notes(repo, target_oid, hidden_oid, tags_by_commit, &commit_notes) {
+        Ok(Some(localized)) => {
+            let notes = localized
+                .get(language)
+                .or_else(|| localized.get(changelog::ENGLISH))
+                .cloned()
+                .unwrap_or_default();
+            return Ok((notes, Some(localized)));
+        }
+        Ok(None) => {}
+        Err(error) => warn!("Could not read changelog notes for {target_oid}: {error:#}"),
+    }
+    Ok((commit_notes()?, None))
+}
+
+/// Notes for moving to `target_oid` in `language`: the changelog's when it has
+/// an entry for the target's version, else commit messages.
+#[cfg(test)]
+fn update_notes(
+    repo: &Repository,
+    target_oid: Oid,
+    hidden_oid: Option<Oid>,
+    language: &str,
+    tags_by_commit: &HashMap<Oid, Vec<String>>,
 ) -> Result<Vec<String>> {
-    let target_oid = resolve_tag_commit(repo, target_tag)?;
-    let hidden_oid = previous_tag
-        .map(|tag| resolve_tag_commit(repo, tag))
-        .transpose()?;
-    collect_commit_messages(repo, target_oid, hidden_oid)
+    notes_in_language(repo, target_oid, hidden_oid, language, tags_by_commit, || {
+        collect_commit_messages(repo, target_oid, hidden_oid)
+    })
+    .map(|(notes, _)| notes)
 }
 
 /// Collects up to `MAX_UPDATE_NOTE_LINES` unique, non-empty message lines from
@@ -648,23 +785,37 @@ fn build_version_history(
     repo: &Repository,
     number_versions: usize,
     release_only: bool,
+    language: &str,
 ) -> Result<Vec<VersionHistoryEntry>> {
     let tags = get_sorted_tags_by_time(repo)?
         .into_iter()
         .filter(|tag| !release_only || is_release_version(tag))
         .collect::<Vec<_>>();
+    let tags_by_commit = version_tags_by_commit(repo)?;
 
     tags.iter()
         .take(number_versions)
         .enumerate()
         .map(|(index, version)| {
             let previous_version = tags.get(index + 1).cloned();
-            let update_note =
-                collect_commit_messages_between_tags(repo, previous_version.as_deref(), version)?;
+            let target_oid = resolve_tag_commit(repo, version)?;
+            let hidden_oid = previous_version
+                .as_deref()
+                .map(|tag| resolve_tag_commit(repo, tag))
+                .transpose()?;
+            let (update_note, localized_notes) = notes_in_language(
+                repo,
+                target_oid,
+                hidden_oid,
+                language,
+                &tags_by_commit,
+                || collect_commit_messages(repo, target_oid, hidden_oid),
+            )?;
             Ok(VersionHistoryEntry {
                 version: version.clone(),
                 previous_version,
                 update_note,
+                localized_notes,
             })
         })
         .collect()
@@ -674,13 +825,15 @@ pub async fn get_version_history(
     repo_path: &Path,
     number_versions: usize,
     release_only: bool,
+    language: &str,
 ) -> Result<Vec<VersionHistoryEntry>> {
     let _guard = lock_repo(repo_path).await;
     let repo_path = repo_path.to_path_buf();
+    let language = language.to_string();
 
     task::spawn_blocking(move || {
         let repo = open_repository(&repo_path)?;
-        build_version_history(&repo, number_versions, release_only)
+        build_version_history(&repo, number_versions, release_only, &language)
     })
     .await
     .context("Task for get_version_history panicked or was cancelled")?
@@ -1401,14 +1554,56 @@ pub async fn checkout_existing_revision(
     Ok(oid)
 }
 
+/// Commit-message notes for moving from `head_oid` to `target_commit_oid`,
+/// falling back to the target commit's own message when nothing new is
+/// reachable, for example on a downgrade.
+fn commit_notes_for_update(
+    repo: &Repository,
+    target_commit_oid: Oid,
+    head_oid: Oid,
+    target_tag: &str,
+) -> Result<Vec<String>> {
+    let mut messages = collect_commit_messages(repo, target_commit_oid, Some(head_oid))?;
+    info!(
+        "Found {} commit messages in diff from HEAD ({}) to target {} ({})",
+        messages.len(),
+        head_oid,
+        target_tag,
+        target_commit_oid
+    );
+
+    if messages.is_empty() {
+        let target_commit = repo.find_commit(target_commit_oid).with_context(|| {
+            format!("Failed to find target commit for OID {}", target_commit_oid)
+        })?;
+        if let Ok(full_message) = target_commit.message() {
+            info!(
+                "Diff is empty, using target commit's message: {}",
+                full_message.lines().next().unwrap_or("")
+            );
+            for line in full_message.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    messages.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+    Ok(messages)
+}
+
+/// Notes for updating the checkout to `target_version_tag_name`, in `language`
+/// when the app's changelogs have them, else commit messages.
 pub async fn get_commit_messages_for_version_diff(
     repo_path: &Path,
     target_version_tag_name: &str,
+    language: &str,
 ) -> Result<Vec<String>> {
     let _guard = lock_repo(repo_path).await;
 
     let repo_path_clone = repo_path.to_path_buf();
     let target_tag = target_version_tag_name.to_string();
+    let language = language.to_string();
 
     let messages = task::spawn_blocking(move || -> Result<Vec<String>> {
         let repo = open_repository(&repo_path_clone)?;
@@ -1444,34 +1639,24 @@ pub async fn get_commit_messages_for_version_diff(
             .with_context(|| format!("Failed to peel tag '{}' to a commit object", target_tag))?
             .id();
 
-        let mut messages = collect_commit_messages(&repo, target_commit_oid, Some(head_oid))?;
-        info!(
-            "Found {} commit messages in diff from HEAD ({}) to target {} ({})",
-            messages.len(),
-            head_oid,
-            target_tag,
-            target_commit_oid
-        );
-
-        if messages.is_empty() {
-            let target_commit = repo.find_commit(target_commit_oid).with_context(|| {
-                format!("Failed to find target commit for OID {}", target_commit_oid)
-            })?;
-            if let Ok(full_message) = target_commit.message() {
-                info!(
-                    "Diff is empty, using target commit's message: {}",
-                    full_message.lines().next().unwrap_or("")
-                );
-                for line in full_message.lines() {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        messages.push(trimmed.to_string());
-                    }
-                }
-            }
+        let tags_by_commit = version_tags_by_commit(&repo)?;
+        let (notes, localized) = notes_in_language(
+            &repo,
+            target_commit_oid,
+            Some(head_oid),
+            &language,
+            &tags_by_commit,
+            || commit_notes_for_update(&repo, target_commit_oid, head_oid, &target_tag),
+        )?;
+        if localized.is_some() {
+            info!(
+                "Using {} changelog notes ({}) for target {}",
+                notes.len(),
+                language,
+                target_tag
+            );
         }
-
-        Ok(messages)
+        Ok(notes)
     })
     .await
     .context("Task for get_commit_messages panicked or was cancelled")??;
@@ -1483,10 +1668,11 @@ mod tests {
     use super::{
         build_version_history, checkout_existing_revision, checkout_head_to_working,
         checkout_version_tag, compare_version_tags, ensure_bare_layout, is_release_version,
-        is_version_tag, open_repository, resolve_tag_commit,
+        is_version_tag, open_repository, resolve_tag_commit, update_notes, version_tags_by_commit,
     };
     use git2::{Repository, Signature};
     use std::cmp::Ordering;
+    use std::path::Path;
 
     fn commit_and_tag(repo: &Repository, root: &std::path::Path, tag: &str, message: &str) {
         let file_path = root.join("history.txt");
@@ -1806,7 +1992,7 @@ mod tests {
         commit_and_tag(&repo, &root, "v1.1.0-beta.1", "beta change");
         commit_and_tag(&repo, &root, "v1.1.0", "release change");
 
-        let releases = build_version_history(&repo, 2, true).unwrap();
+        let releases = build_version_history(&repo, 2, true, "en").unwrap();
         assert_eq!(releases[0].version, "v1.1.0");
         assert_eq!(releases[0].previous_version.as_deref(), Some("v1.0.0"));
         assert_eq!(
@@ -1814,12 +2000,73 @@ mod tests {
             vec!["release change", "beta change"]
         );
 
-        let all_versions = build_version_history(&repo, 2, false).unwrap();
+        let all_versions = build_version_history(&repo, 2, false, "en").unwrap();
         assert_eq!(
             all_versions[0].previous_version.as_deref(),
             Some("v1.1.0-beta.1")
         );
         assert_eq!(all_versions[0].update_note, vec!["release change"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn version_history_prefers_changelog_notes_in_the_language() {
+        let root = unique_temp_dir("changelog-notes");
+        let repo = Repository::init(&root).unwrap();
+        commit_and_tag(&repo, &root, "v1.0.0", "initial release");
+        commit_and_tag(&repo, &root, "v1.1.0", "commit note 1.1.0");
+        std::fs::write(
+            root.join("CHANGELOG.md"),
+            "# Changelog
+
+## v1.2.0
+- English 1.2.0
+
+## [1.1.0]
+- English 1.1.0
+",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("CHANGELOG.ja.md"),
+            "## v1.2.0
+- 日本語 1.2.0
+",
+        )
+        .unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("CHANGELOG.md")).unwrap();
+        index.add_path(Path::new("CHANGELOG.ja.md")).unwrap();
+        index.write().unwrap();
+        commit_and_tag(&repo, &root, "v1.2.0", "commit note 1.2.0");
+
+        let japanese = build_version_history(&repo, 3, true, "ja").unwrap();
+        assert_eq!(japanese[0].update_note, vec!["日本語 1.2.0"]);
+        // v1.1.0's own tree has no changelog, so it keeps its commit messages.
+        assert_eq!(japanese[1].update_note, vec!["commit note 1.1.0"]);
+        let localized = japanese[0].localized_notes.as_ref().unwrap();
+        assert_eq!(localized["en"], vec!["English 1.2.0"]);
+        assert_eq!(localized["ko"], localized["en"]);
+        assert!(japanese[1].localized_notes.is_none());
+
+        let tags = version_tags_by_commit(&repo).unwrap();
+        let target = resolve_tag_commit(&repo, "v1.2.0").unwrap();
+        let from = resolve_tag_commit(&repo, "v1.0.0").unwrap();
+        assert_eq!(
+            update_notes(&repo, target, Some(from), "ja", &tags).unwrap(),
+            vec!["日本語 1.2.0", "English 1.1.0"]
+        );
+        assert_eq!(
+            update_notes(&repo, target, Some(from), "ko", &tags).unwrap(),
+            vec!["English 1.2.0", "English 1.1.0"]
+        );
+        // A downgrade shows the target's own entry.
+        commit_and_tag(&repo, &root, "v1.3.0", "commit note 1.3.0");
+        let newer = resolve_tag_commit(&repo, "v1.3.0").unwrap();
+        assert_eq!(
+            update_notes(&repo, target, Some(newer), "en", &tags).unwrap(),
+            vec!["English 1.2.0"]
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1953,7 +2200,7 @@ mod tests {
         revwalk.push_glob("refs/tags/*").unwrap();
         println!("commits: {}", revwalk.count());
         assert!(super::kept_history_complete(&repo, &kept).unwrap());
-        let history = super::build_version_history(&repo, 10, false).unwrap();
+        let history = super::build_version_history(&repo, 10, false, "en").unwrap();
         for entry in &history {
             println!(
                 "{} <- {:?}: {:?}",

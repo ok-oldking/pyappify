@@ -67,6 +67,30 @@ This method uses the PyAppify GitHub Action to bundle the launcher, your code, a
 
 refer to the docs at [https://github.com/ok-oldking/pyappify-action](https://github.com/ok-oldking/pyappify-action)
 
+## Update notes
+
+By default, a version's update notes are the commit messages since the previous version. For curated notes in the user's language, keep changelogs at the root of the app repository:
+
+```text
+CHANGELOG.md          English, and the fallback for other languages
+CHANGELOG.zh-CN.md    also zh-TW, es, ja, ko
+```
+
+```markdown
+# Changelog
+
+## v1.4.0 (2026-11-12)
+- Added a dark theme
+- Fixed a crash when a folder name
+  contained emoji
+```
+
+`## <tag>` starts a version (`[v1.4.0]` and `1.4.0` also match the tag `v1.4.0`; text after it is ignored), `- ` starts a note, and an indented line continues it. Other lines are ignored.
+
+The changelogs are read from the version being installed. When it has an entry in the user's language or in English, the notes are the entries of every version the update brings in, each in the user's language or else English. Otherwise, as for branches and pull requests, they are commit messages. pyappify-python's standalone updater reads the same files the same way.
+
+[examples/claude-skills/release-changelog](examples/claude-skills/release-changelog/SKILL.md) is a Claude Code skill that writes and translates the entry when you tag a release; copy it to `.claude/skills/` in your app's repository.
+
 ## Startup arguments
 
 Installer builds can prepare an exact application tag, including a prerelease:
@@ -102,6 +126,6 @@ Version history is available as a headless JSON command:
 pyappify.exe --get-version-list --number-versions 10 --release-only true
 ```
 
-`number_versions` defaults to `10`, and `release_only` defaults to `true`. Hyphenated and underscored spellings are accepted. Each returned entry contains `version`, `previous_version`, and `update_note`; the notes are the commits between that version and the preceding filtered version. Use `--release-only false` (or `--include-prerelease`) to include prerelease tags.
+`number_versions` defaults to `10`, and `release_only` defaults to `true`. Hyphenated and underscored spellings are accepted. Each returned entry contains `version`, `previous_version`, and `update_note`: the version's notes from the app's changelogs in the launcher's language (see [Update notes](#update-notes)), or else the commits between that version and the preceding filtered version. Entries with changelog notes also have `localized_notes`, the notes in every language. Use `--release-only false` (or `--include-prerelease`) to include prerelease tags.
 
 The equivalent environment variables are `PYAPPIFY_AUTO_START` and `PYAPPIFY_UPDATE_METHOD`. Command-line options take precedence. These overrides apply only to the current run and are never written to the saved configuration.

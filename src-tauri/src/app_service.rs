@@ -788,7 +788,8 @@ pub async fn get_update_notes(app_name: String, version: String) -> Result<Vec<S
     let _guard = app_lock.lock().await;
     let app = get_app_by_name(&app_name).await?;
     let messages =
-        git::get_commit_messages_for_version_diff(&app.get_repo_path(), &version).await?;
+        git::get_commit_messages_for_version_diff(&app.get_repo_path(), &version, get_locale())
+            .await?;
     info!(
         "get_update_notes for {} version {} messages: {:?}",
         app.name, version, messages
@@ -804,7 +805,13 @@ pub async fn get_version_list(
     let app_lock = get_app_lock(&app.name).await?;
     let _guard = app_lock.lock().await;
     ensure_repository(&app).await?;
-    Ok(git::get_version_history(&app.get_repo_path(), number_versions, release_only).await?)
+    Ok(git::get_version_history(
+        &app.get_repo_path(),
+        number_versions,
+        release_only,
+        get_locale(),
+    )
+    .await?)
 }
 
 async fn get_app_by_name(app_name: &str) -> Result<App, Error> {
@@ -1280,8 +1287,12 @@ async fn update_to_version_inner(app_name: &str, version: &str) -> Result<(), Er
     let update_note = if previous_version.as_deref() == Some(version) {
         Vec::new()
     } else {
-        match git::get_commit_messages_for_version_diff(&path::get_app_repo_path(app_name), version)
-            .await
+        match git::get_commit_messages_for_version_diff(
+            &path::get_app_repo_path(app_name),
+            version,
+            get_locale(),
+        )
+        .await
         {
             Ok(messages) => messages,
             Err(error) => {

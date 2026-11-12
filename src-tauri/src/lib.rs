@@ -1,6 +1,7 @@
 // src/lib.rs
 mod app;
 mod app_service;
+mod changelog;
 mod config_manager;
 mod emitter;
 mod execute_python;
