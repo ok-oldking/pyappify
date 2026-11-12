@@ -6,6 +6,7 @@ mod config_manager;
 mod emitter;
 mod execute_python;
 mod git;
+mod pip_mirror;
 mod python_env;
 mod runas;
 mod submodule;

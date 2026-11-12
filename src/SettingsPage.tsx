@@ -44,11 +44,9 @@ const LANGUAGE_CONFIG_KEY = "Language";
 const languageNames: { [key: string]: string } = { 'en': 'English', 'zh-CN': '简体中文', 'zh-TW': '繁體中文', 'es': 'Español', 'ja': '日本語', 'ko': '한국인' };
 
 const getPipIndexUrlName = (url: string, t: (key: string) => string) => {
-    if (url === '') return t('System Default');
+    if (url === '') return t('Automatic (fastest mirror)');
     if (url.includes('pypi.org')) return t('PyPI');
-    if (url.includes('tsinghua')) return t('Tsinghua');
     if (url.includes('aliyun')) return t('Aliyun');
-    if (url.includes('ustc')) return t('USTC');
     if (url.includes('huaweicloud')) return t('Huawei Cloud');
     if (url.includes('tencent')) return t('Tencent Cloud');
     return url;

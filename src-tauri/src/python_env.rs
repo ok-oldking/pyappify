@@ -5,7 +5,8 @@ use crate::utils::error::Error;
 use crate::utils::path::{get_python_dir, get_python_exe};
 use crate::utils::process::RemovePythonEnvsExt;
 use crate::{
-    config_manager::GLOBAL_CONFIG_STATE, emit_info, emit_update_info, err, utils::command,
+    config_manager::GLOBAL_CONFIG_STATE, emit_error, emit_info, emit_update_info, err,
+    pip_mirror, utils::command,
 };
 use anyhow::{anyhow, Context, Result};
 use flate2::read::GzDecoder;
@@ -16,7 +17,9 @@ use reqwest::Url;
 use std::io::Write;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use rust_i18n::t;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::{fs, io};
 use tar::Archive;
 use tracing::{error, info, warn};
@@ -487,25 +490,7 @@ pub async fn install_requirements(
     } else {
         format!("{} -m pip install {}", python_exe.display(), requirements)
     };
-    let mut pip_install_cmd = new_cmd(python_exe);
-    pip_install_cmd
-        .current_dir(project_dir)
-        .arg("-m")
-        .arg("pip")
-        .arg("install")
-        .arg("--no-warn-script-location");
-    pip_install_cmd.clear_python_envs();
-    let mut use_config_index_url = true;
-    if !pip_args.is_empty() {
-        if pip_args
-            .split_whitespace()
-            .any(|arg| arg == "--index-url" || arg == "-i")
-        {
-            use_config_index_url = false;
-        }
-        pip_install_cmd.args(pip_args.split_whitespace());
-    }
-    if requirements.ends_with(".txt") {
+    let requirements_path = if requirements.ends_with(".txt") {
         let requirements_path = project_dir.join(requirements);
         if !requirements_path.exists() {
             return Err(err!(
@@ -513,24 +498,71 @@ pub async fn install_requirements(
                 requirements_path.display()
             ));
         }
-        pip_install_cmd.arg("-r").arg(&requirements_path);
+        Some(requirements_path)
     } else {
-        pip_install_cmd.arg(requirements);
+        None
+    };
+    let explicit_index = pip_args.split_whitespace().any(|arg| {
+        arg == "--index-url"
+            || arg == "-i"
+            || arg.starts_with("--index-url=")
+            || (arg.starts_with("-i") && !arg.starts_with("--"))
+    });
+    let mut index_url = if explicit_index { None } else { pip_index_url };
+    let mut automatic = false;
+    if !explicit_index
+        && index_url.is_none()
+        && !pip_mirror::pip_has_index_config(&python_exe).await
+    {
+        index_url = pip_mirror::auto_url(app_name).await;
+        automatic = index_url.is_some();
     }
-    if let Some(cache_dir) = pip_cache_dir {
-        pip_install_cmd.arg("--cache-dir").arg(cache_dir);
+    if !explicit_index {
+        emit_info!(app_name, "set --index-url {:?}", index_url);
     }
-    if use_config_index_url {
-        emit_info!(app_name, "set --index-url {:?}", pip_index_url);
-        if let Some(index_url) = pip_index_url {
+    let build_pip_install_cmd = |index_url: Option<&str>| {
+        let mut pip_install_cmd = new_cmd(&python_exe);
+        pip_install_cmd
+            .current_dir(project_dir)
+            .arg("-m")
+            .arg("pip")
+            .arg("install")
+            .arg("--no-warn-script-location");
+        pip_install_cmd.clear_python_envs();
+        pip_install_cmd.args(pip_args.split_whitespace());
+        match &requirements_path {
+            Some(requirements_path) => pip_install_cmd.arg("-r").arg(requirements_path),
+            None => pip_install_cmd.arg(requirements),
+        };
+        if let Some(cache_dir) = &pip_cache_dir {
+            pip_install_cmd.arg("--cache-dir").arg(cache_dir);
+        }
+        if let Some(index_url) = index_url {
             pip_install_cmd.arg("--index-url").arg(index_url);
         }
-    }
+        pip_install_cmd
+    };
 
     let marker_path = project_dir.join(PIP_UPDATE_NEEDED_MARKER);
     fs::File::create(&marker_path).ok();
 
-    command::run_command_and_stream_output(pip_install_cmd, app_name, &pip_install_desc).await?;
+    let mut result = run_pip_install(
+        build_pip_install_cmd(index_url.as_deref()),
+        app_name,
+        &pip_install_desc,
+        index_url.as_deref(),
+    )
+    .await;
+    if result.is_err() && automatic {
+        emit_info!(
+            app_name,
+            "pip install with {} failed; retrying with pip's default index",
+            index_url.as_deref().unwrap_or_default()
+        );
+        pip_mirror::forget_auto_url();
+        result = run_pip_install(build_pip_install_cmd(None), app_name, &pip_install_desc, None).await;
+    }
+    result?;
 
     if marker_path.exists() {
         let _ = fs::remove_file(&marker_path);
@@ -543,6 +575,41 @@ pub async fn install_requirements(
         requirements
     );
     Ok(())
+}
+
+/// Run pip; a failure caused by an unreachable index becomes a translated
+/// hint to check the network or switch the pip mirror.
+#[cfg(target_os = "windows")]
+async fn run_pip_install(
+    pip_install_cmd: tokio::process::Command,
+    app_name: &str,
+    pip_install_desc: &str,
+    index_url: Option<&str>,
+) -> Result<(), Error> {
+    let output = Arc::new(Mutex::new(String::new()));
+    match command::run_command_and_capture_output(
+        pip_install_cmd,
+        app_name,
+        pip_install_desc,
+        output.clone(),
+    )
+    .await
+    {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            let pip_output = output.lock().unwrap().clone();
+            if !pip_mirror::is_network_error(&pip_output) {
+                return Err(error);
+            }
+            let message = t!(
+                "message.pip_network_error",
+                index = index_url.unwrap_or("pip default")
+            )
+            .to_string();
+            emit_error!(app_name, "{}", message);
+            Err(Error::Msg(message))
+        }
+    }
 }
 
 #[cfg(not(target_os = "windows"))]

@@ -27,3 +27,10 @@ message.version_update_success:
   es: "Se actualizó correctamente a %{version}."
   ja: "%{version} への更新に成功しました。"
   ko: "%{version}(으)로 성공적으로 업데이트되었습니다."
+message.pip_network_error:
+  en: "Could not download Python packages from the package index (%{index}). Check your network connection, or switch to another pip mirror in Settings and try again."
+  zh-CN: "无法从软件包索引（%{index}）下载 Python 包。请检查网络连接，或在设置中切换到其他 pip 镜像源后重试。"
+  zh-TW: "無法從套件索引（%{index}）下載 Python 套件。請檢查網路連線，或在設定中切換到其他 pip 鏡像來源後重試。"
+  es: "No se pudieron descargar los paquetes de Python desde el índice de paquetes (%{index}). Revisa tu conexión de red, o cambia a otro espejo de pip en Configuración e inténtalo de nuevo."
+  ja: "パッケージインデックス (%{index}) から Python パッケージをダウンロードできませんでした。ネットワーク接続を確認するか、設定で別の pip ミラーに切り替えてもう一度お試しください。"
+  ko: "패키지 인덱스(%{index})에서 Python 패키지를 내려받을 수 없습니다. 네트워크 연결을 확인하거나, 설정에서 다른 pip 미러로 바꾼 뒤 다시 시도하세요."

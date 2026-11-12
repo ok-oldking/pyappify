@@ -1,4 +1,5 @@
 // src/config_manager.rs
+use crate::pip_mirror;
 use crate::python_env::get_supported_python_versions;
 use crate::utils::error::Error;
 use crate::utils::path::get_config_dir;
@@ -19,13 +20,8 @@ const PIP_CACHE_DIR_OPTION_SYSTEM_DEFAULT: &str = "System Default";
 const DEFAULT_PYTHON_VERSION_CONFIG_KEY: &str = "Default Python Version";
 
 const PIP_INDEX_URL_CONFIG_KEY: &str = "Pip Index URL";
-const PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT: &str = "";
-const PIP_INDEX_URL_OPTION_PYPI: &str = "https://pypi.org/simple/";
-const PIP_INDEX_URL_OPTION_TSINGHUA: &str = "https://pypi.tuna.tsinghua.edu.cn/simple";
-const PIP_INDEX_URL_OPTION_ALIYUN: &str = "https://mirrors.aliyun.com/pypi/simple/";
-const PIP_INDEX_URL_OPTION_USTC: &str = "https://mirrors.ustc.edu.cn/pypi/simple/";
-const PIP_INDEX_URL_OPTION_HUAWEI: &str = "https://repo.huaweicloud.com/repository/pypi/simple/";
-const PIP_INDEX_URL_OPTION_TENCENT: &str = "https://mirrors.cloud.tencent.com/pypi/simple/";
+// Empty means automatic: the fastest mirror, unless pip has its own index set.
+const PIP_INDEX_URL_OPTION_AUTOMATIC: &str = "";
 
 // Read only for the one-time migration to per-app preferences.
 const LEGACY_UPDATE_METHOD_CONFIG_KEY: &str = "Update Method";
@@ -123,6 +119,7 @@ impl AppConfig {
         let config_dir = get_config_dir();
         let config_file_path = config_dir.join("app_config.json");
 
+        pip_mirror::remember_original_pip_index_url();
         let mut instance = Self {
             items: Self::get_default_config_items(),
             config_path: config_file_path,
@@ -198,29 +195,23 @@ impl AppConfig {
             },
         );
 
-        let locale = get_default_locale();
-        let default_pip_url = get_default_pip_url_for_locale(&locale).to_string();
-        info!(
-            "System locale is: {}, default pip URL is: {}",
-            locale, default_pip_url
+        let default_pip_url = PIP_INDEX_URL_OPTION_AUTOMATIC.to_string();
+        let mut pip_url_options =
+            vec![ConfigValue::String(PIP_INDEX_URL_OPTION_AUTOMATIC.to_string())];
+        pip_url_options.extend(
+            pip_mirror::MIRROR_URLS
+                .iter()
+                .map(|url| ConfigValue::String(url.to_string())),
         );
 
         items.insert(
             PIP_INDEX_URL_CONFIG_KEY.to_string(),
             ConfigItem {
                 name: PIP_INDEX_URL_CONFIG_KEY.to_string(),
-                description: "Specifies the pip index URL. Select the empty option to use the system's default pip configuration (equivalent to not setting an index URL).".to_string(),
+                description: "Specifies the pip index URL. The empty option picks the fastest mirror automatically, unless pip's own configuration or PIP_INDEX_URL already names an index.".to_string(),
                 value: ConfigValue::String(default_pip_url.clone()),
                 default_value: ConfigValue::String(default_pip_url),
-                options: Some(vec![
-                    ConfigValue::String(PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT.to_string()),
-                    ConfigValue::String(PIP_INDEX_URL_OPTION_PYPI.to_string()),
-                    ConfigValue::String(PIP_INDEX_URL_OPTION_TSINGHUA.to_string()),
-                    ConfigValue::String(PIP_INDEX_URL_OPTION_ALIYUN.to_string()),
-                    ConfigValue::String(PIP_INDEX_URL_OPTION_USTC.to_string()),
-                    ConfigValue::String(PIP_INDEX_URL_OPTION_HUAWEI.to_string()),
-                    ConfigValue::String(PIP_INDEX_URL_OPTION_TENCENT.to_string()),
-                ]),
+                options: Some(pip_url_options),
             },
         );
 
@@ -438,9 +429,17 @@ impl AppConfig {
     fn update_pip_index_url_env_var_from_config(&self) {
         match self.get_item_value(PIP_INDEX_URL_CONFIG_KEY) {
             Some(ConfigValue::String(value)) => {
-                if value == PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT || value.is_empty() {
-                    env::remove_var("PIP_INDEX_URL");
-                    info!("Unset PIP_INDEX_URL, using system default pip index.");
+                if value == PIP_INDEX_URL_OPTION_AUTOMATIC || value.is_empty() {
+                    match pip_mirror::original_pip_index_url() {
+                        Some(original) => {
+                            env::set_var("PIP_INDEX_URL", &original);
+                            info!("Restored the user's PIP_INDEX_URL: {}", original);
+                        }
+                        None => {
+                            env::remove_var("PIP_INDEX_URL");
+                            info!("Unset PIP_INDEX_URL; pip installs pick a mirror automatically.");
+                        }
+                    }
                 } else {
                     env::set_var("PIP_INDEX_URL", &value);
                     info!("Set PIP_INDEX_URL to: {}", value);
@@ -496,7 +495,7 @@ impl AppConfig {
     pub fn get_effective_pip_index_url(&self) -> Option<String> {
         match self.get_item_value(PIP_INDEX_URL_CONFIG_KEY) {
             Some(ConfigValue::String(value)) => {
-                if value == PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT || value.is_empty() {
+                if value == PIP_INDEX_URL_OPTION_AUTOMATIC || value.is_empty() {
                     None
                 } else {
                     Some(value)
@@ -604,14 +603,6 @@ pub fn get_default_locale() -> String {
     sys_locale::get_locale().map_or("en-US".to_string(), |locale| locale.replace('_', "-"))
 }
 
-fn get_default_pip_url_for_locale(locale: &str) -> &'static str {
-    if locale == "zh-CN" {
-        PIP_INDEX_URL_OPTION_ALIYUN
-    } else {
-        PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,19 +635,31 @@ mod tests {
     }
 
     #[test]
-    fn uses_aliyun_as_default_pip_url_for_simplified_chinese_locale() {
-        assert_eq!(
-            get_default_pip_url_for_locale("zh-CN"),
-            PIP_INDEX_URL_OPTION_ALIYUN
-        );
+    fn pip_url_defaults_to_automatic_without_tuna_or_ustc() {
+        let items = AppConfig::get_default_config_items();
+        let item = &items[PIP_INDEX_URL_CONFIG_KEY];
+        assert_eq!(item.default_value, ConfigValue::String(String::new()));
+        let options: Vec<String> = item
+            .options
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|value| value.to_string())
+            .collect();
+        assert_eq!(options[0], "");
+        assert!(options.contains(&pip_mirror::ALIYUN_URL.to_string()));
+        assert!(!options
+            .iter()
+            .any(|url| url.contains("tsinghua") || url.contains("ustc")));
     }
 
     #[test]
-    fn uses_system_default_pip_url_for_other_locales() {
-        assert_eq!(
-            get_default_pip_url_for_locale("en-US"),
-            PIP_INDEX_URL_OPTION_SYSTEM_DEFAULT
-        );
+    fn removed_mirror_resets_to_automatic() {
+        let items = AppConfig::get_default_config_items();
+        let mut item = items[PIP_INDEX_URL_CONFIG_KEY].clone();
+        item.value = ConfigValue::String("https://pypi.tuna.tsinghua.edu.cn/simple".to_string());
+        item.validate_and_normalize();
+        assert_eq!(item.value, ConfigValue::String(String::new()));
     }
 
     #[test]
