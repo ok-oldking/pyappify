@@ -28,7 +28,7 @@ website: "https://example.com/downloads" # Optional website opened by clicking t
 keep_releases: 30 # Optional. Keep only the 30 newest releases (and newer prereleases) in the app's git repository: new installs make a shallow clone, updates fetch only those tags. Omit to keep all.
 profiles:
   - name: "release" 
-    git_url: "https://github.com/ok-oldking/pyappify-action.git" # The repo url to clone. Must have tags for version management; semver is recommended.
+    git_url: "https://github.com/ok-oldking/pyappify-action.git" # The repo url to clone. Its version tags are the versions (see Version tags); semver is recommended.
     main_script: "main.py" # If ending with .py, will use python venv to run. Otherwise, will search in the working dir and the venv's Script/bin path.
     requires_python: "3.12" # Supports python 3.7 - 3.13.
     requirements: "requirements.txt"  # Supports a requirements.txt file or pyproject.toml like .[dev,docs].
@@ -85,11 +85,23 @@ CHANGELOG.zh-CN.md    also zh-TW, es, ja, ko
   contained emoji
 ```
 
-`## <tag>` starts a version (`[v1.4.0]` and `1.4.0` also match the tag `v1.4.0`; text after it is ignored), `- ` starts a note, and an indented line continues it. Other lines are ignored.
+`## <tag>` starts a version (`[v1.4.0]` and `1.4.0` also match the tag `v1.4.0`, the tag's name prefix is ignored, so `## 1.4.0` matches `release-v1.4.0`; text after it is ignored), `- ` starts a note, and an indented line continues it. Other lines are ignored.
 
 The changelogs are read from the version being installed. When it has an entry in the user's language or in English, the notes are the entries of every version the update brings in, each in the user's language or else English. Otherwise, as for branches and pull requests, they are commit messages. pyappify-python's standalone updater reads the same files the same way.
 
 [examples/claude-skills/release-changelog](examples/claude-skills/release-changelog/SKILL.md) is a Claude Code skill that writes and translates the entry when you tag a release; copy it to `.claude/skills/` in your app's repository.
+
+## Version tags
+
+A tag is a version when it has the form `[prefix] [v] N[.N[.N[.N]]] [prerelease word [number]]`; other tags are ignored. The same rules are used by pyappify-action and the `pyappify` Python package.
+
+- An optional name prefix ending in `-`, `_` or `/` (`release-1.2.0`, `app-v1.2.0`, `app/v1.2.0`) is ignored when comparing.
+- One to four number parts (`v1.2`, `v1.2.3.4`, `2026.11.17`); missing parts count as `0`. A single number needs the `v` (`v5`, `app-v5`).
+- An optional prerelease word and number, with or without `-`, `.` or `_`, in any case: `1.2.3-beta.2`, `1.2.3b2`, `1.2.3rc1`, `1.2.3-preview`, `1.2.3.dev4`.
+
+Oldest first: `dev` < `alpha` (`a`) < `beta` (`b`) < any other word < `rc` (`c`, `pre`, `preview`) < release < `post`. Versions with a prerelease word other than `post` are test versions.
+
+If the repository has no version tags, its versions are the 30 most recent commits of the default branch, newest first, named by their 7-character hash. All of them count as releases, so the update modes update to the newest commit.
 
 ## Startup arguments
 

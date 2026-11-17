@@ -120,6 +120,7 @@ export default function AppCard({
         app.update_target_version ?? '',
         app.current_version,
         'Upgrade',
+        app.available_versions,
     );
     const disableRowActions = isBusy || isActionLoading || app.update_state !== 'idle';
     const disableUpdateControls = isBusy || isActionLoading || app.update_state === 'updating';
@@ -299,7 +300,7 @@ export default function AppCard({
                                             {otherVersions.map(v => (
                                                 <MenuItem key={v} value={v}>
                                                     {v} {t(getVersionChannelLabelKey(v))}
-                                                    {compareVersions(v, app.current_version!) > 0 ? ` ${t('(Upgrade)')}` : ` ${t('(Downgrade)')}`}
+                                                    {compareVersions(v, app.current_version!, app.available_versions) > 0 ? ` ${t('(Upgrade)')}` : ` ${t('(Downgrade)')}`}
                                                 </MenuItem>
                                             ))}
                                         </Select>

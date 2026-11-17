@@ -72,85 +72,163 @@ fn resolve_tag_commit(repo: &Repository, tag: &str) -> Result<Oid> {
         .id())
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-enum Prerelease {
-    Alpha(Option<u64>),
-    Beta(Option<u64>),
-    Rc(Option<u64>),
-    Release,
-}
-
-impl Prerelease {
-    fn rank(&self) -> u8 {
-        match self {
-            Self::Alpha(_) => 0,
-            Self::Beta(_) => 1,
-            Self::Rc(_) => 2,
-            Self::Release => 3,
-        }
-    }
-
-    fn number(&self) -> Option<u64> {
-        match self {
-            Self::Alpha(number) | Self::Beta(number) | Self::Rc(number) => *number,
-            Self::Release => None,
-        }
-    }
-
-    fn is_release(&self) -> bool {
-        matches!(self, Self::Release)
-    }
-}
-
-impl Ord for Prerelease {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.rank()
-            .cmp(&other.rank())
-            .then_with(|| self.number().cmp(&other.number()))
-    }
-}
-
-impl PartialOrd for Prerelease {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
+/// Version tags, parsed and ordered the same way as the UI (src/versions.ts),
+/// pyappify-action (versions.js) and pyappify-python (pyappify/versions.py):
+///
+/// `[prefix] [v] N[.N[.N[.N]]] [prerelease word [number]]`
+///
+/// - prefix: a name ending in `-`, `_` or `/` (`release-`, `app-v`, `app/`), ignored for ordering.
+/// - one to four number parts; missing parts count as 0 (`v1.2` == `v1.2.0`). A single
+///   number needs the `v` (`v5`, `app-v5`), so plain numbers, `pr/7` and commit
+///   hashes are no versions.
+/// - the prerelease word may follow with or without `-`, `.` or `_`, and so may its number:
+///   `1.2.3-beta.2`, `1.2.3b2`, `1.2.3rc1`, `1.2.3-preview`, `1.2.3.post1`, in any case.
+///   dev < alpha (a) < beta (b) < any other word < rc (c, pre, preview) < release < post.
+///   A missing prerelease number sorts before any number.
+static VERSION_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"^([A-Za-z][A-Za-z0-9_.-]*?[-_/])??([vV])?(\d+(?:\.\d+){0,3})(?:[-._]?([A-Za-z]+)(?:[-._]?(\d+))?)?$",
+    )
+    .unwrap()
+});
+const OTHER_RANK: u8 = 3;
+const RELEASE_RANK: u8 = 5;
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct VersionKey {
-    major: u64,
-    minor: u64,
-    patch: u64,
-    prerelease: Prerelease,
+    parts: [u64; 4],
+    rank: u8,
+    number: Option<u64>,
+    /// The prerelease word when it is none of the known ones, else empty.
+    word: String,
+}
+
+impl VersionKey {
+    fn is_release(&self) -> bool {
+        self.rank >= RELEASE_RANK
+    }
+}
+
+fn word_rank(word: &str) -> u8 {
+    match word {
+        "dev" => 0,
+        "alpha" | "a" => 1,
+        "beta" | "b" => 2,
+        "rc" | "c" | "pre" | "preview" => 4,
+        "post" => 6,
+        _ => OTHER_RANK,
+    }
+}
+
+/// Without version tags, an app's versions are its most recent commits on the
+/// default branch, newest first, named by their first `COMMIT_VERSION_LENGTH`
+/// hex digits (like pyappify-action and pyappify-python). All count as releases.
+pub const RECENT_COMMIT_VERSIONS: usize = 30;
+const COMMIT_VERSION_LENGTH: usize = 7;
+/// Where the remote's default branch (its HEAD) is fetched to.
+const DEFAULT_BRANCH_REF: &str = "refs/pyappify/default-branch";
+
+/// A commit version: 7 to 40 hex digits that are no version tag.
+pub fn is_commit_version(version: &str) -> bool {
+    (COMMIT_VERSION_LENGTH..=40).contains(&version.len())
+        && version.chars().all(|c| c.is_ascii_hexdigit())
+        && !is_version_tag(version)
+}
+
+fn commit_version_name(oid: Oid) -> String {
+    oid.to_string()[..COMMIT_VERSION_LENGTH].to_string()
+}
+
+/// Fetches the remote's default branch to `DEFAULT_BRANCH_REF`.
+fn fetch_default_branch(repo: &Repository, app_name: &str) -> Result<()> {
+    fetch_from_origin(
+        repo,
+        app_name,
+        &[format!("+HEAD:{DEFAULT_BRANCH_REF}")],
+        None,
+        false,
+        Some("Fetching the default branch"),
+    )
+}
+
+/// The `RECENT_COMMIT_VERSIONS` most recent commits of the fetched default branch
+/// (else of HEAD), newest first, with their version names.
+fn recent_commit_versions(repo: &Repository) -> Result<Vec<(String, Oid)>> {
+    let tip = match repo.refname_to_id(DEFAULT_BRANCH_REF) {
+        Ok(oid) => oid,
+        Err(_) => repo
+            .head()
+            .context("Failed to get repo HEAD")?
+            .target()
+            .context("HEAD has no target OID")?,
+    };
+    let mut revwalk = repo.revwalk().context("Failed to create revwalk")?;
+    revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
+    revwalk
+        .push(tip)
+        .with_context(|| format!("Failed to walk from commit {tip}"))?;
+    let mut commits = Vec::new();
+    for oid in revwalk.take(RECENT_COMMIT_VERSIONS) {
+        let oid = oid.context("Failed to walk the commit history")?;
+        commits.push((commit_version_name(oid), oid));
+    }
+    Ok(commits)
+}
+
+/// Whether `candidate` is newer than `current` among `available_versions`
+/// (newest first for commit versions).
+pub fn is_newer_version(available_versions: &[String], candidate: &str, current: &str) -> bool {
+    if is_commit_version(candidate) || is_commit_version(current) {
+        let position = |version: &str| available_versions.iter().position(|v| v == version);
+        return match (position(candidate), position(current)) {
+            (Some(candidate), Some(current)) => candidate < current,
+            (Some(_), None) => true,
+            _ => false,
+        };
+    }
+    compare_version_tags(candidate, current) == Some(Ordering::Greater)
+}
+
+/// The version part of a version tag, without its name prefix and `v`
+/// (`release-v1.2.0` -> `1.2.0`), or None if it is not a version tag.
+pub fn version_without_prefix(tag_name: &str) -> Option<&str> {
+    parse_version_tag(tag_name)?;
+    let start = VERSION_REGEX.captures(tag_name)?.get(3)?.start();
+    Some(&tag_name[start..])
 }
 
 fn parse_version_tag(tag_name: &str) -> Option<VersionKey> {
-    static VERSION_REGEX: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"^v?(\d+)\.(\d+)\.(\d+)(?:(?:-|\.)(alpha|beta|rc)(?:\.(\d+))?)?$").unwrap()
-    });
-
     let caps = VERSION_REGEX.captures(tag_name)?;
-    let major = caps.get(1)?.as_str().parse::<u64>().ok()?;
-    let minor = caps.get(2)?.as_str().parse::<u64>().ok()?;
-    let patch = caps.get(3)?.as_str().parse::<u64>().ok()?;
-    let prerelease_number = caps
+    let numbers = caps
+        .get(3)?
+        .as_str()
+        .split('.')
+        .map(|part| part.parse::<u64>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    if numbers.len() == 1 && caps.get(2).is_none() {
+        return None;
+    }
+    let mut parts = [0; 4];
+    parts[..numbers.len()].copy_from_slice(&numbers);
+    let word = caps
+        .get(4)
+        .map(|m| m.as_str().to_ascii_lowercase())
+        .unwrap_or_default();
+    let rank = if word.is_empty() {
+        RELEASE_RANK
+    } else {
+        word_rank(&word)
+    };
+    let number = caps
         .get(5)
         .map(|m| m.as_str().parse::<u64>())
         .transpose()
         .ok()?;
-    let prerelease = match caps.get(4).map(|m| m.as_str()) {
-        Some("alpha") => Prerelease::Alpha(prerelease_number),
-        Some("beta") => Prerelease::Beta(prerelease_number),
-        Some("rc") => Prerelease::Rc(prerelease_number),
-        None => Prerelease::Release,
-        _ => return None,
-    };
-
     Some(VersionKey {
-        major,
-        minor,
-        patch,
-        prerelease,
+        parts,
+        rank,
+        number,
+        word: if rank == OTHER_RANK { word } else { String::new() },
     })
 }
 
@@ -164,7 +242,7 @@ pub fn is_version_tag(tag_name: &str) -> bool {
 
 pub fn is_release_version(tag_name: &str) -> bool {
     parse_version_tag(tag_name)
-        .map(|version| version.prerelease.is_release())
+        .map(|version| version.is_release())
         .unwrap_or(false)
 }
 
@@ -323,14 +401,14 @@ fn select_kept_tags<'a>(tags: impl IntoIterator<Item = &'a str>, keep: usize) ->
         .into_iter()
         .filter_map(|tag| parse_version_tag(tag).map(|key| (key, tag)))
         .collect();
-    versions.sort_by(|a, b| b.0.cmp(&a.0));
+    versions.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
     let mut kept = Vec::new();
     let mut releases = 0;
     for (key, tag) in versions {
         if releases >= keep {
             break;
         }
-        if key.prerelease.is_release() {
+        if key.is_release() {
             releases += 1;
         }
         kept.push(tag.to_string());
@@ -584,7 +662,7 @@ fn get_sorted_tags_by_time(repo: &Repository) -> Result<Vec<String>> {
         }
     }
 
-    version_tags.sort_by(|a, b| b.0.cmp(&a.0));
+    version_tags.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
 
     let sorted_tags = version_tags.into_iter().map(|(_, tag)| tag).collect();
     Ok(sorted_tags)
@@ -787,22 +865,33 @@ fn build_version_history(
     release_only: bool,
     language: &str,
 ) -> Result<Vec<VersionHistoryEntry>> {
-    let tags = get_sorted_tags_by_time(repo)?
-        .into_iter()
-        .filter(|tag| !release_only || is_release_version(tag))
-        .collect::<Vec<_>>();
+    let all_tags = get_sorted_tags_by_time(repo)?;
+    // Without version tags the versions are the recent commits, all releases.
+    let versions: Vec<(String, Oid)> = if all_tags.is_empty() {
+        recent_commit_versions(repo)?
+    } else {
+        all_tags
+            .into_iter()
+            .filter(|tag| !release_only || is_release_version(tag))
+            .map(|tag| resolve_tag_commit(repo, &tag).map(|oid| (tag, oid)))
+            .collect::<Result<_>>()?
+    };
     let tags_by_commit = version_tags_by_commit(repo)?;
 
-    tags.iter()
+    versions
+        .iter()
         .take(number_versions)
         .enumerate()
-        .map(|(index, version)| {
-            let previous_version = tags.get(index + 1).cloned();
-            let target_oid = resolve_tag_commit(repo, version)?;
-            let hidden_oid = previous_version
-                .as_deref()
-                .map(|tag| resolve_tag_commit(repo, tag))
-                .transpose()?;
+        .map(|(index, (version, target_oid))| {
+            let target_oid = *target_oid;
+            let previous = versions.get(index + 1);
+            let previous_version = previous.map(|(version, _)| version.clone());
+            // The oldest listed commit shows only its own message.
+            let hidden_oid = previous.map(|(_, oid)| *oid).or_else(|| {
+                is_commit_version(version)
+                    .then(|| repo.find_commit(target_oid).ok()?.parent_id(0).ok())
+                    .flatten()
+            });
             let (update_note, localized_notes) = notes_in_language(
                 repo,
                 target_oid,
@@ -1161,6 +1250,22 @@ pub async fn get_tags_and_current_version(
         let head_ref = repo.head().context("Failed to get repo HEAD")?;
         let head_oid = head_ref.target().context("HEAD has no target OID")?;
 
+        if sorted_tags.is_empty() {
+            emit_info!(
+                app_name_for_task,
+                "No version tags found. Listing the {} most recent commits as versions.",
+                RECENT_COMMIT_VERSIONS
+            );
+            if let Err(error) = fetch_default_branch(&repo, &app_name_for_task) {
+                warn!("Failed to fetch the default branch: {error:#}");
+            }
+            let commits = recent_commit_versions(&repo)?
+                .into_iter()
+                .map(|(version, _)| version)
+                .collect();
+            return Ok((commits, commit_version_name(head_oid)));
+        }
+
         let mut current_version_tag: Option<String> = None;
         for tag_name in &sorted_tags {
             let tag_ref_name = format!("refs/tags/{}", tag_name);
@@ -1398,6 +1503,44 @@ pub async fn checkout_version_tag(
 
     let oid = task::spawn_blocking(move || -> Result<Oid> {
         let repo = open_repository(&task_repo_path)?;
+
+        if is_commit_version(&tag_to_checkout)
+            && repo
+                .find_reference(&format!("refs/tags/{tag_to_checkout}"))
+                .is_err()
+        {
+            if let Err(error) = fetch_default_branch(&repo, &app_name_for_task) {
+                warn!("Failed to fetch the default branch: {error:#}");
+            }
+            let obj = repo
+                .revparse_single(&tag_to_checkout)
+                .and_then(|obj| obj.peel(ObjectType::Commit))
+                .with_context(|| {
+                    format!(
+                        "Commit '{}' not found in repo {}",
+                        tag_to_checkout,
+                        task_repo_path.display()
+                    )
+                })?;
+            let commit_oid =
+                checkout_detached(&repo, &obj, &format!("commit {tag_to_checkout}"))?;
+            emit_info!(
+                app_name_for_task,
+                "Successfully checked out commit {} for repo {}.",
+                commit_oid,
+                task_repo_path.display()
+            );
+            submodule::update_repository_submodules(
+                &repo,
+                &app_name_for_task,
+                &format!(
+                    "repository at {} after checking out commit {}",
+                    task_repo_path.display(),
+                    tag_to_checkout
+                ),
+            )?;
+            return Ok(commit_oid);
+        }
 
         let refspec = tag_refspec(&tag_to_checkout);
         emit_info!(
@@ -1764,6 +1907,48 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn without_version_tags_the_recent_commits_are_the_versions() {
+        let root = unique_temp_dir("commit-versions");
+        let source_path = root.join("source");
+        let source = Repository::init(&source_path).unwrap();
+        for message in ["First", "Second", "Third"] {
+            commit_and_tag(&source, &source_path, "scratch", message);
+            source.tag_delete("scratch").unwrap();
+        }
+        let repo_path = root.join("repo");
+        bare_clone(&source_path, &repo_path);
+        // A newer commit after the clone is fetched through the default branch.
+        commit_and_tag(&source, &source_path, "scratch", "Fourth");
+        source.tag_delete("scratch").unwrap();
+
+        let repo = open_repository(&repo_path).unwrap();
+        super::fetch_default_branch(&repo, "test").unwrap();
+        let versions = super::recent_commit_versions(&repo).unwrap();
+        let names: Vec<&str> = versions.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names.len(), 4);
+        assert!(names.iter().all(|name| super::is_commit_version(name)));
+        let head = source.head().unwrap().target().unwrap();
+        assert_eq!(names[0], &head.to_string()[..7]);
+
+        let history = build_version_history(&repo, 10, true, "en").unwrap();
+        let notes: Vec<Vec<String>> = history.iter().map(|entry| entry.update_note.clone()).collect();
+        assert_eq!(notes, [["Fourth"], ["Third"], ["Second"], ["First"]].map(|n| n.map(String::from).to_vec()));
+        assert_eq!(history[0].previous_version.as_deref(), Some(names[1]));
+        drop(repo);
+
+        let oid = checkout_version_tag("test", &repo_path, names[2]).await.unwrap();
+        assert_eq!(oid, versions[2].1);
+
+        let available: Vec<String> = names.iter().map(|name| name.to_string()).collect();
+        assert!(super::is_newer_version(&available, names[0], names[2]));
+        assert!(!super::is_newer_version(&available, names[2], names[0]));
+        assert!(super::is_newer_version(&available, names[0], "0123456"));
+        assert!(super::is_newer_version(&[], "v1.1.0", "v1.0.0"));
+        drop(source);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[track_caller]
     fn read(path: std::path::PathBuf) -> String {
         std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
@@ -1974,6 +2159,42 @@ mod tests {
         assert!(!is_release_version("v1.5.0.beta"));
         assert!(is_version_tag("v1.5.0.beta"));
         assert!(!is_version_tag("7fa243f331892d478c4e450f6215495ca3b48258"));
+    }
+
+    // Shared with pyappify-action (versions.test.js) and pyappify-python (TestVersion.py).
+    #[test]
+    fn accepts_unconventional_version_tags_and_rejects_names_and_hashes() {
+        for tag in [
+            "v1.2.3", "1.2.3", "V1.2.3", "v1.2", "1.2", "v1", "v1.2.3.4", "2026.11.17",
+            "v1.2.3-beta", "v1.2.3.rc.2", "v1.2.3-beta.2", "1.2.3b2", "1.2.3rc1", "1.2.3-RC1",
+            "1.2.3-preview", "1.2.3.dev4", "1.2.3_alpha_1", "1.2.3.post1", "1.2.3-hotfix",
+            "release-1.2.3", "app-v1.2.3", "app/v1.2.3-beta.1", "my_app_1.0", "app-v5",
+        ] {
+            assert!(is_version_tag(tag), "{tag}");
+        }
+        for tag in [
+            "", "latest", "main", "1", "2024", "1234567", "a1b2c3d", "1234e56",
+            "v1.2.3.4.5", "1.2.3-", "-1.2.3", "v", "release", "release-", "1..2", "build-5",
+            "pr/7", "local/feature",
+        ] {
+            assert!(!is_version_tag(tag), "{tag}");
+        }
+        let ascending = [
+            "v1.0.0", "v1.2", "1.2.0.1", "v1.2.3.dev1", "v1.2.3a1", "v1.2.3-alpha.2",
+            "v1.2.3-beta", "v1.2.3b1", "v1.2.3-beta.2", "v1.2.3-hotfix", "v1.2.3-preview",
+            "v1.2.3rc1", "v1.2.3", "v1.2.3.post1", "release-1.3", "app-v2",
+        ];
+        for pair in ascending.windows(2) {
+            assert_eq!(compare_version_tags(pair[0], pair[1]), Some(Ordering::Less), "{pair:?}");
+        }
+        assert_eq!(compare_version_tags("v1.2", "1.2.0"), Some(Ordering::Equal));
+        for tag in ["v1.2.3", "1.2", "release-1.2.3", "1.2.3.post1", "v1"] {
+            assert!(is_release_version(tag), "{tag}");
+        }
+        for tag in ["v1.2.3-beta", "1.2.3rc1", "1.2.3-hotfix", "1.2.3.dev1", "latest"] {
+            assert!(!is_release_version(tag), "{tag}");
+        }
+        assert_eq!(super::version_without_prefix("app/v1.3"), Some("1.3"));
     }
 
     #[test]

@@ -221,6 +221,7 @@ function App() {
                     app.update_target_version ?? '',
                     app.current_version,
                     'Upgrade',
+                    app.available_versions,
                 );
                 ensureActiveConsoleSession(
                     app.name,
@@ -236,6 +237,7 @@ function App() {
                     app.update_target_version,
                     app.current_version,
                     'Upgrade',
+                    app.available_versions,
                 );
                 newSelectedTargets[app.name] = app.update_target_version;
                 inlineLogUpdates[app.name] = {
@@ -250,10 +252,10 @@ function App() {
             } else if (!completedAppsRef.current.has(app.name)) {
                 const sortedVersions = [...app.available_versions]
                     .filter(isReleaseVersion)
-                    .sort((a, b) => compareVersions(b, a));
+                    .sort((a, b) => compareVersions(b, a, app.available_versions));
                 const latestVersion = sortedVersions[0];
                 const currentSelection = selectedTargetVersionsRef.current[app.name];
-                if (app.current_version && latestVersion && compareVersions(latestVersion, app.current_version) > 0) {
+                if (app.current_version && latestVersion && compareVersions(latestVersion, app.current_version, app.available_versions) > 0) {
                     newSelectedTargets[app.name] = latestVersion;
                     // Auto-select latest version: show update log inline
                     inlineLogUpdates[app.name] = {
@@ -383,14 +385,19 @@ function App() {
         setActionLoading(appName, false);
     };
 
-    const handleVersionSelected = (appName: string, targetVersion: string, currentAppVersion: string | null) => {
+    const handleVersionSelected = (
+        appName: string,
+        targetVersion: string,
+        currentAppVersion: string | null,
+        availableVersions: readonly string[] = [],
+    ) => {
         setSelectedTargetVersions(p => ({...p, [appName]: targetVersion}));
         if (!targetVersion) {
             // Version cleared — hide inline log
             setInlineUpdateLogs(prev => withoutKey(prev, appName));
             return;
         }
-        const actionType = getVersionActionType(targetVersion, currentAppVersion);
+        const actionType = getVersionActionType(targetVersion, currentAppVersion, 'Set', availableVersions);
         setInlineUpdateLogs(prev => ({...prev, [appName]: {version: targetVersion, actionType, isConfirming: false}}));
     };
 
@@ -660,7 +667,7 @@ function App() {
                         onDelete={() => handleDeleteClick(app.name)}
                         onOpenSettings={() => setCurrentPage('settings')}
                         onCheckForUpdates={() => handleCheckForUpdates(app.name)}
-                        onSelectVersion={(version) => handleVersionSelected(app.name, version, app.current_version)}
+                        onSelectVersion={(version) => handleVersionSelected(app.name, version, app.current_version, app.available_versions)}
                         onCloseInlineConsole={() => handleCloseInlineConsole(app.name)}
                         onConfirmVersionChange={handleConfirmVersionChange}
                         onOpenUpdateConsole={() => handleOpenUpdateConsole(app.name)}

@@ -146,6 +146,14 @@ fn resolve_current_version_state(
     available_versions: &[String],
     resolved_current: String,
 ) -> (Option<String>, bool) {
+    // Without version tags the versions are commits; HEAD is the current one.
+    if git::is_commit_version(&resolved_current)
+        && available_versions
+            .iter()
+            .all(|version| git::is_commit_version(version))
+    {
+        return (Some(resolved_current), false);
+    }
     if git::is_version_tag(&resolved_current) {
         let previous_release_moved_or_missing =
             previous_known_version.as_ref().is_some_and(|version| {
@@ -178,6 +186,13 @@ fn get_update_target<'a>(
     available_versions: &'a [String],
     update_method: &str,
 ) -> Option<&'a String> {
+    // Commit versions are listed newest first.
+    if available_versions
+        .iter()
+        .all(|version| git::is_commit_version(version))
+    {
+        return available_versions.first();
+    }
     available_versions
         .iter()
         .filter(|version| {
@@ -481,8 +496,7 @@ async fn run_first_load_checks(
         .filter(|latest_version| {
             app.current_version_missing
                 || app.current_version.as_ref().is_some_and(|current_version| {
-                    git::compare_version_tags(latest_version, current_version)
-                        == Some(Ordering::Greater)
+                    git::is_newer_version(&app.available_versions, latest_version, current_version)
                 })
         })
         .cloned();
@@ -2300,6 +2314,19 @@ mod tests {
         assert_eq!(
             get_update_target(&available, UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE),
             available.get(1)
+        );
+    }
+
+    #[test]
+    fn commit_versions_update_to_the_newest_commit() {
+        let available = versions(&["c3c3c3c", "b2b2b2b", "a1a1a1a"]);
+
+        for method in ["", UPDATE_METHOD_OPTION_AUTO_PRE_RELEASE] {
+            assert_eq!(get_update_target(&available, method), available.first());
+        }
+        assert_eq!(
+            resolve_current_version_state(None, &available, "b2b2b2b".to_string()),
+            (Some("b2b2b2b".to_string()), false)
         );
     }
 }

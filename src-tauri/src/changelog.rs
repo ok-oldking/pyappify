@@ -46,9 +46,13 @@ pub fn changelog_path(language: &str) -> String {
     }
 }
 
-/// `[v1.3.0]` and `1.3.0` both name the tag `v1.3.0`: compare without them.
+/// `[v1.3.0]`, `1.3.0` and `release-1.3.0` all name the tag `v1.3.0`: compare
+/// without brackets, the name prefix and the `v`.
 pub fn version_key(version: &str) -> String {
     let version = version.trim().trim_matches(|c| c == '[' || c == ']').trim();
+    if let Some(name) = crate::git::version_without_prefix(version) {
+        return name.to_string();
+    }
     let mut chars = version.chars();
     match (chars.next(), chars.next()) {
         (Some('v' | 'V'), Some(next)) if next.is_ascii_digit() => version[1..].to_string(),
@@ -162,6 +166,9 @@ mod tests {
     fn version_keys_and_paths() {
         assert_eq!(version_key("[v1.2.0]"), "1.2.0");
         assert_eq!(version_key("version-2"), "version-2");
+        assert_eq!(version_key("version-v2"), "2");
+        assert_eq!(version_key("release-v1.3.0-beta.1"), "1.3.0-beta.1");
+        assert_eq!(version_key("Unreleased"), "Unreleased");
         assert_eq!(changelog_path("en"), "CHANGELOG.md");
         assert_eq!(changelog_path("zh-CN"), "CHANGELOG.zh-CN.md");
     }
