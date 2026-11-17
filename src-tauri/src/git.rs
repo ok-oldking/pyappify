@@ -456,15 +456,26 @@ fn tags_to_keep(
     kept
 }
 
+/// True for a repository without an `origin` remote, such as one packaged from
+/// local files without a `git_url`. Its tags are only the local ones.
+fn is_local_only(repo: &Repository) -> Result<bool> {
+    Ok(get_repository_origin_url(repo)?.is_none())
+}
+
 /// Fetches the remote's tags (and branches with `include_heads`) and removes
 /// local tags that are not kept, see [`tags_to_keep`]. With `keep_releases`,
-/// only the kept tags are fetched and branches are skipped.
+/// only the kept tags are fetched and branches are skipped. A local-only
+/// repository has nothing to fetch and keeps its tags.
 fn sync_tags(
     repo: &Repository,
     app_name: &str,
     include_heads: bool,
     progress_prefix: Option<&str>,
 ) -> Result<()> {
+    if is_local_only(repo)? {
+        debug!("{} has no origin remote; using its local tags.", repo.path().display());
+        return Ok(());
+    }
     let remote_tags = list_remote_tags(repo)?;
     if keep_releases(repo).is_some() {
         let mut kept: Vec<String> = tags_to_keep(repo, &remote_tags, None).into_iter().collect();
@@ -486,6 +497,9 @@ fn sync_tags(
 /// Removes local tags the remote no longer has, or with `keep_releases` the
 /// ones that are not kept. `extra` names a tag that must stay.
 fn prune_tags(repo: &Repository, app_name: &str, extra: Option<&str>) -> Result<()> {
+    if is_local_only(repo)? {
+        return Ok(());
+    }
     let remote_tags = list_remote_tags(repo)?;
     prune_local_tags(repo, app_name, &tags_to_keep(repo, &remote_tags, extra))
 }
@@ -1316,6 +1330,22 @@ pub async fn ensure_repository(app: &App) -> Result<()> {
     let url = profile.git_url.clone();
     let app_name = app.name.clone();
     info!("ensure_repository {} {}", app_name, &url);
+    if url.is_empty() {
+        // Packaged from local files: the bundled repository is the only source.
+        if repo_path.exists() && open_repository(&repo_path).is_ok() {
+            info!(
+                "No git_url for '{}'; using the bundled repository {} without fetching.",
+                app_name,
+                repo_path.display()
+            );
+            return Ok(());
+        }
+        anyhow::bail!(
+            "No git_url is set for '{}' and there is no bundled repository at {}",
+            app_name,
+            repo_path.display()
+        );
+    }
     emit_info!(app_name, "Clone {} from {}", app_name, &url);
 
     if repo_path.exists() {
@@ -2354,6 +2384,23 @@ mod tests {
             ["v1.3.0-beta.2", "v1.2.0"]
         );
         assert_eq!(super::select_kept_tags(tags, 10).len(), 6);
+    }
+
+    #[test]
+    fn repositories_without_origin_keep_their_local_tags() {
+        let root = unique_temp_dir("local-only");
+        let source_path = root.join("source");
+        let source = Repository::init(&source_path).unwrap();
+        commit_and_tag(&source, &source_path, "v1.0.0", "v1.0.0");
+        let repo_path = root.join("repo");
+        bare_clone(&source_path, &repo_path);
+        let repo = open_repository(&repo_path).unwrap();
+        repo.remote_delete("origin").unwrap();
+
+        super::sync_tags(&repo, "test", true, None).unwrap();
+        super::prune_tags(&repo, "test", None).unwrap();
+        assert!(repo.find_reference("refs/tags/v1.0.0").is_ok());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
