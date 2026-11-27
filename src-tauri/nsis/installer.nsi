@@ -1018,14 +1018,18 @@ Function KillInstallDirExecutables
 
   InitPluginsDir
   StrCpy $R0 "$PLUGINSDIR\kill-install-dir-executables.ps1"
+  StrCpy $R3 "$PLUGINSDIR\kill-install-dir-executables.txt"
   FileOpen $R1 "$R0" w
   FileWrite $R1 "param($\r$\n"
   FileWrite $R1 "  [string]$$InstallDir,$\r$\n"
-  FileWrite $R1 "  [string]$$InstallerPath$\r$\n"
+  FileWrite $R1 "  [string]$$InstallerPath,$\r$\n"
+  FileWrite $R1 "  [string]$$ReportPath,$\r$\n"
+  FileWrite $R1 "  [switch]$$Elevated$\r$\n"
   FileWrite $R1 ")$\r$\n"
   FileWrite $R1 "$$ErrorActionPreference = 'SilentlyContinue'$\r$\n"
   FileWrite $R1 "if (-not $$InstallDir) { exit 0 }$\r$\n"
   FileWrite $R1 "$$installRoot = [System.IO.Path]::GetFullPath($$InstallDir).TrimEnd('\')$\r$\n"
+  FileWrite $R1 "$$rootPattern = [regex]::Escape($$installRoot) + '(?=[\\/\s\x22\x27]|$$)'$\r$\n"
   FileWrite $R1 "$$currentInstaller = ''$\r$\n"
   FileWrite $R1 "if ($$InstallerPath) { $$currentInstaller = [System.IO.Path]::GetFullPath($$InstallerPath) }$\r$\n"
   FileWrite $R1 "function Get-InstallDirProcesses {$\r$\n"
@@ -1040,7 +1044,7 @@ Function KillInstallDirExecutables
   FileWrite $R1 "      if ($$fullPath.StartsWith($$installRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) { $$process; continue }$\r$\n"
   FileWrite $R1 "    }$\r$\n"
   FileWrite $R1 "    $$commandLine = $$process.CommandLine$\r$\n"
-  FileWrite $R1 "    if ($$commandLine -and $$commandLine.IndexOf($$installRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $$process; continue }$\r$\n"
+  FileWrite $R1 "    if ($$commandLine -and [regex]::IsMatch($$commandLine, $$rootPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) { $$process; continue }$\r$\n"
   FileWrite $R1 "    try {$\r$\n"
   FileWrite $R1 "      $$nativeProcess = Get-Process -Id $$process.ProcessId -ErrorAction SilentlyContinue$\r$\n"
   FileWrite $R1 "      foreach ($$module in $$nativeProcess.Modules) {$\r$\n"
@@ -1050,29 +1054,80 @@ Function KillInstallDirExecutables
   FileWrite $R1 "    } catch {}$\r$\n"
   FileWrite $R1 "  }$\r$\n"
   FileWrite $R1 "}$\r$\n"
-  FileWrite $R1 "$$targets = @(Get-InstallDirProcesses | Sort-Object ProcessId -Unique)$\r$\n"
-  FileWrite $R1 "foreach ($$process in $$targets) {$\r$\n"
-  FileWrite $R1 "  Stop-Process -Id $$process.ProcessId -Force$\r$\n"
-  FileWrite $R1 "  taskkill.exe /F /T /PID $$process.ProcessId | Out-Null$\r$\n"
+  FileWrite $R1 "function Stop-InstallDirProcesses {$\r$\n"
+  FileWrite $R1 "  $$targets = @(Get-InstallDirProcesses | Sort-Object ProcessId -Unique)$\r$\n"
+  FileWrite $R1 "  foreach ($$process in $$targets) {$\r$\n"
+  FileWrite $R1 "    Stop-Process -Id $$process.ProcessId -Force$\r$\n"
+  FileWrite $R1 "    taskkill.exe /F /T /PID $$process.ProcessId 2>&1 | Out-Null$\r$\n"
+  FileWrite $R1 "  }$\r$\n"
+  FileWrite $R1 "  foreach ($$process in $$targets) { Wait-Process -Id $$process.ProcessId -Timeout 5 }$\r$\n"
+  FileWrite $R1 "  if ($$targets.Count -gt 0) { Start-Sleep -Milliseconds 500 }$\r$\n"
+  FileWrite $R1 "  @(Get-InstallDirProcesses | Sort-Object ProcessId -Unique)$\r$\n"
   FileWrite $R1 "}$\r$\n"
-  FileWrite $R1 "foreach ($$process in $$targets) { Wait-Process -Id $$process.ProcessId -Timeout 5 }$\r$\n"
-  FileWrite $R1 "Start-Sleep -Milliseconds 500$\r$\n"
-  FileWrite $R1 "$$remaining = @(Get-InstallDirProcesses)$\r$\n"
-  FileWrite $R1 "if ($$remaining.Count -gt 0) { exit 2 }$\r$\n"
-  FileWrite $R1 "exit 0$\r$\n"
+  FileWrite $R1 "$$remaining = @(Stop-InstallDirProcesses)$\r$\n"
+  FileWrite $R1 "if ($$remaining.Count -gt 0 -and -not $$Elevated) {$\r$\n"
+  FileWrite $R1 "  $$principal = New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())$\r$\n"
+  FileWrite $R1 "  if (-not $$principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {$\r$\n"
+  FileWrite $R1 "    try {$\r$\n"
+  FileWrite $R1 "      $$elevatedArgs = '-NoProfile -ExecutionPolicy Bypass -File $\"' + $$PSCommandPath + '$\" -InstallDir $\"' + $$installRoot + '$\" -InstallerPath $\"' + $$currentInstaller + '$\" -Elevated'$\r$\n"
+  FileWrite $R1 "      Start-Process -FilePath 'powershell.exe' -ArgumentList $$elevatedArgs -Verb RunAs -WindowStyle Hidden -Wait -ErrorAction Stop$\r$\n"
+  FileWrite $R1 "    } catch {}$\r$\n"
+  FileWrite $R1 "    $$remaining = @(Get-InstallDirProcesses | Sort-Object ProcessId -Unique)$\r$\n"
+  FileWrite $R1 "  }$\r$\n"
+  FileWrite $R1 "}$\r$\n"
+  FileWrite $R1 "if ($$remaining.Count -eq 0) { exit 0 }$\r$\n"
+  FileWrite $R1 "if ($$ReportPath) {$\r$\n"
+  FileWrite $R1 "  $$lines = foreach ($$process in ($$remaining | Select-Object -First 5)) {$\r$\n"
+  FileWrite $R1 "    $$detail = $$process.ExecutablePath$\r$\n"
+  FileWrite $R1 "    if (-not $$detail) { $$detail = $$process.CommandLine }$\r$\n"
+  FileWrite $R1 "    if ($$detail -and $$detail.Length -gt 160) { $$detail = $$detail.Substring(0, 157) + '...' }$\r$\n"
+  FileWrite $R1 "    '{0} (PID {1}) {2}' -f $$process.Name, $$process.ProcessId, $$detail$\r$\n"
+  FileWrite $R1 "  }$\r$\n"
+  FileWrite $R1 "  [System.IO.File]::WriteAllLines($$ReportPath, [string[]]@($$lines), (New-Object System.Text.UnicodeEncoding($$false, $$false)))$\r$\n"
+  FileWrite $R1 "}$\r$\n"
+  FileWrite $R1 "exit 2$\r$\n"
   FileClose $R1
 
   retry_kill_install_dir_executables:
   DetailPrint "Stopping running executables in $INSTDIR"
-  ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$R0" "$INSTDIR" "$EXEPATH"' $R2
-  ${If} $R2 <> 0
-    ${If} $LANGUAGE == 2052
-      MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "无法停止正在使用 $INSTDIR 中 Python/Qt 文件的进程。$\r$\n请关闭相关应用后点击“重试”。" IDRETRY retry_kill_install_dir_executables
-    ${Else}
-      MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "Some processes are still using Python/Qt files in $INSTDIR.$\r$\nClose the related app and click Retry." IDRETRY retry_kill_install_dir_executables
-    ${EndIf}
-    Abort
+  Delete "$R3"
+  ClearErrors
+  ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$R0" -InstallDir "$INSTDIR" -InstallerPath "$EXEPATH" -ReportPath "$R3"' $R2
+  ${If} ${Errors}
+    ; PowerShell could not be started (missing or blocked). Do not block the
+    ; install; CheckIfAppIsRunning and the file copy still catch locked files.
+    DetailPrint "Could not run PowerShell to stop executables in $INSTDIR"
+    Return
   ${EndIf}
+  ${If} $R2 <> 2
+    ; Only exit code 2 means processes are still running. Any other non-zero
+    ; code means the script itself failed (policy, antivirus, ...).
+    ${If} $R2 <> 0
+      DetailPrint "Stopping executables in $INSTDIR failed with exit code $R2"
+    ${EndIf}
+    Return
+  ${EndIf}
+
+  StrCpy $R4 ""
+  ClearErrors
+  FileOpen $R5 "$R3" r
+  ${IfNot} ${Errors}
+    ${Do}
+      ClearErrors
+      FileReadUTF16LE $R5 $R6
+      ${IfThen} ${Errors} ${|} ${ExitDo} ${|}
+      StrCpy $R4 "$R4$R6"
+    ${Loop}
+    FileClose $R5
+  ${EndIf}
+  DetailPrint "Processes still running: $R4"
+
+  ${If} $LANGUAGE == 2052
+    MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "无法停止正在使用 $INSTDIR 中文件的进程：$\r$\n$\r$\n$R4$\r$\n请在任务管理器中结束以上进程后点击“重试”。" IDRETRY retry_kill_install_dir_executables
+  ${Else}
+    MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "These processes are still using files in $INSTDIR:$\r$\n$\r$\n$R4$\r$\nEnd them in Task Manager and click Retry." IDRETRY retry_kill_install_dir_executables
+  ${EndIf}
+  Abort
 FunctionEnd
 
 Function RestorePreviousInstallLocation
